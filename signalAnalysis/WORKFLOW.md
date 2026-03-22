@@ -327,6 +327,126 @@ Important caution:
 - final confirmation should still rely on `decoder_0001_cellsearch.m`, such as checking `Cell identity`, `BCH CRC`, and `frameOffset`
 - if two adjacent frames are both marked, it may mean the SSB is near a frame boundary and the current frame alignment still has a small residual error
 
+### Practical method: estimate `FrequencyOffset` from `peakSubcarrier` before checking `frameOffset`
+
+When `check_ssb_presence.m` has already identified likely SSB frames, a practical next step is to use the reported `peakSubcarrier` to set a better initial `FrequencyOffset` for `decoder_0001_cellsearch.m`.
+
+This is useful because:
+
+- `decoder_0001_cellsearch.m` currently applies a manual frequency shift before SSB search
+- if that initial `FrequencyOffset` is too far from the real SSB location, later `BCH CRC` may fail even when the frame really contains SSB
+- a better initial `FrequencyOffset` usually makes the later `frameOffset` result much more reliable
+
+Recommended idea:
+
+1. Run `check_ssb_presence.m` first.
+2. Pick one or more strong SSB candidate frames.
+3. Read `peakSubcarrier` from the coarse-screening result.
+4. Convert that position into the SSB center frequency offset from the RF center.
+5. Use that value as the initial `FrequencyOffset` in `decoder_0001_cellsearch.m`.
+6. Then check `Cell identity`, `BCH CRC`, and `frameOffset`.
+
+### How to convert `peakSubcarrier` into `FrequencyOffset`
+
+The coarse detector uses a `240 x 4` window, so `peakSubcarrier` is the starting subcarrier index of the coarse SSB block.
+
+For one candidate frame:
+
+- let `peakSubcarrier` be the coarse SSB start position
+- SSB width is `240` RE in frequency
+- so the coarse SSB center is:
+
+```text
+ssbCenter = peakSubcarrier + 240/2
+```
+
+For the full analyzed carrier:
+
+- the frequency-domain center of the demodulated grid is:
+
+```text
+gridCenter = nrb * 12 / 2
+```
+
+So the SSB center offset from RF center, measured in subcarriers, is:
+
+```text
+subcarrierOffset = gridCenter - ssbCenter
+```
+
+Then convert that to Hz:
+
+```text
+FrequencyOffset = subcarrierOffset * scs * 1e3
+```
+
+### Example from this project
+
+Suppose `check_ssb_presence.m` reports:
+
+```text
+peakSubcarrier = 12
+```
+
+and the waveform parameters are:
+
+```text
+nrb = 51
+scs = 30
+```
+
+Then:
+
+```text
+ssbCenter = 12 + 240/2 = 132
+gridCenter = 51*12/2 = 306
+subcarrierOffset = 306 - 132 = 174
+FrequencyOffset = 174 * 30e3 = 5.22e6 Hz
+```
+
+So a practical choice in `decoder_0001_cellsearch.m` is:
+
+```matlab
+FrequencyOffset = 174*30e3;
+```
+
+In this project, using this value allowed `decoder_0001_cellsearch.m` to recover:
+
+- `Cell identity = 1`
+- `BCH CRC = 0`
+- `frameOffset = 0` or very close to zero
+
+This proved much more reliable than using a rough frequency shift that was farther away from the true SSB position.
+
+### Practical note on `searchBW` and why `FrequencyOffset` does not need to be exact
+
+In `decoder_0001_cellsearch.m`, `searchBW` is the SSB frequency-search range used by the later synchronization process.
+
+That means:
+
+- `FrequencyOffset` is only the initial shift that moves the SSB near the center
+- `searchBW` still allows the script to search around that initial position
+
+So `FrequencyOffset` does not need to be perfectly exact, as long as the remaining error is still inside the later search range.
+
+Practical rule:
+
+- when the SSB location is still uncertain, use a larger `searchBW`
+- once one SSB has already been decoded successfully, update `FrequencyOffset` using the decoded or coarse-screened position
+- after that, reduce `searchBW` to speed up later searches
+- if the SSB position is already known accurately enough, `searchBW` can be set very small, or even `0`
+
+This creates a practical two-stage method:
+
+1. coarse search with a larger `searchBW`
+2. refined search with improved `FrequencyOffset` and a smaller `searchBW`
+
+This usually gives a better balance between:
+
+- search robustness
+- search time
+- frame-head verification reliability
+
 ## Filename convention for raw files
 
 `readDat.m` uses:

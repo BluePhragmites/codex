@@ -1,0 +1,8 @@
+build/
+out/
+.cache/
+.vscode/
+.idea/
+*.swp
+*.log
+*.tmp

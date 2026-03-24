@@ -11,6 +11,11 @@ namespace mini_gnb {
 
 using ByteVector = std::vector<std::uint8_t>;
 
+struct ComplexSample {
+  float i {};
+  float q {};
+};
+
 enum class DlObjectType {
   ssb,
   sib1,
@@ -200,6 +205,10 @@ struct TxGridPatch {
   DlObjectType type {DlObjectType::ssb};
   std::uint16_t rnti {};
   std::size_t payload_len {};
+  std::uint32_t fft_size {};
+  std::uint32_t cp_len {};
+  double sample_rate_hz {};
+  std::vector<ComplexSample> iq_samples;
 };
 
 struct Msg3DecodeIndication {

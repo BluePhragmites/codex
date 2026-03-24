@@ -1,5 +1,7 @@
 #include "test_helpers.hpp"
 
+#include <filesystem>
+
 #include "mini_gnb/common/hex.hpp"
 #include "mini_gnb/common/simulator.hpp"
 #include "mini_gnb/config/config_loader.hpp"
@@ -20,4 +22,19 @@ void test_integration_run() {
   require(mini_gnb::bytes_to_hex(summary.ra_context->contention_id48) ==
               mini_gnb::bytes_to_hex(summary.ue_contexts.front().contention_id48),
           "expected RA context and UE context to share the same contention identity");
+
+  const auto iq_dir = std::filesystem::path(project_source_dir()) / "out" / "test_integration" / "iq";
+  require(std::filesystem::exists(iq_dir), "expected IQ output directory");
+
+  std::size_t iq_file_count = 0;
+  bool has_non_empty_cf32 = false;
+  for (const auto& entry : std::filesystem::directory_iterator(iq_dir)) {
+    if (entry.is_regular_file() && entry.path().extension() == ".cf32") {
+      ++iq_file_count;
+      has_non_empty_cf32 = has_non_empty_cf32 || (entry.file_size() > 0U);
+    }
+  }
+
+  require(iq_file_count >= 1, "expected at least one exported IQ file");
+  require(has_non_empty_cf32, "expected non-empty CF32 IQ output");
 }

@@ -10,6 +10,9 @@ sudo apt-get install -y \
   gdb \
   clang \
   clang-tidy \
-  pkg-config
+  pkg-config \
+  python3 \
+  python3-numpy \
+  python3-matplotlib
 
 echo "WSL Ubuntu toolchain setup complete."

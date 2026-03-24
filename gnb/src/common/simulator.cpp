@@ -36,7 +36,8 @@ MiniGnbSimulator::MiniGnbSimulator(Config config, std::string output_dir)
       prach_detector_(config_.sim),
       ra_manager_(config_.prach, config_.sim),
       scheduler_(),
-      msg3_receiver_(config_.sim) {}
+      msg3_receiver_(config_.sim),
+      dl_mapper_(config_.rf.srate) {}
 
 RunSummary MiniGnbSimulator::run() {
   metrics_.trace("main",

@@ -22,6 +22,7 @@ class MetricsTrace {
   void add_slot_perf(const SlotPerf& perf);
 
   const std::map<std::string, std::uint64_t>& counters() const;
+  const std::string& output_dir() const;
   RunSummary flush(const std::optional<RaContext>& ra_context,
                    const std::vector<MiniUeContext>& ue_contexts,
                    std::uint64_t tx_burst_count,

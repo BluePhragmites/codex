@@ -104,6 +104,10 @@ const std::map<std::string, std::uint64_t>& MetricsTrace::counters() const {
   return counters_;
 }
 
+const std::string& MetricsTrace::output_dir() const {
+  return output_dir_;
+}
+
 RunSummary MetricsTrace::flush(const std::optional<RaContext>& ra_context,
                                const std::vector<MiniUeContext>& ue_contexts,
                                const std::uint64_t tx_burst_count,

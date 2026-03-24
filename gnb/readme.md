@@ -2,6 +2,14 @@
 
 `mini-gnb` is a single-process, single-cell, single-UE prototype that drives a minimal NR initial access flow from Msg1 through Msg4 with mock PHY/RF components.
 
+This repository has been validated in `WSL2 + Ubuntu 22.04` on this machine:
+
+- `cmake -S . -B build -G Ninja` succeeded
+- `cmake --build build` succeeded
+- `ctest --test-dir build --output-on-failure` succeeded
+- `./build/mini_gnb_sim` succeeded
+- the simulated flow reached `Msg1 -> Msg4` and wrote artifacts into `out/`
+
 The repository is intentionally shaped like a future gNB codebase:
 
 - `config/`: static JSON cell and simulation configuration
@@ -52,11 +60,99 @@ The intended development environment is WSL2 with Ubuntu 22.04 or newer.
    ```bash
    cmake -S . -B build -G Ninja
    cmake --build build
-   ctest --test-dir build
+   ctest --test-dir build --output-on-failure
    ./build/mini_gnb_sim
    ```
 
 The simulator writes JSON trace artifacts into `out/`.
+
+## Daily Commands
+
+If you are already inside Ubuntu and in the project directory:
+
+```bash
+cd /mnt/d/work/codex/test/codex/gnb
+cmake -S . -B build -G Ninja
+cmake --build build
+```
+
+If you want to run from Windows PowerShell through WSL:
+
+```powershell
+wsl bash -lc "cd /mnt/d/work/codex/test/codex/gnb && cmake -S . -B build -G Ninja"
+wsl bash -lc "cd /mnt/d/work/codex/test/codex/gnb && cmake --build build"
+```
+
+## Run The Simulator
+
+Inside Ubuntu:
+
+```bash
+cd /mnt/d/work/codex/test/codex/gnb
+./build/mini_gnb_sim
+```
+
+From Windows PowerShell:
+
+```powershell
+wsl bash -lc "cd /mnt/d/work/codex/test/codex/gnb && ./build/mini_gnb_sim"
+```
+
+Expected high-level output:
+
+- broadcast config summary
+- PRACH detection
+- RAR scheduling and send
+- Msg3 decode and MAC/RRC parsing
+- Msg4 send
+- final line `Run result: Msg1 -> Msg4 simulated successfully.`
+
+## Unit And Integration Tests
+
+This repository currently builds one test executable, `mini_gnb_tests`, and runs it through CTest.
+
+Run all tests with CTest:
+
+```bash
+cd /mnt/d/work/codex/test/codex/gnb
+ctest --test-dir build --output-on-failure
+```
+
+Or run the test binary directly:
+
+```bash
+cd /mnt/d/work/codex/test/codex/gnb
+./build/mini_gnb_tests
+```
+
+From Windows PowerShell:
+
+```powershell
+wsl bash -lc "cd /mnt/d/work/codex/test/codex/gnb && ctest --test-dir build --output-on-failure"
+wsl bash -lc "cd /mnt/d/work/codex/test/codex/gnb && ./build/mini_gnb_tests"
+```
+
+The current tests cover:
+
+- config loading
+- RA state progression from PRACH to Msg4
+- RA timeout handling
+- Msg3 MAC demux, `RRCSetupRequest` parsing, and Msg4 contention identity consistency
+- end-to-end simulator integration
+
+## Output Artifacts
+
+After running `./build/mini_gnb_sim`, the simulator writes:
+
+- `out/trace.json`: recent event trace
+- `out/metrics.json`: counters and per-slot timing summary
+- `out/summary.json`: run summary, RA context, UE context, and artifact paths
+
+On this machine the generated paths are:
+
+- `/mnt/d/work/codex/test/codex/gnb/out/trace.json`
+- `/mnt/d/work/codex/test/codex/gnb/out/metrics.json`
+- `/mnt/d/work/codex/test/codex/gnb/out/summary.json`
 
 ## GitHub Bootstrapping
 

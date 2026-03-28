@@ -39,7 +39,9 @@ rf:
 broadcast:
   # Broadcast periodicity in slots.
   ssb_period_slots: 2
+  # SIB1 is sent at abs_slot = sib1_offset_slot + k * sib1_period_slots.
   sib1_period_slots: 8
+  sib1_offset_slot: 4
 
 sim:
   # Total simulated slots and frame geometry.

@@ -77,6 +77,7 @@ typedef struct {
 typedef struct {
   int ssb_period_slots;
   int sib1_period_slots;
+  int sib1_offset_slot;
 } mini_gnb_c_broadcast_config_t;
 
 typedef struct {

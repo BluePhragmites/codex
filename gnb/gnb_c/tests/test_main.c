@@ -3,6 +3,7 @@
 typedef void (*mini_gnb_c_test_fn)(void);
 
 void test_config_loads(void);
+void test_sib1_schedule_uses_period_and_offset(void);
 void test_ra_manager_flow(void);
 void test_ra_timeout(void);
 void test_mac_rrc_and_msg4_contention_identity(void);
@@ -14,6 +15,7 @@ int main(void) {
     mini_gnb_c_test_fn fn;
   } tests[] = {
       {"test_config_loads", test_config_loads},
+      {"test_sib1_schedule_uses_period_and_offset", test_sib1_schedule_uses_period_and_offset},
       {"test_ra_manager_flow", test_ra_manager_flow},
       {"test_ra_timeout", test_ra_timeout},
       {"test_mac_rrc_and_msg4_contention_identity", test_mac_rrc_and_msg4_contention_identity},

@@ -54,7 +54,7 @@ The IQ export is a minimal mock PHY waveform:
 The current C prototype keeps:
 
 - SSB/PBCH/MIB scheduling
-- SIB1 scheduling
+- SIB1 scheduling with `period + offset`
 - mock PRACH detection
 - RAR generation and Msg3 UL grant
 - mock Msg3 decode

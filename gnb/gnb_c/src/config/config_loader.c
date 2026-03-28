@@ -317,6 +317,7 @@ int mini_gnb_c_load_config(const char* path,
 
   MINI_GNB_C_LOAD_INT("broadcast", "ssb_period_slots", out_config->broadcast.ssb_period_slots, int);
   MINI_GNB_C_LOAD_INT("broadcast", "sib1_period_slots", out_config->broadcast.sib1_period_slots, int);
+  MINI_GNB_C_LOAD_INT("broadcast", "sib1_offset_slot", out_config->broadcast.sib1_offset_slot, int);
 
   MINI_GNB_C_LOAD_INT("sim", "total_slots", out_config->sim.total_slots, int);
   MINI_GNB_C_LOAD_INT("sim", "slots_per_frame", out_config->sim.slots_per_frame, int);
@@ -351,7 +352,7 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                out_size,
                "Broadcast config summary:\n"
                "  cell pci=%u band=n%u arfcn=%u scs=%ukHz bw=%uMHz plmn=%s tac=%u\n"
-               "  ss0_index=%u coreset0_index=%u\n"
+               "  ss0_index=%u coreset0_index=%u ssb_period_slots=%d sib1_period_slots=%d sib1_offset_slot=%d\n"
                "RA config summary:\n"
                "  prach_config_index=%u root_seq=%u zero_corr=%u ra_resp_window=%u msg3_delta_preamble=%d\n"
                "RF config summary:\n"
@@ -365,6 +366,9 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                config->cell.tac,
                config->cell.ss0_index,
                config->cell.coreset0_index,
+               config->broadcast.ssb_period_slots,
+               config->broadcast.sib1_period_slots,
+               config->broadcast.sib1_offset_slot,
                config->prach.prach_config_index,
                config->prach.prach_root_seq_index,
                config->prach.zero_correlation_zone,

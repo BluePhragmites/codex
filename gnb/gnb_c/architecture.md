@@ -330,6 +330,15 @@ Responsibility:
 - generate SIB1-like payload text
 - insert SSB and SIB1 into current DL schedule
 
+Current SIB1 timing model:
+
+- `sib1_period_slots`
+- `sib1_offset_slot`
+
+The resulting send slots are:
+
+- `abs_slot = sib1_offset_slot + k * sib1_period_slots`
+
 ### 8.4 PRACH Detection Layer
 
 Files:
@@ -669,7 +678,7 @@ The current scheduler model is intentionally narrow.
 Broadcast path:
 
 - SSB generated from slot periodicity
-- SIB1 generated from slot periodicity
+- SIB1 generated from `period + offset`
 
 Access path:
 

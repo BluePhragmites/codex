@@ -12,7 +12,7 @@ The C version intentionally uses fixed-size buffers and plain C interfaces so it
 
 ## Layout
 
-- `config/`: static JSON configuration
+- `config/`: static YAML configuration
 - `apps/`: simulator entrypoint
 - `include/mini_gnb_c/`: public C headers by subsystem
 - `src/`: implementation modules
@@ -61,6 +61,7 @@ The current C prototype keeps:
 - MAC UL demux
 - `RRCSetupRequest` parsing
 - Msg4 generation with contention resolution identity and `RRCSetup`
+- YAML config with comment support
 - JSON trace, metrics, and summary artifacts in `out/`
 
 The current C prototype does not keep:

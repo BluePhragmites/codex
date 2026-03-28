@@ -18,7 +18,7 @@ static inline void mini_gnb_c_default_config_path(char* out, size_t out_size) {
   if (out == NULL || out_size == 0U) {
     return;
   }
-  (void)snprintf(out, out_size, "%s/config/default_cell.json", MINI_GNB_C_SOURCE_DIR);
+  (void)snprintf(out, out_size, "%s/config/default_cell.yml", MINI_GNB_C_SOURCE_DIR);
 }
 
 static inline void mini_gnb_c_make_output_dir(const char* name, char* out, size_t out_size) {

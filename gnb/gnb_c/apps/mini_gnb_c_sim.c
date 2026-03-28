@@ -13,7 +13,7 @@ int main(void) {
 
   if (snprintf(config_path,
                sizeof(config_path),
-               "%s/config/default_cell.json",
+               "%s/config/default_cell.yml",
                MINI_GNB_C_SOURCE_DIR) >= (int)sizeof(config_path)) {
     fprintf(stderr, "failed to construct config path\n");
     return 1;

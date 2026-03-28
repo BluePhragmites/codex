@@ -7,91 +7,221 @@
 
 #include "mini_gnb_c/common/json_utils.h"
 
-static const char* mini_gnb_c_find_key(const char* text, const char* key) {
-  static char pattern[64];
-  if (snprintf(pattern, sizeof(pattern), "\"%s\"", key) >= (int)sizeof(pattern)) {
+static char* mini_gnb_c_ltrim(char* text) {
+  if (text == NULL) {
     return NULL;
   }
-  return strstr(text, pattern);
+
+  while (*text != '\0' && isspace((unsigned char)*text)) {
+    ++text;
+  }
+  return text;
 }
 
-static const char* mini_gnb_c_find_value_start(const char* text, const char* key) {
-  const char* cursor = mini_gnb_c_find_key(text, key);
-  if (cursor == NULL) {
-    return NULL;
+static void mini_gnb_c_rtrim(char* text) {
+  size_t len = 0;
+
+  if (text == NULL) {
+    return;
   }
-  cursor = strchr(cursor, ':');
-  if (cursor == NULL) {
-    return NULL;
+
+  len = strlen(text);
+  while (len > 0U && isspace((unsigned char)text[len - 1U])) {
+    text[len - 1U] = '\0';
+    --len;
   }
-  ++cursor;
-  while (*cursor != '\0' && isspace((unsigned char)*cursor)) {
-    ++cursor;
+}
+
+static void mini_gnb_c_strip_inline_comment(char* text) {
+  bool in_single_quote = false;
+  bool in_double_quote = false;
+  size_t i = 0;
+
+  if (text == NULL) {
+    return;
   }
-  return cursor;
+
+  for (i = 0; text[i] != '\0'; ++i) {
+    if (text[i] == '\'' && !in_double_quote) {
+      in_single_quote = !in_single_quote;
+      continue;
+    }
+    if (text[i] == '"' && !in_single_quote) {
+      in_double_quote = !in_double_quote;
+      continue;
+    }
+    if (text[i] == '#' && !in_single_quote && !in_double_quote) {
+      text[i] = '\0';
+      break;
+    }
+  }
+}
+
+static int mini_gnb_c_case_equal(const char* left, const char* right) {
+  size_t i = 0;
+
+  if (left == NULL || right == NULL) {
+    return 0;
+  }
+
+  while (left[i] != '\0' && right[i] != '\0') {
+    if (tolower((unsigned char)left[i]) != tolower((unsigned char)right[i])) {
+      return 0;
+    }
+    ++i;
+  }
+  return left[i] == '\0' && right[i] == '\0';
+}
+
+static void mini_gnb_c_unquote(char* text) {
+  size_t len = 0;
+
+  if (text == NULL) {
+    return;
+  }
+
+  len = strlen(text);
+  if (len >= 2U &&
+      ((text[0] == '"' && text[len - 1U] == '"') || (text[0] == '\'' && text[len - 1U] == '\''))) {
+    memmove(text, text + 1, len - 2U);
+    text[len - 2U] = '\0';
+  }
+}
+
+static int mini_gnb_c_extract_scalar(const char* text,
+                                     const char* section,
+                                     const char* key,
+                                     char* out,
+                                     size_t out_size) {
+  const char* cursor = NULL;
+  char current_section[32];
+
+  if (text == NULL || section == NULL || key == NULL || out == NULL || out_size == 0U) {
+    return -1;
+  }
+
+  cursor = text;
+  current_section[0] = '\0';
+
+  while (*cursor != '\0') {
+    char line[256];
+    size_t len = 0;
+    size_t indent = 0;
+    char* trimmed = NULL;
+    char* colon = NULL;
+    char* value = NULL;
+
+    while (cursor[len] != '\0' && cursor[len] != '\n' && cursor[len] != '\r') {
+      ++len;
+    }
+    if (len >= sizeof(line)) {
+      len = sizeof(line) - 1U;
+    }
+    memcpy(line, cursor, len);
+    line[len] = '\0';
+
+    cursor += len;
+    while (*cursor == '\n' || *cursor == '\r') {
+      ++cursor;
+    }
+
+    while (line[indent] == ' ' || line[indent] == '\t') {
+      ++indent;
+    }
+
+    mini_gnb_c_strip_inline_comment(line);
+    trimmed = mini_gnb_c_ltrim(line);
+    mini_gnb_c_rtrim(trimmed);
+    if (*trimmed == '\0') {
+      continue;
+    }
+
+    colon = strchr(trimmed, ':');
+    if (colon == NULL) {
+      continue;
+    }
+
+    *colon = '\0';
+    mini_gnb_c_rtrim(trimmed);
+    value = mini_gnb_c_ltrim(colon + 1);
+    mini_gnb_c_rtrim(value);
+
+    if (indent == 0U) {
+      if (*value == '\0') {
+        (void)snprintf(current_section, sizeof(current_section), "%s", trimmed);
+      } else {
+        current_section[0] = '\0';
+      }
+      continue;
+    }
+
+    if (strcmp(current_section, section) != 0 || strcmp(trimmed, key) != 0) {
+      continue;
+    }
+
+    mini_gnb_c_unquote(value);
+    if (snprintf(out, out_size, "%s", value) >= (int)out_size) {
+      return -1;
+    }
+    return 0;
+  }
+
+  return -1;
 }
 
 static int mini_gnb_c_extract_string(const char* text,
+                                     const char* section,
                                      const char* key,
                                      char* out,
                                      const size_t out_size) {
-  const char* start = mini_gnb_c_find_value_start(text, key);
-  const char* end = NULL;
-  size_t len = 0;
-
-  if (start == NULL || *start != '"' || out == NULL || out_size == 0U) {
-    return -1;
-  }
-  ++start;
-  end = strchr(start, '"');
-  if (end == NULL) {
-    return -1;
-  }
-  len = (size_t)(end - start);
-  if (len + 1U > out_size) {
-    return -1;
-  }
-  memcpy(out, start, len);
-  out[len] = '\0';
-  return 0;
+  return mini_gnb_c_extract_scalar(text, section, key, out, out_size);
 }
 
-static int mini_gnb_c_extract_int(const char* text, const char* key, int* out) {
+static int mini_gnb_c_extract_int(const char* text, const char* section, const char* key, int* out) {
+  char value_text[64];
   char* end_ptr = NULL;
-  const char* start = mini_gnb_c_find_value_start(text, key);
-  if (start == NULL || out == NULL) {
+
+  if (mini_gnb_c_extract_scalar(text, section, key, value_text, sizeof(value_text)) != 0 || out == NULL) {
     return -1;
   }
-  *out = (int)strtol(start, &end_ptr, 10);
-  if (end_ptr == start) {
+
+  *out = (int)strtol(value_text, &end_ptr, 10);
+  if (end_ptr == value_text || *mini_gnb_c_ltrim(end_ptr) != '\0') {
     return -1;
   }
   return 0;
 }
 
-static int mini_gnb_c_extract_double(const char* text, const char* key, double* out) {
+static int mini_gnb_c_extract_double(const char* text,
+                                     const char* section,
+                                     const char* key,
+                                     double* out) {
+  char value_text[64];
   char* end_ptr = NULL;
-  const char* start = mini_gnb_c_find_value_start(text, key);
-  if (start == NULL || out == NULL) {
+
+  if (mini_gnb_c_extract_scalar(text, section, key, value_text, sizeof(value_text)) != 0 || out == NULL) {
     return -1;
   }
-  *out = strtod(start, &end_ptr);
-  if (end_ptr == start) {
+
+  *out = strtod(value_text, &end_ptr);
+  if (end_ptr == value_text || *mini_gnb_c_ltrim(end_ptr) != '\0') {
     return -1;
   }
   return 0;
 }
 
-static int mini_gnb_c_extract_bool(const char* text, const char* key, bool* out) {
-  const char* start = mini_gnb_c_find_value_start(text, key);
-  if (start == NULL || out == NULL) {
+static int mini_gnb_c_extract_bool(const char* text, const char* section, const char* key, bool* out) {
+  char value_text[16];
+
+  if (mini_gnb_c_extract_scalar(text, section, key, value_text, sizeof(value_text)) != 0 || out == NULL) {
     return -1;
   }
-  if (strncmp(start, "true", 4U) == 0) {
+
+  if (mini_gnb_c_case_equal(value_text, "true")) {
     *out = true;
     return 0;
   }
-  if (strncmp(start, "false", 5U) == 0) {
+  if (mini_gnb_c_case_equal(value_text, "false")) {
     *out = false;
     return 0;
   }
@@ -107,6 +237,41 @@ static int mini_gnb_c_fail(char* error_message,
   }
   return -1;
 }
+
+#define MINI_GNB_C_LOAD_INT(SECTION, KEY, TARGET, CAST)                                              \
+  do {                                                                                                \
+    if (mini_gnb_c_extract_int(text, SECTION, KEY, &value) != 0) {                                   \
+      free(text);                                                                                     \
+      return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", KEY);  \
+    }                                                                                                 \
+    (TARGET) = (CAST)value;                                                                           \
+  } while (0)
+
+#define MINI_GNB_C_LOAD_DOUBLE(SECTION, KEY, TARGET)                                                  \
+  do {                                                                                                \
+    if (mini_gnb_c_extract_double(text, SECTION, KEY, &double_value) != 0) {                         \
+      free(text);                                                                                     \
+      return mini_gnb_c_fail(error_message, error_message_size, "missing floating config key", KEY); \
+    }                                                                                                 \
+    (TARGET) = double_value;                                                                          \
+  } while (0)
+
+#define MINI_GNB_C_LOAD_BOOL(SECTION, KEY, TARGET)                                                    \
+  do {                                                                                                \
+    if (mini_gnb_c_extract_bool(text, SECTION, KEY, &bool_value) != 0) {                             \
+      free(text);                                                                                     \
+      return mini_gnb_c_fail(error_message, error_message_size, "missing boolean config key", KEY);  \
+    }                                                                                                 \
+    (TARGET) = bool_value;                                                                            \
+  } while (0)
+
+#define MINI_GNB_C_LOAD_STRING(SECTION, KEY, TARGET)                                                  \
+  do {                                                                                                \
+    if (mini_gnb_c_extract_string(text, SECTION, KEY, TARGET, sizeof(TARGET)) != 0) {                \
+      free(text);                                                                                     \
+      return mini_gnb_c_fail(error_message, error_message_size, "missing string config key", KEY);   \
+    }                                                                                                 \
+  } while (0)
 
 int mini_gnb_c_load_config(const char* path,
                            mini_gnb_c_config_t* out_config,
@@ -127,80 +292,48 @@ int mini_gnb_c_load_config(const char* path,
     return mini_gnb_c_fail(error_message, error_message_size, "failed to read config file", path);
   }
 
-  if (mini_gnb_c_extract_int(text, "dl_arfcn", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "dl_arfcn"); }
-  out_config->cell.dl_arfcn = (uint32_t)value;
-  if (mini_gnb_c_extract_int(text, "band", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "band"); }
-  out_config->cell.band = (uint16_t)value;
-  if (mini_gnb_c_extract_int(text, "channel_bandwidth_MHz", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "channel_bandwidth_MHz"); }
-  out_config->cell.channel_bandwidth_mhz = (uint16_t)value;
-  if (mini_gnb_c_extract_int(text, "common_scs_khz", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "common_scs_khz"); }
-  out_config->cell.common_scs_khz = (uint16_t)value;
-  if (mini_gnb_c_extract_int(text, "pci", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "pci"); }
-  out_config->cell.pci = (uint16_t)value;
-  if (mini_gnb_c_extract_string(text, "plmn", out_config->cell.plmn, sizeof(out_config->cell.plmn)) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing string config key", "plmn"); }
-  if (mini_gnb_c_extract_int(text, "tac", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "tac"); }
-  out_config->cell.tac = (uint16_t)value;
-  if (mini_gnb_c_extract_int(text, "ss0_index", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "ss0_index"); }
-  out_config->cell.ss0_index = (uint8_t)value;
-  if (mini_gnb_c_extract_int(text, "coreset0_index", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "coreset0_index"); }
-  out_config->cell.coreset0_index = (uint8_t)value;
+  MINI_GNB_C_LOAD_INT("cell", "dl_arfcn", out_config->cell.dl_arfcn, uint32_t);
+  MINI_GNB_C_LOAD_INT("cell", "band", out_config->cell.band, uint16_t);
+  MINI_GNB_C_LOAD_INT("cell", "channel_bandwidth_MHz", out_config->cell.channel_bandwidth_mhz, uint16_t);
+  MINI_GNB_C_LOAD_INT("cell", "common_scs_khz", out_config->cell.common_scs_khz, uint16_t);
+  MINI_GNB_C_LOAD_INT("cell", "pci", out_config->cell.pci, uint16_t);
+  MINI_GNB_C_LOAD_STRING("cell", "plmn", out_config->cell.plmn);
+  MINI_GNB_C_LOAD_INT("cell", "tac", out_config->cell.tac, uint16_t);
+  MINI_GNB_C_LOAD_INT("cell", "ss0_index", out_config->cell.ss0_index, uint8_t);
+  MINI_GNB_C_LOAD_INT("cell", "coreset0_index", out_config->cell.coreset0_index, uint8_t);
 
-  if (mini_gnb_c_extract_int(text, "prach_config_index", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "prach_config_index"); }
-  out_config->prach.prach_config_index = (uint16_t)value;
-  if (mini_gnb_c_extract_int(text, "prach_root_seq_index", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "prach_root_seq_index"); }
-  out_config->prach.prach_root_seq_index = (uint16_t)value;
-  if (mini_gnb_c_extract_int(text, "zero_correlation_zone", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "zero_correlation_zone"); }
-  out_config->prach.zero_correlation_zone = (uint8_t)value;
-  if (mini_gnb_c_extract_int(text, "ra_resp_window", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "ra_resp_window"); }
-  out_config->prach.ra_resp_window = (uint8_t)value;
-  if (mini_gnb_c_extract_int(text, "msg3_delta_preamble", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "msg3_delta_preamble"); }
-  out_config->prach.msg3_delta_preamble = (int8_t)value;
+  MINI_GNB_C_LOAD_INT("prach", "prach_config_index", out_config->prach.prach_config_index, uint16_t);
+  MINI_GNB_C_LOAD_INT("prach", "prach_root_seq_index", out_config->prach.prach_root_seq_index, uint16_t);
+  MINI_GNB_C_LOAD_INT("prach", "zero_correlation_zone", out_config->prach.zero_correlation_zone, uint8_t);
+  MINI_GNB_C_LOAD_INT("prach", "ra_resp_window", out_config->prach.ra_resp_window, uint8_t);
+  MINI_GNB_C_LOAD_INT("prach", "msg3_delta_preamble", out_config->prach.msg3_delta_preamble, int8_t);
 
-  if (mini_gnb_c_extract_string(text, "device_driver", out_config->rf.device_driver, sizeof(out_config->rf.device_driver)) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing string config key", "device_driver"); }
-  if (mini_gnb_c_extract_string(text, "device_args", out_config->rf.device_args, sizeof(out_config->rf.device_args)) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing string config key", "device_args"); }
-  if (mini_gnb_c_extract_string(text, "clock_src", out_config->rf.clock_src, sizeof(out_config->rf.clock_src)) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing string config key", "clock_src"); }
-  if (mini_gnb_c_extract_double(text, "srate", &double_value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing floating config key", "srate"); }
-  out_config->rf.srate = double_value;
-  if (mini_gnb_c_extract_double(text, "tx_gain", &double_value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing floating config key", "tx_gain"); }
-  out_config->rf.tx_gain = double_value;
-  if (mini_gnb_c_extract_double(text, "rx_gain", &double_value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing floating config key", "rx_gain"); }
-  out_config->rf.rx_gain = double_value;
+  MINI_GNB_C_LOAD_STRING("rf", "device_driver", out_config->rf.device_driver);
+  MINI_GNB_C_LOAD_STRING("rf", "device_args", out_config->rf.device_args);
+  MINI_GNB_C_LOAD_STRING("rf", "clock_src", out_config->rf.clock_src);
+  MINI_GNB_C_LOAD_DOUBLE("rf", "srate", out_config->rf.srate);
+  MINI_GNB_C_LOAD_DOUBLE("rf", "tx_gain", out_config->rf.tx_gain);
+  MINI_GNB_C_LOAD_DOUBLE("rf", "rx_gain", out_config->rf.rx_gain);
 
-  if (mini_gnb_c_extract_int(text, "ssb_period_slots", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "ssb_period_slots"); }
-  out_config->broadcast.ssb_period_slots = value;
-  if (mini_gnb_c_extract_int(text, "sib1_period_slots", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "sib1_period_slots"); }
-  out_config->broadcast.sib1_period_slots = value;
+  MINI_GNB_C_LOAD_INT("broadcast", "ssb_period_slots", out_config->broadcast.ssb_period_slots, int);
+  MINI_GNB_C_LOAD_INT("broadcast", "sib1_period_slots", out_config->broadcast.sib1_period_slots, int);
 
-  if (mini_gnb_c_extract_int(text, "total_slots", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "total_slots"); }
-  out_config->sim.total_slots = value;
-  if (mini_gnb_c_extract_int(text, "slots_per_frame", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "slots_per_frame"); }
-  out_config->sim.slots_per_frame = value;
-  if (mini_gnb_c_extract_int(text, "msg3_delay_slots", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "msg3_delay_slots"); }
-  out_config->sim.msg3_delay_slots = value;
-  if (mini_gnb_c_extract_int(text, "msg4_delay_slots", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "msg4_delay_slots"); }
-  out_config->sim.msg4_delay_slots = value;
-  if (mini_gnb_c_extract_int(text, "prach_trigger_abs_slot", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "prach_trigger_abs_slot"); }
-  out_config->sim.prach_trigger_abs_slot = value;
-  if (mini_gnb_c_extract_int(text, "preamble_id", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "preamble_id"); }
-  out_config->sim.preamble_id = (uint8_t)value;
-  if (mini_gnb_c_extract_int(text, "ta_est", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "ta_est"); }
-  out_config->sim.ta_est = value;
-  if (mini_gnb_c_extract_double(text, "peak_metric", &double_value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing floating config key", "peak_metric"); }
-  out_config->sim.peak_metric = double_value;
-  if (mini_gnb_c_extract_bool(text, "msg3_crc_ok", &bool_value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing boolean config key", "msg3_crc_ok"); }
-  out_config->sim.msg3_crc_ok = bool_value;
-  if (mini_gnb_c_extract_double(text, "msg3_snr_db", &double_value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing floating config key", "msg3_snr_db"); }
-  out_config->sim.msg3_snr_db = double_value;
-  if (mini_gnb_c_extract_double(text, "msg3_evm", &double_value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing floating config key", "msg3_evm"); }
-  out_config->sim.msg3_evm = double_value;
-  if (mini_gnb_c_extract_string(text, "contention_id_hex", out_config->sim.contention_id_hex, sizeof(out_config->sim.contention_id_hex)) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing string config key", "contention_id_hex"); }
-  if (mini_gnb_c_extract_int(text, "establishment_cause", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "establishment_cause"); }
-  out_config->sim.establishment_cause = (uint8_t)value;
-  if (mini_gnb_c_extract_int(text, "ue_identity_type", &value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing integer config key", "ue_identity_type"); }
-  out_config->sim.ue_identity_type = (uint8_t)value;
-  if (mini_gnb_c_extract_string(text, "ue_identity_hex", out_config->sim.ue_identity_hex, sizeof(out_config->sim.ue_identity_hex)) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing string config key", "ue_identity_hex"); }
-  if (mini_gnb_c_extract_bool(text, "include_crnti_ce", &bool_value) != 0) { free(text); return mini_gnb_c_fail(error_message, error_message_size, "missing boolean config key", "include_crnti_ce"); }
-  out_config->sim.include_crnti_ce = bool_value;
+  MINI_GNB_C_LOAD_INT("sim", "total_slots", out_config->sim.total_slots, int);
+  MINI_GNB_C_LOAD_INT("sim", "slots_per_frame", out_config->sim.slots_per_frame, int);
+  MINI_GNB_C_LOAD_INT("sim", "msg3_delay_slots", out_config->sim.msg3_delay_slots, int);
+  MINI_GNB_C_LOAD_INT("sim", "msg4_delay_slots", out_config->sim.msg4_delay_slots, int);
+  MINI_GNB_C_LOAD_INT("sim", "prach_trigger_abs_slot", out_config->sim.prach_trigger_abs_slot, int);
+  MINI_GNB_C_LOAD_INT("sim", "preamble_id", out_config->sim.preamble_id, uint8_t);
+  MINI_GNB_C_LOAD_INT("sim", "ta_est", out_config->sim.ta_est, int);
+  MINI_GNB_C_LOAD_DOUBLE("sim", "peak_metric", out_config->sim.peak_metric);
+  MINI_GNB_C_LOAD_BOOL("sim", "msg3_crc_ok", out_config->sim.msg3_crc_ok);
+  MINI_GNB_C_LOAD_DOUBLE("sim", "msg3_snr_db", out_config->sim.msg3_snr_db);
+  MINI_GNB_C_LOAD_DOUBLE("sim", "msg3_evm", out_config->sim.msg3_evm);
+  MINI_GNB_C_LOAD_STRING("sim", "contention_id_hex", out_config->sim.contention_id_hex);
+  MINI_GNB_C_LOAD_INT("sim", "establishment_cause", out_config->sim.establishment_cause, uint8_t);
+  MINI_GNB_C_LOAD_INT("sim", "ue_identity_type", out_config->sim.ue_identity_type, uint8_t);
+  MINI_GNB_C_LOAD_STRING("sim", "ue_identity_hex", out_config->sim.ue_identity_hex);
+  MINI_GNB_C_LOAD_BOOL("sim", "include_crnti_ce", out_config->sim.include_crnti_ce);
 
   free(text);
   if (error_message != NULL && error_message_size > 0U) {

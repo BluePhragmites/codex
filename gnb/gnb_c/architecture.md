@@ -143,24 +143,25 @@ This is implemented in:
 The slot loop performs:
 
 1. create slot context
-2. receive mock radio burst
+2. receive mock UL radio burst
 3. expire old RA context if needed
-4. detect PRACH
+4. detect PRACH from the received UL burst
 5. create and queue RAR if PRACH exists
-6. pop due Msg3 UL grants
-7. decode Msg3
-8. MAC demux
-9. parse RRCSetupRequest
-10. build RRCSetup
-11. promote UE context
-12. schedule Msg4
-13. pop due DL grants
-14. add broadcast grants
-15. map DL grants into patches and IQ samples
-16. submit TX and export IQ
-17. mark RAR sent or Msg4 sent
-18. collect slot performance
-19. flush summary after loop end
+6. arm the expected Msg3 slot in the mock radio
+7. pop due Msg3 UL grants
+8. decode Msg3 only if a UL burst arrives at the granted slot
+9. MAC demux
+10. parse RRCSetupRequest
+11. build RRCSetup
+12. promote UE context
+13. schedule Msg4
+14. pop due DL grants
+15. add broadcast grants
+16. map DL grants into patches and IQ samples
+17. submit TX and export IQ
+18. mark RAR sent or Msg4 sent
+19. collect slot performance
+20. flush summary after loop end
 
 ## 6. Main Execution Flow
 
@@ -176,6 +177,7 @@ flowchart TD
   E --> F["ra_manager_on_prach()"]
   F --> G["scheduler_queue_rar()"]
   G --> G1["build_rar_pdu()"]
+  G --> G2["mock_radio_frontend_arm_msg3()"]
 
   D --> H["scheduler_pop_due_msg3_grants()"]
   H --> I["mock_msg3_receiver_decode()"]
@@ -204,11 +206,15 @@ flowchart TD
 The current implementation models the access procedure as:
 
 - Msg1
-  - PRACH detection
+  - mock radio injects a PRACH burst
+  - PRACH detector extracts a `PrachIndication`
 - Msg2
   - RAR build and scheduling
 - Msg3
-  - mock PUSCH/UL-SCH decode
+  - Msg2 decides the expected Msg3 slot through `msg3_delay_slots`
+  - mock radio injects a Msg3 burst only when that grant is armed
+  - if no burst arrives, the RA context eventually times out and the next PRACH can start a fresh attempt
+  - mock PUSCH/UL-SCH decode from the received UL burst
   - MAC parse
   - RRCSetupRequest parse
 - Msg4
@@ -240,6 +246,8 @@ These are loaded once at startup by:
   - current slot abstraction
 - `mini_gnb_c_prach_indication_t`
   - PRACH detection result
+- `mini_gnb_c_radio_burst_t`
+  - UL burst returned by the mock radio, including type, samples, and optional Msg3 MAC PDU
 - `mini_gnb_c_ul_grant_for_msg3_t`
   - Msg3 UL scheduling info
 - `mini_gnb_c_dl_grant_t`
@@ -352,9 +360,10 @@ Key functions:
 
 Responsibility:
 
-- inject one simulated PRACH event at configured slot
+- inspect the current UL burst returned by the mock radio
+- emit `PrachIndication` only when the burst type is `UL_BURST_PRACH`
 
-This is currently deterministic and controlled by config.
+This means PRACH is no longer triggered directly by the slot loop.
 
 ### 8.5 RA State Machine
 
@@ -425,9 +434,10 @@ Key functions:
 Responsibility:
 
 - create a simulated Msg3 MAC PDU
-- optionally include C-RNTI CE
-- include UL-CCCH SDU
-- control CRC result and quality fields
+- decode Msg3 only when the current slot has both:
+  - a due Msg3 UL grant
+  - a UL burst of type `UL_BURST_MSG3`
+- carry CRC, SNR, EVM, and MAC PDU from the received burst
 
 This is the current substitute for real PUSCH/UL-SCH decoding.
 
@@ -526,12 +536,18 @@ Key functions:
 Responsibility:
 
 - simulate RX timestamp input
+- inject initial PRACH and grant-driven Msg3 UL bursts
+- optionally retry with a new PRACH burst after Msg3 is missing
+- optionally read UL samples from `.cf32` files
 - accept DL patches
 - count TX bursts
 - export `.cf32` IQ files
 - export sidecar `.json` metadata
 
-The radio layer is where the toy waveform becomes an actual file artifact.
+The radio layer is where:
+
+- downlink toy waveforms become file artifacts
+- uplink mock RF data enters the simulator
 
 ### 8.13 Metrics Layer
 
@@ -586,13 +602,16 @@ Inside one slot:
 2. `mini_gnb_c_ra_manager_on_prach()`
 3. `mini_gnb_c_initial_access_scheduler_queue_rar()`
 4. `mini_gnb_c_build_rar_pdu()`
+5. `mini_gnb_c_mock_radio_frontend_arm_msg3()`
 
 Meaning:
 
-- detector finds Msg1
+- radio provides a PRACH burst
+- detector finds Msg1 from that burst
 - RA manager creates state
 - scheduler creates Msg2 and Msg3 UL grant
 - builder serializes RAR payload
+- radio is armed to expect Msg3 at the granted slot
 
 ### 9.3 Msg3 to Msg4 Relationships
 
@@ -608,7 +627,7 @@ Meaning:
 
 Meaning:
 
-- Msg3 grant becomes decoded MAC payload
+- Msg3 grant and the current UL burst together become a decoded MAC payload
 - MAC payload becomes CCCH message
 - CCCH message becomes request info
 - request info becomes RRCSetup
@@ -683,6 +702,8 @@ Broadcast path:
 Access path:
 
 - PRACH creates RAR + Msg3 UL grant
+- mock radio only emits Msg3 if the grant is armed and `msg3_present=true`
+- Msg3 miss can re-arm a future PRACH attempt
 - Msg3 success creates Msg4
 
 This means the DL schedule for a slot is:

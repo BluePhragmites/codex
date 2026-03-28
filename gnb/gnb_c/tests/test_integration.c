@@ -85,3 +85,34 @@ void test_integration_run(void) {
   free(iq_json);
   free(summary_json);
 }
+
+void test_integration_msg3_missing_retries_prach(void) {
+  char config_path[MINI_GNB_C_MAX_PATH];
+  char output_dir[MINI_GNB_C_MAX_PATH];
+  char error_message[256];
+  mini_gnb_c_config_t config;
+  mini_gnb_c_simulator_t simulator;
+  mini_gnb_c_run_summary_t summary;
+
+  mini_gnb_c_default_config_path(config_path, sizeof(config_path));
+  mini_gnb_c_require(mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) == 0,
+                     "expected config to load");
+
+  config.sim.msg3_present = false;
+  config.sim.total_slots = 18;
+  config.sim.prach_retry_delay_slots = 4;
+
+  mini_gnb_c_make_output_dir("test_integration_msg3_missing_c", output_dir, sizeof(output_dir));
+  mini_gnb_c_simulator_init(&simulator, &config, output_dir);
+  mini_gnb_c_require(mini_gnb_c_simulator_run(&simulator, &summary) == 0, "expected simulator run");
+
+  mini_gnb_c_require(summary.counters.prach_detect_ok == 2U, "expected initial PRACH and retry PRACH");
+  mini_gnb_c_require(summary.counters.rar_sent == 2U, "expected two RAR transmissions after retry");
+  mini_gnb_c_require(summary.counters.msg3_crc_ok == 0U, "expected no Msg3 CRC success");
+  mini_gnb_c_require(summary.counters.rrcsetup_sent == 0U, "expected no Msg4 when Msg3 is absent");
+  mini_gnb_c_require(summary.counters.ra_timeout == 2U, "expected timeout for each missing Msg3 attempt");
+  mini_gnb_c_require(summary.has_ra_context, "expected final RA context to remain visible in summary");
+  mini_gnb_c_require(summary.ra_context.state == MINI_GNB_C_RA_FAIL, "expected final RA state to be FAIL");
+  mini_gnb_c_require(summary.ra_context.detect_abs_slot == 10, "expected retry PRACH to become the final RA context");
+  mini_gnb_c_require(summary.ue_count == 0U, "expected no UE promotion without Msg3");
+}

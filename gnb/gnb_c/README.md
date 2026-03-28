@@ -55,14 +55,24 @@ The current C prototype keeps:
 
 - SSB/PBCH/MIB scheduling
 - SIB1 scheduling with `period + offset`
-- mock PRACH detection
+- mock radio RX bursts for PRACH and Msg3
+- PRACH detection driven by received UL burst rather than direct slot trigger
 - RAR generation and Msg3 UL grant
-- mock Msg3 decode
+- mock Msg3 decode from the UL grant slot
+- retry from Msg3 miss back to a new Msg1/PRACH attempt
 - MAC UL demux
 - `RRCSetupRequest` parsing
 - Msg4 generation with contention resolution identity and `RRCSetup`
 - YAML config with comment support
 - JSON trace, metrics, and summary artifacts in `out/`
+
+Useful `sim:` configuration keys:
+
+- `prach_trigger_abs_slot`: inject the first UL PRACH burst into the mock radio
+- `msg3_delay_slots`: used by Msg2/RAR to place the expected Msg3 slot
+- `msg3_present`: whether a UL Msg3 burst actually arrives at the granted slot
+- `prach_retry_delay_slots`: if Msg3 is missing, inject a retry PRACH burst after this delay
+- `ul_prach_cf32_path` / `ul_msg3_cf32_path`: optional external UL sample files; empty means generated toy bursts
 
 The current C prototype does not keep:
 

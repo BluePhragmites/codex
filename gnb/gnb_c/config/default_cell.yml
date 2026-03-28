@@ -50,11 +50,18 @@ sim:
   # Relative offsets for Msg3 and Msg4.
   msg3_delay_slots: 4
   msg4_delay_slots: 1
-  # Inject a mock PRACH at this absolute slot.
+  # Inject the first PRACH burst into the mock radio at this absolute slot.
   prach_trigger_abs_slot: 2
+  # If Msg3 is not seen, inject a retry PRACH burst after this many slots. Set -1 to disable.
+  prach_retry_delay_slots: 4
   preamble_id: 27
   ta_est: 11
   peak_metric: 18.5
+  # Whether the mock radio provides a Msg3 burst at the UL grant slot.
+  msg3_present: true
+  # Optional external UL samples. Leave empty to use generated toy bursts.
+  ul_prach_cf32_path: ""
+  ul_msg3_cf32_path: ""
   # Mock Msg3 quality indicators.
   msg3_crc_ok: true
   msg3_snr_db: 18.2

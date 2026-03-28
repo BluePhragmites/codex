@@ -17,6 +17,18 @@ const char* mini_gnb_c_dl_object_type_to_string(const mini_gnb_c_dl_object_type_
   return "DL_OBJ_UNKNOWN";
 }
 
+const char* mini_gnb_c_ul_burst_type_to_string(const mini_gnb_c_ul_burst_type_t type) {
+  switch (type) {
+    case MINI_GNB_C_UL_BURST_NONE:
+      return "UL_BURST_NONE";
+    case MINI_GNB_C_UL_BURST_PRACH:
+      return "UL_BURST_PRACH";
+    case MINI_GNB_C_UL_BURST_MSG3:
+      return "UL_BURST_MSG3";
+  }
+  return "UL_BURST_UNKNOWN";
+}
+
 const char* mini_gnb_c_ra_state_to_string(const mini_gnb_c_ra_state_t state) {
   switch (state) {
     case MINI_GNB_C_RA_IDLE:

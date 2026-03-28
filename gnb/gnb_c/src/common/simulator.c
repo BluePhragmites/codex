@@ -48,7 +48,7 @@ void mini_gnb_c_simulator_init(mini_gnb_c_simulator_t* simulator,
   simulator->config = *config;
   mini_gnb_c_metrics_trace_init(&simulator->metrics, output_dir);
   mini_gnb_c_slot_engine_init(&simulator->slot_engine, config);
-  mini_gnb_c_mock_radio_frontend_init(&simulator->radio, &config->rf);
+  mini_gnb_c_mock_radio_frontend_init(&simulator->radio, &config->rf, &config->sim);
   mini_gnb_c_broadcast_engine_init(&simulator->broadcast,
                                    &config->cell,
                                    &config->prach,
@@ -91,6 +91,17 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
 
     mini_gnb_c_slot_engine_make_slot(&simulator->slot_engine, abs_slot, &slot);
     mini_gnb_c_mock_radio_frontend_receive(&simulator->radio, &slot, &burst);
+    if (burst.ul_type != MINI_GNB_C_UL_BURST_NONE) {
+      mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                     "radio_rx",
+                                     "Received UL burst.",
+                                     slot.abs_slot,
+                                     "type=%s,nof_samples=%u,rnti=%u,preamble_id=%u",
+                                     mini_gnb_c_ul_burst_type_to_string(burst.ul_type),
+                                     burst.nof_samples,
+                                     burst.rnti,
+                                     burst.preamble_id);
+    }
     mini_gnb_c_ra_manager_expire(&simulator->ra_manager, &slot, &simulator->metrics);
 
     if (mini_gnb_c_mock_prach_detector_detect(&simulator->prach_detector, &slot, &burst, &prach) &&
@@ -113,6 +124,7 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
         mini_gnb_c_initial_access_scheduler_queue_rar(&simulator->scheduler,
                                                       &request,
                                                       &simulator->metrics);
+        mini_gnb_c_mock_radio_frontend_arm_msg3(&simulator->radio, &request.ul_grant);
       }
     }
 
@@ -124,7 +136,19 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
       mini_gnb_c_msg3_decode_indication_t msg3;
       char mac_pdu_hex[MINI_GNB_C_MAX_PAYLOAD * 2U + 1U];
 
-      if (!mini_gnb_c_mock_msg3_receiver_decode(&simulator->msg3_receiver, &slot, &msg3_grants[i], &msg3)) {
+      if (!mini_gnb_c_mock_msg3_receiver_decode(&simulator->msg3_receiver,
+                                                &slot,
+                                                &msg3_grants[i],
+                                                &burst,
+                                                &msg3)) {
+        mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                       "pusch_msg3_receiver",
+                                       "No Msg3 burst decoded for due UL grant.",
+                                       slot.abs_slot,
+                                       "rnti=%u,expected_abs_slot=%d,ul_burst=%s",
+                                       msg3_grants[i].tc_rnti,
+                                       msg3_grants[i].abs_slot,
+                                       mini_gnb_c_ul_burst_type_to_string(burst.ul_type));
         continue;
       }
 

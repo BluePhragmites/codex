@@ -24,6 +24,12 @@ typedef enum {
 } mini_gnb_c_dl_object_type_t;
 
 typedef enum {
+  MINI_GNB_C_UL_BURST_NONE = 0,
+  MINI_GNB_C_UL_BURST_PRACH = 1,
+  MINI_GNB_C_UL_BURST_MSG3 = 2
+} mini_gnb_c_ul_burst_type_t;
+
+typedef enum {
   MINI_GNB_C_RA_IDLE = 0,
   MINI_GNB_C_RA_PRACH_DETECTED = 1,
   MINI_GNB_C_RA_TC_RNTI_ASSIGNED = 2,
@@ -86,12 +92,16 @@ typedef struct {
   int msg3_delay_slots;
   int msg4_delay_slots;
   int prach_trigger_abs_slot;
+  int prach_retry_delay_slots;
   uint8_t preamble_id;
   int ta_est;
   double peak_metric;
+  bool msg3_present;
   bool msg3_crc_ok;
   double msg3_snr_db;
   double msg3_evm;
+  char ul_prach_cf32_path[MINI_GNB_C_MAX_PATH];
+  char ul_msg3_cf32_path[MINI_GNB_C_MAX_PATH];
   char contention_id_hex[32];
   uint8_t establishment_cause;
   uint8_t ue_identity_type;
@@ -119,6 +129,15 @@ typedef struct {
   uint32_t sfn;
   uint16_t slot;
   uint32_t nof_samples;
+  mini_gnb_c_ul_burst_type_t ul_type;
+  uint16_t rnti;
+  uint8_t preamble_id;
+  int ta_est;
+  double peak_metric;
+  double snr_db;
+  double evm;
+  mini_gnb_c_buffer_t mac_pdu;
+  mini_gnb_c_complexf_t samples[MINI_GNB_C_MAX_IQ_SAMPLES];
   mini_gnb_c_radio_status_t status;
 } mini_gnb_c_radio_burst_t;
 
@@ -294,6 +313,7 @@ typedef struct {
 } mini_gnb_c_run_summary_t;
 
 const char* mini_gnb_c_dl_object_type_to_string(mini_gnb_c_dl_object_type_t type);
+const char* mini_gnb_c_ul_burst_type_to_string(mini_gnb_c_ul_burst_type_t type);
 const char* mini_gnb_c_ra_state_to_string(mini_gnb_c_ra_state_t state);
 
 void mini_gnb_c_buffer_reset(mini_gnb_c_buffer_t* buffer);

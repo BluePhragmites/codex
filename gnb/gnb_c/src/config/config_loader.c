@@ -324,12 +324,16 @@ int mini_gnb_c_load_config(const char* path,
   MINI_GNB_C_LOAD_INT("sim", "msg3_delay_slots", out_config->sim.msg3_delay_slots, int);
   MINI_GNB_C_LOAD_INT("sim", "msg4_delay_slots", out_config->sim.msg4_delay_slots, int);
   MINI_GNB_C_LOAD_INT("sim", "prach_trigger_abs_slot", out_config->sim.prach_trigger_abs_slot, int);
+  MINI_GNB_C_LOAD_INT("sim", "prach_retry_delay_slots", out_config->sim.prach_retry_delay_slots, int);
   MINI_GNB_C_LOAD_INT("sim", "preamble_id", out_config->sim.preamble_id, uint8_t);
   MINI_GNB_C_LOAD_INT("sim", "ta_est", out_config->sim.ta_est, int);
   MINI_GNB_C_LOAD_DOUBLE("sim", "peak_metric", out_config->sim.peak_metric);
+  MINI_GNB_C_LOAD_BOOL("sim", "msg3_present", out_config->sim.msg3_present);
   MINI_GNB_C_LOAD_BOOL("sim", "msg3_crc_ok", out_config->sim.msg3_crc_ok);
   MINI_GNB_C_LOAD_DOUBLE("sim", "msg3_snr_db", out_config->sim.msg3_snr_db);
   MINI_GNB_C_LOAD_DOUBLE("sim", "msg3_evm", out_config->sim.msg3_evm);
+  MINI_GNB_C_LOAD_STRING("sim", "ul_prach_cf32_path", out_config->sim.ul_prach_cf32_path);
+  MINI_GNB_C_LOAD_STRING("sim", "ul_msg3_cf32_path", out_config->sim.ul_msg3_cf32_path);
   MINI_GNB_C_LOAD_STRING("sim", "contention_id_hex", out_config->sim.contention_id_hex);
   MINI_GNB_C_LOAD_INT("sim", "establishment_cause", out_config->sim.establishment_cause, uint8_t);
   MINI_GNB_C_LOAD_INT("sim", "ue_identity_type", out_config->sim.ue_identity_type, uint8_t);
@@ -355,6 +359,8 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                "  ss0_index=%u coreset0_index=%u ssb_period_slots=%d sib1_period_slots=%d sib1_offset_slot=%d\n"
                "RA config summary:\n"
                "  prach_config_index=%u root_seq=%u zero_corr=%u ra_resp_window=%u msg3_delta_preamble=%d\n"
+               "UL input summary:\n"
+               "  prach_trigger_abs_slot=%d prach_retry_delay_slots=%d msg3_delay_slots=%d msg3_present=%s\n"
                "RF config summary:\n"
                "  driver=%s clock=%s srate=%g tx_gain=%g rx_gain=%g",
                config->cell.pci,
@@ -374,6 +380,10 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                config->prach.zero_correlation_zone,
                config->prach.ra_resp_window,
                config->prach.msg3_delta_preamble,
+               config->sim.prach_trigger_abs_slot,
+               config->sim.prach_retry_delay_slots,
+               config->sim.msg3_delay_slots,
+               config->sim.msg3_present ? "true" : "false",
                config->rf.device_driver,
                config->rf.clock_src,
                config->rf.srate,

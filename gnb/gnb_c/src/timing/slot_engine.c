@@ -33,7 +33,7 @@ void mini_gnb_c_slot_engine_make_slot(const mini_gnb_c_slot_engine_t* engine,
   out_slot->has_sib1 = mini_gnb_c_is_periodic_slot(abs_slot,
                                                    engine->config.broadcast.sib1_period_slots,
                                                    engine->config.broadcast.sib1_offset_slot);
-  out_slot->has_prach_occasion = abs_slot == engine->config.sim.prach_trigger_abs_slot;
   out_slot->is_ul_slot = true;
   out_slot->is_dl_slot = true;
+  out_slot->has_prach_occasion = out_slot->is_ul_slot;
 }

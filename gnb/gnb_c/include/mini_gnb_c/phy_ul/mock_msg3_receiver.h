@@ -15,6 +15,7 @@ void mini_gnb_c_mock_msg3_receiver_init(mini_gnb_c_mock_msg3_receiver_t* receive
 bool mini_gnb_c_mock_msg3_receiver_decode(const mini_gnb_c_mock_msg3_receiver_t* receiver,
                                           const mini_gnb_c_slot_indication_t* slot,
                                           const mini_gnb_c_ul_grant_for_msg3_t* ul_grant,
+                                          const mini_gnb_c_radio_burst_t* burst,
                                           mini_gnb_c_msg3_decode_indication_t* out_msg3);
 
 #endif

@@ -7,6 +7,7 @@
 #include "mini_gnb_c/mac/mac_ul_demux.h"
 #include "mini_gnb_c/phy_dl/msg4_builder.h"
 #include "mini_gnb_c/phy_ul/mock_msg3_receiver.h"
+#include "mini_gnb_c/radio/mock_radio_frontend.h"
 #include "mini_gnb_c/rrc/rrc_ccch_stub.h"
 #include "mini_gnb_c/timing/slot_engine.h"
 
@@ -18,8 +19,10 @@ void test_mac_rrc_and_msg4_contention_identity(void) {
   mini_gnb_c_config_t config;
   mini_gnb_c_slot_engine_t slot_engine;
   mini_gnb_c_mock_msg3_receiver_t msg3_receiver;
+  mini_gnb_c_mock_radio_frontend_t radio;
   mini_gnb_c_slot_indication_t msg3_slot;
   mini_gnb_c_ul_grant_for_msg3_t msg3_grant;
+  mini_gnb_c_radio_burst_t burst;
   mini_gnb_c_msg3_decode_indication_t msg3;
   mini_gnb_c_mac_ul_parse_result_t mac_result;
   mini_gnb_c_rrc_setup_request_info_t request_info;
@@ -32,6 +35,7 @@ void test_mac_rrc_and_msg4_contention_identity(void) {
                      "expected config to load");
   mini_gnb_c_slot_engine_init(&slot_engine, &config);
   mini_gnb_c_mock_msg3_receiver_init(&msg3_receiver, &config.sim);
+  mini_gnb_c_mock_radio_frontend_init(&radio, &config.rf, &config.sim);
 
   mini_gnb_c_slot_engine_make_slot(&slot_engine,
                                    config.sim.prach_trigger_abs_slot + config.sim.msg3_delay_slots,
@@ -45,7 +49,14 @@ void test_mac_rrc_and_msg4_contention_identity(void) {
   msg3_grant.k2 = 4U;
   msg3_grant.ta_cmd = (uint8_t)config.sim.ta_est;
 
-  mini_gnb_c_require(mini_gnb_c_mock_msg3_receiver_decode(&msg3_receiver, &msg3_slot, &msg3_grant, &msg3),
+  mini_gnb_c_mock_radio_frontend_arm_msg3(&radio, &msg3_grant);
+  mini_gnb_c_mock_radio_frontend_receive(&radio, &msg3_slot, &burst);
+
+  mini_gnb_c_require(mini_gnb_c_mock_msg3_receiver_decode(&msg3_receiver,
+                                                          &msg3_slot,
+                                                          &msg3_grant,
+                                                          &burst,
+                                                          &msg3),
                      "expected mock Msg3 decode");
   mini_gnb_c_require(msg3.crc_ok, "expected Msg3 CRC success in default config");
 

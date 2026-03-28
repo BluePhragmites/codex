@@ -18,6 +18,8 @@ void test_config_loads(void) {
   mini_gnb_c_require(config.prach.ra_resp_window == 4U, "expected ra response window");
   mini_gnb_c_require(strcmp(config.rf.device_driver, "mock") == 0, "expected mock radio frontend");
   mini_gnb_c_require(config.sim.total_slots == 18, "expected total slot count");
+  mini_gnb_c_require(config.sim.prach_retry_delay_slots == 4, "expected PRACH retry delay");
+  mini_gnb_c_require(config.sim.msg3_present, "expected Msg3 burst enabled");
   mini_gnb_c_require(config.sim.include_crnti_ce, "expected simulated C-RNTI CE");
   mini_gnb_c_require(config.broadcast.sib1_period_slots == 8, "expected SIB1 period");
   mini_gnb_c_require(config.broadcast.sib1_offset_slot == 4, "expected SIB1 offset");

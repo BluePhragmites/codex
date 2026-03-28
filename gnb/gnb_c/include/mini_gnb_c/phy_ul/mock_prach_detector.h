@@ -7,7 +7,6 @@
 
 typedef struct {
   mini_gnb_c_sim_config_t config;
-  bool fired;
 } mini_gnb_c_mock_prach_detector_t;
 
 void mini_gnb_c_mock_prach_detector_init(mini_gnb_c_mock_prach_detector_t* detector,

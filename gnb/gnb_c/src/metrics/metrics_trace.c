@@ -105,6 +105,8 @@ static void mini_gnb_c_write_counters_json(FILE* file, const mini_gnb_c_counters
   fprintf(file,
           "{\"prach_detect_ok\":%llu,\"prach_false_alarm\":%llu,\"rar_sent\":%llu,"
           "\"msg3_crc_ok\":%llu,\"msg3_crc_fail\":%llu,\"rrcsetup_sent\":%llu,"
+          "\"pucch_sr_detect_ok\":%llu,\"ul_bsr_rx_ok\":%llu,\"ul_bsr_crc_fail\":%llu,"
+          "\"dl_data_sent\":%llu,\"ul_data_rx_ok\":%llu,\"ul_data_crc_fail\":%llu,"
           "\"ra_timeout\":%llu}",
           (unsigned long long)counters->prach_detect_ok,
           (unsigned long long)counters->prach_false_alarm,
@@ -112,6 +114,12 @@ static void mini_gnb_c_write_counters_json(FILE* file, const mini_gnb_c_counters
           (unsigned long long)counters->msg3_crc_ok,
           (unsigned long long)counters->msg3_crc_fail,
           (unsigned long long)counters->rrcsetup_sent,
+          (unsigned long long)counters->pucch_sr_detect_ok,
+          (unsigned long long)counters->ul_bsr_rx_ok,
+          (unsigned long long)counters->ul_bsr_crc_fail,
+          (unsigned long long)counters->dl_data_sent,
+          (unsigned long long)counters->ul_data_rx_ok,
+          (unsigned long long)counters->ul_data_crc_fail,
           (unsigned long long)counters->ra_timeout);
 }
 
@@ -206,10 +214,27 @@ static void mini_gnb_c_write_ue_contexts_json(FILE* file,
             ue_contexts[i].c_rnti);
     mini_gnb_c_json_write_string(file, contention_id_hex);
     fprintf(file,
-            ",\"create_abs_slot\":%d,\"rrc_setup_sent\":%s,\"sent_abs_slot\":%d}",
+            ",\"create_abs_slot\":%d,\"rrc_setup_sent\":%s,\"sent_abs_slot\":%d,"
+            "\"traffic_plan_scheduled\":%s,\"dl_data_sent\":%s,\"dl_data_abs_slot\":%d,"
+            "\"pucch_sr_detected\":%s,\"pucch_sr_abs_slot\":%d,"
+            "\"ul_bsr_received\":%s,\"ul_bsr_abs_slot\":%d,\"ul_bsr_buffer_size_bytes\":%d,"
+            "\"small_ul_grant_abs_slot\":%d,\"large_ul_grant_abs_slot\":%d,"
+            "\"ul_data_received\":%s,\"ul_data_abs_slot\":%d}",
             ue_contexts[i].create_abs_slot,
             ue_contexts[i].rrc_setup_sent ? "true" : "false",
-            ue_contexts[i].sent_abs_slot);
+            ue_contexts[i].sent_abs_slot,
+            ue_contexts[i].traffic_plan_scheduled ? "true" : "false",
+            ue_contexts[i].dl_data_sent ? "true" : "false",
+            ue_contexts[i].dl_data_abs_slot,
+            ue_contexts[i].pucch_sr_detected ? "true" : "false",
+            ue_contexts[i].pucch_sr_abs_slot,
+            ue_contexts[i].ul_bsr_received ? "true" : "false",
+            ue_contexts[i].ul_bsr_abs_slot,
+            ue_contexts[i].ul_bsr_buffer_size_bytes,
+            ue_contexts[i].small_ul_grant_abs_slot,
+            ue_contexts[i].large_ul_grant_abs_slot,
+            ue_contexts[i].ul_data_received ? "true" : "false",
+            ue_contexts[i].ul_data_abs_slot);
     if (i + 1U != ue_count) {
       fputc(',', file);
     }
@@ -282,6 +307,18 @@ void mini_gnb_c_metrics_trace_increment_named(mini_gnb_c_metrics_trace_t* metric
     metrics->counters.msg3_crc_fail += value;
   } else if (strcmp(counter_name, "rrcsetup_sent") == 0) {
     metrics->counters.rrcsetup_sent += value;
+  } else if (strcmp(counter_name, "pucch_sr_detect_ok") == 0) {
+    metrics->counters.pucch_sr_detect_ok += value;
+  } else if (strcmp(counter_name, "ul_bsr_rx_ok") == 0) {
+    metrics->counters.ul_bsr_rx_ok += value;
+  } else if (strcmp(counter_name, "ul_bsr_crc_fail") == 0) {
+    metrics->counters.ul_bsr_crc_fail += value;
+  } else if (strcmp(counter_name, "dl_data_sent") == 0) {
+    metrics->counters.dl_data_sent += value;
+  } else if (strcmp(counter_name, "ul_data_rx_ok") == 0) {
+    metrics->counters.ul_data_rx_ok += value;
+  } else if (strcmp(counter_name, "ul_data_crc_fail") == 0) {
+    metrics->counters.ul_data_crc_fail += value;
   } else if (strcmp(counter_name, "ra_timeout") == 0) {
     metrics->counters.ra_timeout += value;
   }

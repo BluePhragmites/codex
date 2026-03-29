@@ -13,6 +13,7 @@
 #define MINI_GNB_C_MAX_LCID_SEQUENCE 8
 #define MINI_GNB_C_MAX_GRANTS 8
 #define MINI_GNB_C_MAX_MSG3_GRANTS 4
+#define MINI_GNB_C_MAX_UL_DATA_GRANTS 4
 #define MINI_GNB_C_MAX_UES 1
 #define MINI_GNB_C_MAX_IQ_SAMPLES 2048
 
@@ -20,14 +21,25 @@ typedef enum {
   MINI_GNB_C_DL_OBJ_SSB = 0,
   MINI_GNB_C_DL_OBJ_SIB1 = 1,
   MINI_GNB_C_DL_OBJ_RAR = 2,
-  MINI_GNB_C_DL_OBJ_MSG4 = 3
+  MINI_GNB_C_DL_OBJ_MSG4 = 3,
+  MINI_GNB_C_DL_OBJ_DATA = 4,
+  MINI_GNB_C_DL_OBJ_PDCCH = 5
 } mini_gnb_c_dl_object_type_t;
 
 typedef enum {
   MINI_GNB_C_UL_BURST_NONE = 0,
   MINI_GNB_C_UL_BURST_PRACH = 1,
-  MINI_GNB_C_UL_BURST_MSG3 = 2
+  MINI_GNB_C_UL_BURST_MSG3 = 2,
+  MINI_GNB_C_UL_BURST_PUCCH_SR = 3,
+  MINI_GNB_C_UL_BURST_DATA = 4
 } mini_gnb_c_ul_burst_type_t;
+
+typedef enum {
+  MINI_GNB_C_DCI_FORMAT_0_0 = 0,
+  MINI_GNB_C_DCI_FORMAT_0_1 = 1,
+  MINI_GNB_C_DCI_FORMAT_1_0 = 2,
+  MINI_GNB_C_DCI_FORMAT_1_1 = 3
+} mini_gnb_c_dci_format_t;
 
 typedef enum {
   MINI_GNB_C_RA_IDLE = 0,
@@ -40,6 +52,11 @@ typedef enum {
   MINI_GNB_C_RA_DONE = 7,
   MINI_GNB_C_RA_FAIL = 8
 } mini_gnb_c_ra_state_t;
+
+typedef enum {
+  MINI_GNB_C_UL_DATA_PURPOSE_BSR = 0,
+  MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD = 1
+} mini_gnb_c_ul_data_purpose_t;
 
 typedef struct {
   uint8_t bytes[MINI_GNB_C_MAX_PAYLOAD];
@@ -100,8 +117,19 @@ typedef struct {
   bool msg3_crc_ok;
   double msg3_snr_db;
   double msg3_evm;
+  bool post_msg4_traffic_enabled;
+  int post_msg4_dl_data_delay_slots;
+  int post_msg4_ul_grant_delay_slots;
+  int post_msg4_ul_data_k2;
+  bool ul_data_present;
+  bool ul_data_crc_ok;
+  double ul_data_snr_db;
+  double ul_data_evm;
+  int ul_bsr_buffer_size_bytes;
   char ul_prach_cf32_path[MINI_GNB_C_MAX_PATH];
   char ul_msg3_cf32_path[MINI_GNB_C_MAX_PATH];
+  char ul_input_dir[MINI_GNB_C_MAX_PATH];
+  char ul_data_hex[MINI_GNB_C_MAX_PAYLOAD * 2 + 1];
   char contention_id_hex[32];
   uint8_t establishment_cause;
   uint8_t ue_identity_type;
@@ -136,6 +164,8 @@ typedef struct {
   double peak_metric;
   double snr_db;
   double evm;
+  bool crc_ok_override_valid;
+  bool crc_ok_override;
   mini_gnb_c_buffer_t mac_pdu;
   mini_gnb_c_complexf_t samples[MINI_GNB_C_MAX_IQ_SAMPLES];
   mini_gnb_c_radio_status_t status;
@@ -175,6 +205,22 @@ typedef struct {
 } mini_gnb_c_ul_grant_for_msg3_t;
 
 typedef struct {
+  bool valid;
+  mini_gnb_c_dci_format_t format;
+  uint16_t rnti;
+  uint16_t coreset_prb_start;
+  uint16_t coreset_prb_len;
+  uint16_t scheduled_prb_start;
+  uint16_t scheduled_prb_len;
+  uint8_t mcs;
+  int k2;
+  int scheduled_abs_slot;
+  mini_gnb_c_dl_object_type_t scheduled_dl_type;
+  mini_gnb_c_ul_burst_type_t scheduled_ul_type;
+  mini_gnb_c_ul_data_purpose_t scheduled_ul_purpose;
+} mini_gnb_c_pdcch_dci_t;
+
+typedef struct {
   mini_gnb_c_dl_object_type_t type;
   int abs_slot;
   uint16_t rnti;
@@ -183,6 +229,7 @@ typedef struct {
   uint8_t mcs;
   uint8_t rv;
   uint8_t harq_id;
+  mini_gnb_c_pdcch_dci_t pdcch;
   mini_gnb_c_buffer_t payload;
 } mini_gnb_c_dl_grant_t;
 
@@ -197,6 +244,8 @@ typedef struct {
   mini_gnb_c_dl_object_type_t type;
   uint16_t rnti;
   size_t payload_len;
+  mini_gnb_c_pdcch_dci_t pdcch;
+  mini_gnb_c_buffer_t payload;
   uint16_t fft_size;
   uint16_t cp_length;
   size_t sample_count;
@@ -243,6 +292,18 @@ typedef struct {
   int create_abs_slot;
   bool rrc_setup_sent;
   int sent_abs_slot;
+  bool traffic_plan_scheduled;
+  bool dl_data_sent;
+  int dl_data_abs_slot;
+  bool pucch_sr_detected;
+  int pucch_sr_abs_slot;
+  bool ul_bsr_received;
+  int ul_bsr_abs_slot;
+  int ul_bsr_buffer_size_bytes;
+  int small_ul_grant_abs_slot;
+  int large_ul_grant_abs_slot;
+  bool ul_data_received;
+  int ul_data_abs_slot;
 } mini_gnb_c_ue_context_t;
 
 typedef struct {
@@ -292,12 +353,47 @@ typedef struct {
 } mini_gnb_c_msg4_schedule_request_t;
 
 typedef struct {
+  uint16_t c_rnti;
+  int abs_slot;
+  mini_gnb_c_buffer_t payload;
+} mini_gnb_c_dl_data_schedule_request_t;
+
+typedef struct {
+  uint16_t c_rnti;
+  int pdcch_abs_slot;
+  int abs_slot;
+  uint16_t prb_start;
+  uint16_t prb_len;
+  uint8_t mcs;
+  uint8_t k2;
+  mini_gnb_c_ul_data_purpose_t purpose;
+} mini_gnb_c_ul_data_schedule_request_t;
+
+typedef struct {
+  uint16_t c_rnti;
+  int pdcch_abs_slot;
+  int abs_slot;
+  uint16_t prb_start;
+  uint16_t prb_len;
+  uint8_t mcs;
+  uint8_t k2;
+  mini_gnb_c_ul_data_purpose_t purpose;
+  mini_gnb_c_pdcch_dci_t pdcch;
+} mini_gnb_c_ul_data_grant_t;
+
+typedef struct {
   uint64_t prach_detect_ok;
   uint64_t prach_false_alarm;
   uint64_t rar_sent;
   uint64_t msg3_crc_ok;
   uint64_t msg3_crc_fail;
   uint64_t rrcsetup_sent;
+  uint64_t pucch_sr_detect_ok;
+  uint64_t ul_bsr_rx_ok;
+  uint64_t ul_bsr_crc_fail;
+  uint64_t dl_data_sent;
+  uint64_t ul_data_rx_ok;
+  uint64_t ul_data_crc_fail;
   uint64_t ra_timeout;
 } mini_gnb_c_counters_t;
 
@@ -314,6 +410,7 @@ typedef struct {
 
 const char* mini_gnb_c_dl_object_type_to_string(mini_gnb_c_dl_object_type_t type);
 const char* mini_gnb_c_ul_burst_type_to_string(mini_gnb_c_ul_burst_type_t type);
+const char* mini_gnb_c_dci_format_to_string(mini_gnb_c_dci_format_t format);
 const char* mini_gnb_c_ra_state_to_string(mini_gnb_c_ra_state_t state);
 
 void mini_gnb_c_buffer_reset(mini_gnb_c_buffer_t* buffer);

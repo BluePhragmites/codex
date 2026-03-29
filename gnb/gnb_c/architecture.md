@@ -86,7 +86,7 @@ Subsystem mapping:
 - `ra`
   - RA state machine
 - `scheduler`
-  - pending RAR, Msg3 UL grants, Msg4 DL grants
+  - pending RAR, Msg3 UL grants, Msg4 DL grants, post-attach DL/UL grants
 - `phy_ul`
   - mock PRACH detect and mock Msg3 decode
 - `mac`
@@ -143,7 +143,7 @@ This is implemented in:
 The slot loop performs:
 
 1. create slot context
-2. receive mock UL radio burst
+2. receive UL radio burst from slot input files or mock injection
 3. expire old RA context if needed
 4. detect PRACH from the received UL burst
 5. create and queue RAR if PRACH exists
@@ -155,13 +155,19 @@ The slot loop performs:
 11. build RRCSetup
 12. promote UE context
 13. schedule Msg4
-14. pop due DL grants
-15. add broadcast grants
-16. map DL grants into patches and IQ samples
-17. submit TX and export IQ
-18. mark RAR sent or Msg4 sent
-19. collect slot performance
-20. flush summary after loop end
+14. after Msg4, queue a mock `PUCCH` config on `DCI1_1 + PDSCH`
+15. detect `PUCCH SR` and queue a compact `DCI0_1` grant for `BSR`
+16. decode the granted `BSR` and queue a larger `DCI0_1` grant for UL payload
+17. pop due scheduled UL data receptions
+18. pop due UL data grants and export standalone `DCI0_1`
+19. pop due DL grants
+20. add broadcast grants
+21. attach companion PDCCH/DCI metadata to scheduled PDSCH objects
+22. map DL grants into patches and IQ samples
+23. submit TX and export IQ / text transport / companion PDCCH text
+24. mark RAR sent, Msg4 sent, or DL data sent
+25. collect slot performance
+26. flush summary after loop end
 
 ## 6. Main Execution Flow
 
@@ -188,6 +194,11 @@ flowchart TD
   M --> N["ra_manager_on_msg3_success()"]
   N --> O["scheduler_queue_msg4()"]
   O --> O1["build_msg4_pdu()"]
+  O1 --> P1["queue PUCCH config DL data"]
+  P1 --> P2["detect PUCCH SR"]
+  P2 --> P3["queue compact UL BSR grant"]
+  P3 --> P4["decode BSR"]
+  P4 --> P5["queue large UL payload grant"]
 
   D --> P["scheduler_pop_due_downlink()"]
   P --> Q["broadcast_schedule()"]
@@ -206,20 +217,30 @@ flowchart TD
 The current implementation models the access procedure as:
 
 - Msg1
-  - mock radio injects a PRACH burst
+  - mock radio receives a PRACH burst either from `slot_<abs_slot>_UL_OBJ_PRACH.txt`
+    or `slot_<abs_slot>_UL_OBJ_PRACH.cf32`, or from the synthetic PRACH injector
   - PRACH detector extracts a `PrachIndication`
 - Msg2
   - RAR build and scheduling
+  - companion PDCCH export for the scheduled PDSCH object
 - Msg3
   - Msg2 decides the expected Msg3 slot through `msg3_delay_slots`
-  - mock radio injects a Msg3 burst only when that grant is armed
+  - mock radio receives a Msg3 burst either from `slot_<abs_slot>_UL_OBJ_MSG3.txt`
+    or `slot_<abs_slot>_UL_OBJ_MSG3.cf32`, or from the synthetic grant-driven injector
   - if no burst arrives, the RA context eventually times out and the next PRACH can start a fresh attempt
   - mock PUSCH/UL-SCH decode from the received UL burst
   - MAC parse
   - RRCSetupRequest parse
 - Msg4
   - build contention resolution identity + RRCSetup
-  - schedule DL object and transmit
+  - schedule DL object and companion PDCCH metadata, then transmit
+- Connected follow-up
+  - after Msg4, queue one mock downlink `DATA` transmission with `DCI1_1 + PDSCH` carrying a `PUCCH` config string
+  - detect one mock UE `UL_OBJ_PUCCH_SR` burst
+  - queue one compact uplink `BSR` grant with standalone `DCI0_1`
+  - decode one text `BSR|bytes=...` payload from the UE
+  - queue one larger uplink `DATA` grant with standalone `DCI0_1`
+  - receive one mock UE `UL_OBJ_DATA` burst on that larger grant
 
 ## 7. Key Data Structures
 
@@ -250,8 +271,10 @@ These are loaded once at startup by:
   - UL burst returned by the mock radio, including type, samples, and optional Msg3 MAC PDU
 - `mini_gnb_c_ul_grant_for_msg3_t`
   - Msg3 UL scheduling info
+- `mini_gnb_c_pdcch_dci_t`
+  - minimal mock PDCCH/DCI scheduling metadata
 - `mini_gnb_c_dl_grant_t`
-  - DL object scheduling info
+  - DL object scheduling info plus optional companion PDCCH metadata
 - `mini_gnb_c_msg3_decode_indication_t`
   - Msg3 decode result
 - `mini_gnb_c_mac_ul_parse_result_t`
@@ -337,6 +360,7 @@ Responsibility:
 - generate MIB-like payload text
 - generate SIB1-like payload text
 - insert SSB and SIB1 into current DL schedule
+- attach mock `DCI1_0` metadata for SIB1 because it is carried on scheduled PDSCH
 
 Current SIB1 timing model:
 
@@ -410,15 +434,21 @@ Responsibility:
 
 - keep pending DL objects
 - keep pending Msg3 UL grants
+- keep pending UL data grants and UL data receive expectations
 - convert RA requests into scheduled objects
 - build RAR via `mini_gnb_c_build_rar_pdu()`
 - build Msg4 via `mini_gnb_c_build_msg4_pdu()`
+- attach companion mock PDCCH metadata for scheduled DL objects
 
 This is intentionally not a generic scheduler. It only supports:
 
 - RAR
 - Msg3 UL grant
 - Msg4
+- one post-Msg4 downlink `DATA` grant for `PUCCH` config
+- one compact post-Msg4 uplink `BSR` grant
+- one larger post-Msg4 uplink `DATA` grant
+- companion PDCCH metadata for those DL objects
 
 ### 8.7 Msg3 Receiver
 
@@ -440,6 +470,11 @@ Responsibility:
 - carry CRC, SNR, EVM, and MAC PDU from the received burst
 
 This is the current substitute for real PUSCH/UL-SCH decoding.
+
+The simulator also contains a minimal scheduled UL decode path for
+`UL_BURST_PUCCH_SR` and `UL_BURST_DATA`. `BSR` is parsed as a text payload
+(`BSR|bytes=...`), while the larger UL payload remains intentionally opaque and
+does not run full MAC parsing.
 
 ### 8.8 MAC UL Demux
 
@@ -514,6 +549,7 @@ Responsibility:
 
 - convert DL grants into `mini_gnb_c_tx_grid_patch_t`
 - fill metadata such as PRB, symbol span, object type
+- carry companion PDCCH/DCI metadata forward to the radio export layer
 - generate a toy OFDM-like waveform
 - store complex samples into patch buffers
 
@@ -530,16 +566,21 @@ Key functions:
 - `mini_gnb_c_mock_radio_frontend_init()`
 - `mini_gnb_c_mock_radio_frontend_receive()`
 - `mini_gnb_c_mock_radio_frontend_submit_tx()`
+- `mini_gnb_c_write_transport_text()`
 - `mini_gnb_c_write_cf32()`
 - `mini_gnb_c_write_iq_metadata()`
 
 Responsibility:
 
 - simulate RX timestamp input
-- inject initial PRACH and grant-driven Msg3 UL bursts
+- optionally read slot-driven UL bursts from `sim.ul_input_dir`
+  using text files first and `.cf32` as fallback
+- otherwise inject initial PRACH and grant-driven Msg3 UL bursts
 - optionally retry with a new PRACH burst after Msg3 is missing
-- optionally read UL samples from `.cf32` files
+- parse UL control fields, `PUCCH_SR`, and Msg3/BSR/data payloads from text transport files
 - accept DL patches
+- export DL scheduling and payload as text transport files
+- export companion `PDCCH/DCI` text files for scheduled PDSCH objects
 - count TX bursts
 - export `.cf32` IQ files
 - export sidecar `.json` metadata
@@ -649,9 +690,10 @@ Meaning:
 
 - all DL objects due in current slot are gathered
 - broadcast objects are appended
+- scheduled PDSCH-like objects already carry companion PDCCH/DCI metadata
 - DL objects are mapped into transmission patches
 - toy waveform is synthesized
-- radio layer exports IQ files
+- radio layer exports IQ files and companion PDCCH text files
 
 ### 9.5 Post-TX State Updates
 
@@ -696,15 +738,28 @@ The current scheduler model is intentionally narrow.
 
 Broadcast path:
 
-- SSB generated from slot periodicity
-- SIB1 generated from `period + offset`
+- SSB generated from slot periodicity, without PDCCH because it models PBCH/MIB
+- SIB1 generated from `period + offset`, with companion mock `DCI1_0`
 
 Access path:
 
 - PRACH creates RAR + Msg3 UL grant
-- mock radio only emits Msg3 if the grant is armed and `msg3_present=true`
+- RAR is exported as PDSCH with companion mock `DCI1_0`
+- if `sim.ul_input_dir` exists, the radio checks `slot_<abs_slot>_UL_OBJ_PRACH.txt`
+  / `slot_<abs_slot>_UL_OBJ_MSG3.txt` / `slot_<abs_slot>_UL_OBJ_PUCCH_SR.txt`
+  / `slot_<abs_slot>_UL_OBJ_DATA.txt` first, then falls back to matching `.cf32` files;
+  missing files mean empty UL input
+- otherwise the mock radio only emits Msg3 if the grant is armed and `msg3_present=true`
 - Msg3 miss can re-arm a future PRACH attempt
 - Msg3 success creates Msg4
+- Msg4 is exported as PDSCH with companion mock `DCI1_0`
+- after Msg4, the prototype enters a tiny connected mode:
+  - one DL data PDSCH with `DCI1_1` that carries a `PUCCH` config string
+  - one UE `PUCCH_SR` burst
+  - one compact UL `BSR` grant with standalone `DCI0_1`
+  - one `BSR|bytes=...` burst from the UE
+  - one larger UL `DATA` grant with standalone `DCI0_1`
+  - one opaque UL data burst from the UE
 
 This means the DL schedule for a slot is:
 
@@ -763,7 +818,7 @@ The current `gnb_c` implementation does not include:
 
 - multi-thread scheduling
 - generic MAC scheduler
-- real PRACH/PUSCH/PDSCH/PDCCH processing
+- real PRACH/PUSCH/PDSCH/PDCCH processing; current PDCCH is minimal metadata/text export only
 - real USRP/UHD integration
 - complete ASN.1 handling
 - core network integration

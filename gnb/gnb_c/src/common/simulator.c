@@ -37,6 +37,131 @@ static void mini_gnb_c_join_lcid_sequence(const mini_gnb_c_mac_ul_parse_result_t
   }
 }
 
+static mini_gnb_c_ue_context_t* mini_gnb_c_find_ue_context(mini_gnb_c_ue_context_store_t* store, uint16_t rnti) {
+  if (store == NULL || store->count == 0U) {
+    return NULL;
+  }
+  if (store->contexts[0].c_rnti == rnti || store->contexts[0].tc_rnti == rnti) {
+    return &store->contexts[0];
+  }
+  return NULL;
+}
+
+static mini_gnb_c_ue_context_t* mini_gnb_c_find_expected_connected_ue(mini_gnb_c_simulator_t* simulator,
+                                                                      uint16_t rnti) {
+  if (simulator == NULL || simulator->ue_store.count == 0U) {
+    return NULL;
+  }
+  if (rnti != 0U) {
+    return mini_gnb_c_find_ue_context(&simulator->ue_store, rnti);
+  }
+  return &simulator->ue_store.contexts[0];
+}
+
+static const char* mini_gnb_c_ul_data_purpose_string(const mini_gnb_c_ul_data_purpose_t purpose) {
+  return purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? "BSR" : "PAYLOAD";
+}
+
+static int mini_gnb_c_parse_bsr_buffer_size_bytes(const mini_gnb_c_buffer_t* mac_pdu) {
+  char text[MINI_GNB_C_MAX_PAYLOAD + 1U];
+  int buffer_size_bytes = -1;
+
+  if (mac_pdu == NULL || mac_pdu->len == 0U || mac_pdu->len > MINI_GNB_C_MAX_PAYLOAD) {
+    return -1;
+  }
+
+  memcpy(text, mac_pdu->bytes, mac_pdu->len);
+  text[mac_pdu->len] = '\0';
+  return (sscanf(text, "BSR|bytes=%d", &buffer_size_bytes) == 1 && buffer_size_bytes >= 0) ? buffer_size_bytes : -1;
+}
+
+static uint16_t mini_gnb_c_select_large_ul_prb_len(const int buffer_size_bytes) {
+  int prb_len = ((buffer_size_bytes + 63) / 64) * 4;
+
+  if (prb_len < 16) {
+    prb_len = 16;
+  }
+  if (prb_len > 40) {
+    prb_len = 40;
+  }
+  return (uint16_t)prb_len;
+}
+
+static void mini_gnb_c_queue_connected_ul_grant(mini_gnb_c_simulator_t* simulator,
+                                                mini_gnb_c_ue_context_t* ue_context,
+                                                int trigger_abs_slot,
+                                                mini_gnb_c_ul_data_purpose_t purpose,
+                                                uint16_t prb_start,
+                                                uint16_t prb_len,
+                                                uint8_t mcs) {
+  mini_gnb_c_ul_data_schedule_request_t request;
+  mini_gnb_c_ul_data_grant_t armed_ul_grant;
+
+  if (simulator == NULL || ue_context == NULL) {
+    return;
+  }
+
+  memset(&request, 0, sizeof(request));
+  request.c_rnti = ue_context->c_rnti;
+  request.pdcch_abs_slot = trigger_abs_slot + 1;
+  request.k2 = (uint8_t)simulator->config.sim.post_msg4_ul_data_k2;
+  request.abs_slot = request.pdcch_abs_slot + simulator->config.sim.post_msg4_ul_data_k2;
+  request.prb_start = prb_start;
+  request.prb_len = prb_len;
+  request.mcs = mcs;
+  request.purpose = purpose;
+  mini_gnb_c_initial_access_scheduler_queue_ul_data_grant(&simulator->scheduler, &request, &simulator->metrics);
+
+  memset(&armed_ul_grant, 0, sizeof(armed_ul_grant));
+  armed_ul_grant.c_rnti = request.c_rnti;
+  armed_ul_grant.abs_slot = request.abs_slot;
+  armed_ul_grant.purpose = request.purpose;
+  mini_gnb_c_mock_radio_frontend_arm_ul_data(&simulator->radio, &armed_ul_grant);
+
+  if (purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR) {
+    ue_context->small_ul_grant_abs_slot = request.abs_slot;
+  } else {
+    ue_context->large_ul_grant_abs_slot = request.abs_slot;
+  }
+}
+
+static void mini_gnb_c_schedule_post_msg4_traffic(mini_gnb_c_simulator_t* simulator,
+                                                  mini_gnb_c_ue_context_t* ue_context,
+                                                  int msg4_abs_slot) {
+  mini_gnb_c_dl_data_schedule_request_t dl_request;
+  char payload_text[MINI_GNB_C_MAX_TEXT];
+  int sr_abs_slot = 0;
+
+  if (simulator == NULL || ue_context == NULL || ue_context->traffic_plan_scheduled ||
+      !simulator->config.sim.post_msg4_traffic_enabled) {
+    return;
+  }
+
+  memset(&dl_request, 0, sizeof(dl_request));
+  dl_request.c_rnti = ue_context->c_rnti;
+  dl_request.abs_slot = msg4_abs_slot + simulator->config.sim.post_msg4_dl_data_delay_slots;
+  sr_abs_slot = dl_request.abs_slot + simulator->config.sim.post_msg4_ul_grant_delay_slots;
+  if (snprintf(payload_text,
+               sizeof(payload_text),
+               "PUCCH_CFG|sr_abs_slot=%d",
+               sr_abs_slot) < (int)sizeof(payload_text)) {
+    (void)mini_gnb_c_buffer_set_text(&dl_request.payload, payload_text);
+  }
+  mini_gnb_c_initial_access_scheduler_queue_dl_data(&simulator->scheduler, &dl_request, &simulator->metrics);
+  mini_gnb_c_mock_radio_frontend_arm_pucch_sr(&simulator->radio, ue_context->c_rnti, sr_abs_slot);
+
+  ue_context->traffic_plan_scheduled = true;
+  ue_context->dl_data_abs_slot = dl_request.abs_slot;
+  mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                 "connected_scheduler",
+                                 "Queued post-Msg4 PUCCH config and SR occasion.",
+                                 msg4_abs_slot,
+                                 "c_rnti=%u,dl_cfg_abs_slot=%d,sr_abs_slot=%d",
+                                 ue_context->c_rnti,
+                                 ue_context->dl_data_abs_slot,
+                                 sr_abs_slot);
+}
+
 void mini_gnb_c_simulator_init(mini_gnb_c_simulator_t* simulator,
                                const mini_gnb_c_config_t* config,
                                const char* output_dir) {
@@ -82,9 +207,13 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
     mini_gnb_c_radio_burst_t burst;
     mini_gnb_c_prach_indication_t prach;
     mini_gnb_c_ul_grant_for_msg3_t msg3_grants[MINI_GNB_C_MAX_MSG3_GRANTS];
+    mini_gnb_c_ul_data_grant_t ul_data_pdcch_grants[MINI_GNB_C_MAX_UL_DATA_GRANTS];
+    mini_gnb_c_ul_data_grant_t ul_data_rx_grants[MINI_GNB_C_MAX_UL_DATA_GRANTS];
     mini_gnb_c_dl_grant_t dl_grants[MINI_GNB_C_MAX_GRANTS + 2U];
     mini_gnb_c_tx_grid_patch_t patches[MINI_GNB_C_MAX_GRANTS + 2U];
     size_t msg3_grant_count = 0;
+    size_t ul_data_pdcch_count = 0;
+    size_t ul_data_rx_count = 0;
     size_t dl_grant_count = 0;
     size_t patch_count = 0;
     size_t i = 0;
@@ -141,14 +270,22 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                                 &msg3_grants[i],
                                                 &burst,
                                                 &msg3)) {
+        const bool has_due_msg3_burst = slot.abs_slot == msg3_grants[i].abs_slot &&
+                                        burst.ul_type == MINI_GNB_C_UL_BURST_MSG3 &&
+                                        burst.nof_samples > 0U;
+
         mini_gnb_c_metrics_trace_event(&simulator->metrics,
                                        "pusch_msg3_receiver",
-                                       "No Msg3 burst decoded for due UL grant.",
+                                       has_due_msg3_burst && burst.rnti != 0U &&
+                                               burst.rnti != msg3_grants[i].tc_rnti
+                                           ? "Rejected Msg3 burst due to TC-RNTI mismatch."
+                                           : "No Msg3 burst decoded for due UL grant.",
                                        slot.abs_slot,
-                                       "rnti=%u,expected_abs_slot=%d,ul_burst=%s",
+                                       "rnti=%u,expected_abs_slot=%d,ul_burst=%s,burst_rnti=%u",
                                        msg3_grants[i].tc_rnti,
                                        msg3_grants[i].abs_slot,
-                                       mini_gnb_c_ul_burst_type_to_string(burst.ul_type));
+                                       mini_gnb_c_ul_burst_type_to_string(burst.ul_type),
+                                       burst.rnti);
         continue;
       }
 
@@ -256,6 +393,155 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
       }
     }
 
+    if (burst.ul_type == MINI_GNB_C_UL_BURST_PUCCH_SR && burst.nof_samples > 0U) {
+      mini_gnb_c_ue_context_t* ue_context = mini_gnb_c_find_expected_connected_ue(simulator, burst.rnti);
+      const bool rnti_match = ue_context != NULL && (burst.rnti == 0U || burst.rnti == ue_context->c_rnti);
+      const bool sr_ok = !burst.crc_ok_override_valid || burst.crc_ok_override;
+
+      if (ue_context == NULL || !rnti_match || !sr_ok) {
+        mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                       "pucch_sr_detector",
+                                       (ue_context != NULL && !rnti_match)
+                                           ? "Rejected PUCCH SR due to C-RNTI mismatch."
+                                           : "Ignored invalid PUCCH SR candidate.",
+                                       slot.abs_slot,
+                                       "burst_rnti=%u,ue_c_rnti=%u,crc_ok=%s",
+                                       burst.rnti,
+                                       ue_context != NULL ? ue_context->c_rnti : 0U,
+                                       mini_gnb_c_bool_string(sr_ok));
+      } else if (!ue_context->pucch_sr_detected) {
+        mini_gnb_c_metrics_trace_increment_named(&simulator->metrics, "pucch_sr_detect_ok", 1U);
+        ue_context->pucch_sr_detected = true;
+        ue_context->pucch_sr_abs_slot = slot.abs_slot;
+        mini_gnb_c_queue_connected_ul_grant(simulator,
+                                            ue_context,
+                                            slot.abs_slot,
+                                            MINI_GNB_C_UL_DATA_PURPOSE_BSR,
+                                            60U,
+                                            8U,
+                                            4U);
+        mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                       "pucch_sr_detector",
+                                       "Detected PUCCH SR and queued compact UL BSR grant.",
+                                       slot.abs_slot,
+                                       "c_rnti=%u,small_ul_grant_abs_slot=%d",
+                                       ue_context->c_rnti,
+                                       ue_context->small_ul_grant_abs_slot);
+      }
+    }
+
+    ul_data_rx_count = mini_gnb_c_initial_access_scheduler_pop_due_ul_data_rx(&simulator->scheduler,
+                                                                               slot.abs_slot,
+                                                                               ul_data_rx_grants,
+                                                                               MINI_GNB_C_MAX_UL_DATA_GRANTS);
+    for (i = 0; i < ul_data_rx_count; ++i) {
+      const char* receiver_module = ul_data_rx_grants[i].purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR
+                                        ? "pusch_bsr_receiver"
+                                        : "pusch_data_receiver";
+      const bool has_due_ul_data_burst = slot.abs_slot == ul_data_rx_grants[i].abs_slot &&
+                                         burst.ul_type == MINI_GNB_C_UL_BURST_DATA && burst.nof_samples > 0U;
+      const bool rnti_match = burst.rnti == 0U || burst.rnti == ul_data_rx_grants[i].c_rnti;
+      const bool crc_ok = burst.crc_ok_override_valid ? burst.crc_ok_override : simulator->config.sim.ul_data_crc_ok;
+      char payload_hex[MINI_GNB_C_MAX_PAYLOAD * 2U + 1U];
+
+      if (!has_due_ul_data_burst || !rnti_match) {
+        mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                       receiver_module,
+                                       has_due_ul_data_burst && !rnti_match
+                                           ? "Rejected scheduled UL burst due to C-RNTI mismatch."
+                                           : "No scheduled UL burst decoded for due UL grant.",
+                                       slot.abs_slot,
+                                       "purpose=%s,rnti=%u,expected_abs_slot=%d,ul_burst=%s,burst_rnti=%u",
+                                       mini_gnb_c_ul_data_purpose_string(ul_data_rx_grants[i].purpose),
+                                       ul_data_rx_grants[i].c_rnti,
+                                       ul_data_rx_grants[i].abs_slot,
+                                       mini_gnb_c_ul_burst_type_to_string(burst.ul_type),
+                                       burst.rnti);
+        continue;
+      }
+
+      (void)mini_gnb_c_bytes_to_hex(burst.mac_pdu.bytes, burst.mac_pdu.len, payload_hex, sizeof(payload_hex));
+      if (ul_data_rx_grants[i].purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR) {
+        const int buffer_size_bytes = crc_ok ? mini_gnb_c_parse_bsr_buffer_size_bytes(&burst.mac_pdu) : -1;
+        mini_gnb_c_metrics_trace_increment_named(&simulator->metrics,
+                                                 (crc_ok && buffer_size_bytes >= 0) ? "ul_bsr_rx_ok"
+                                                                                    : "ul_bsr_crc_fail",
+                                                 1U);
+        mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                       receiver_module,
+                                       (crc_ok && buffer_size_bytes >= 0)
+                                           ? "Decoded scheduled UL BSR candidate."
+                                           : "Failed to decode scheduled UL BSR candidate.",
+                                       slot.abs_slot,
+                                       "rnti=%u,crc_ok=%s,snr_db=%.2f,evm=%.2f,buffer_size_bytes=%d,payload=%s",
+                                       ul_data_rx_grants[i].c_rnti,
+                                       mini_gnb_c_bool_string(crc_ok),
+                                       burst.snr_db,
+                                       burst.evm,
+                                       buffer_size_bytes,
+                                       payload_hex);
+
+        if (crc_ok && buffer_size_bytes >= 0) {
+          mini_gnb_c_ue_context_t* ue_context =
+              mini_gnb_c_find_ue_context(&simulator->ue_store, ul_data_rx_grants[i].c_rnti);
+          if (ue_context != NULL) {
+            ue_context->ul_bsr_received = true;
+            ue_context->ul_bsr_abs_slot = slot.abs_slot;
+            ue_context->ul_bsr_buffer_size_bytes = buffer_size_bytes;
+            mini_gnb_c_queue_connected_ul_grant(simulator,
+                                                ue_context,
+                                                slot.abs_slot,
+                                                MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD,
+                                                48U,
+                                                mini_gnb_c_select_large_ul_prb_len(buffer_size_bytes),
+                                                8U);
+            mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                           "connected_scheduler",
+                                           "Queued large UL grant after BSR.",
+                                           slot.abs_slot,
+                                           "c_rnti=%u,buffer_size_bytes=%d,large_ul_grant_abs_slot=%d",
+                                           ue_context->c_rnti,
+                                           buffer_size_bytes,
+                                           ue_context->large_ul_grant_abs_slot);
+          }
+        }
+      } else {
+        mini_gnb_c_metrics_trace_increment_named(&simulator->metrics,
+                                                 crc_ok ? "ul_data_rx_ok" : "ul_data_crc_fail",
+                                                 1U);
+        mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                       receiver_module,
+                                       "Decoded scheduled UL data candidate.",
+                                       slot.abs_slot,
+                                       "rnti=%u,crc_ok=%s,snr_db=%.2f,evm=%.2f,payload=%s",
+                                       ul_data_rx_grants[i].c_rnti,
+                                       mini_gnb_c_bool_string(crc_ok),
+                                       burst.snr_db,
+                                       burst.evm,
+                                       payload_hex);
+
+        if (crc_ok) {
+          mini_gnb_c_ue_context_t* ue_context =
+              mini_gnb_c_find_ue_context(&simulator->ue_store, ul_data_rx_grants[i].c_rnti);
+          if (ue_context != NULL) {
+            ue_context->ul_data_received = true;
+            ue_context->ul_data_abs_slot = slot.abs_slot;
+          }
+        }
+      }
+    }
+
+    ul_data_pdcch_count = mini_gnb_c_initial_access_scheduler_pop_due_ul_data_pdcch(&simulator->scheduler,
+                                                                                     slot.abs_slot,
+                                                                                     ul_data_pdcch_grants,
+                                                                                     MINI_GNB_C_MAX_UL_DATA_GRANTS);
+    for (i = 0; i < ul_data_pdcch_count; ++i) {
+      mini_gnb_c_mock_radio_frontend_submit_pdcch(&simulator->radio,
+                                                  &slot,
+                                                  &ul_data_pdcch_grants[i].pdcch,
+                                                  &simulator->metrics);
+    }
+
     dl_grant_count = mini_gnb_c_initial_access_scheduler_pop_due_downlink(&simulator->scheduler,
                                                                            slot.abs_slot,
                                                                            dl_grants,
@@ -294,6 +580,17 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
           mini_gnb_c_ue_context_store_mark_rrc_setup_sent(&simulator->ue_store,
                                                           dl_grants[i].rnti,
                                                           slot.abs_slot);
+          mini_gnb_c_schedule_post_msg4_traffic(simulator,
+                                                mini_gnb_c_find_ue_context(&simulator->ue_store, dl_grants[i].rnti),
+                                                slot.abs_slot);
+        } else if (dl_grants[i].type == MINI_GNB_C_DL_OBJ_DATA) {
+          mini_gnb_c_ue_context_t* ue_context =
+              mini_gnb_c_find_ue_context(&simulator->ue_store, dl_grants[i].rnti);
+          mini_gnb_c_metrics_trace_increment_named(&simulator->metrics, "dl_data_sent", 1U);
+          if (ue_context != NULL) {
+            ue_context->dl_data_sent = true;
+            ue_context->dl_data_abs_slot = slot.abs_slot;
+          }
         }
       }
     }
@@ -303,8 +600,8 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
       memset(&perf, 0, sizeof(perf));
       perf.abs_slot = slot.abs_slot;
       perf.mac_latency_us = 120 + (int)slot.slot;
-      perf.dl_build_latency_us = 80 + (int)(dl_grant_count * 5U);
-      perf.ul_decode_latency_us = 60 + (int)(msg3_grant_count * 10U);
+      perf.dl_build_latency_us = 80 + (int)((dl_grant_count + ul_data_pdcch_count) * 5U);
+      perf.ul_decode_latency_us = 60 + (int)((msg3_grant_count + ul_data_rx_count) * 10U);
       mini_gnb_c_metrics_trace_add_slot_perf(&simulator->metrics, &perf);
     }
   }

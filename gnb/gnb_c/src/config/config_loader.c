@@ -287,6 +287,19 @@ int mini_gnb_c_load_config(const char* path,
   }
 
   memset(out_config, 0, sizeof(*out_config));
+  out_config->sim.post_msg4_traffic_enabled = false;
+  out_config->sim.post_msg4_dl_data_delay_slots = 2;
+  out_config->sim.post_msg4_ul_grant_delay_slots = 3;
+  out_config->sim.post_msg4_ul_data_k2 = 2;
+  out_config->sim.ul_data_present = false;
+  out_config->sim.ul_data_crc_ok = true;
+  out_config->sim.ul_data_snr_db = 16.0;
+  out_config->sim.ul_data_evm = 2.5;
+  out_config->sim.ul_bsr_buffer_size_bytes = 384;
+  (void)snprintf(out_config->sim.ul_data_hex,
+                 sizeof(out_config->sim.ul_data_hex),
+                 "%s",
+                 "554C5F44415441");
   text = mini_gnb_c_read_text_file(path);
   if (text == NULL) {
     return mini_gnb_c_fail(error_message, error_message_size, "failed to read config file", path);
@@ -332,8 +345,52 @@ int mini_gnb_c_load_config(const char* path,
   MINI_GNB_C_LOAD_BOOL("sim", "msg3_crc_ok", out_config->sim.msg3_crc_ok);
   MINI_GNB_C_LOAD_DOUBLE("sim", "msg3_snr_db", out_config->sim.msg3_snr_db);
   MINI_GNB_C_LOAD_DOUBLE("sim", "msg3_evm", out_config->sim.msg3_evm);
+  if (mini_gnb_c_extract_bool(text, "sim", "post_msg4_traffic_enabled", &bool_value) == 0) {
+    out_config->sim.post_msg4_traffic_enabled = bool_value;
+  }
+  if (mini_gnb_c_extract_int(text, "sim", "post_msg4_dl_data_delay_slots", &value) == 0) {
+    out_config->sim.post_msg4_dl_data_delay_slots = value;
+  }
+  if (mini_gnb_c_extract_int(text, "sim", "post_msg4_ul_grant_delay_slots", &value) == 0) {
+    out_config->sim.post_msg4_ul_grant_delay_slots = value;
+  }
+  if (mini_gnb_c_extract_int(text, "sim", "post_msg4_ul_data_k2", &value) == 0) {
+    out_config->sim.post_msg4_ul_data_k2 = value;
+  }
+  if (mini_gnb_c_extract_bool(text, "sim", "ul_data_present", &bool_value) == 0) {
+    out_config->sim.ul_data_present = bool_value;
+  }
+  if (mini_gnb_c_extract_bool(text, "sim", "ul_data_crc_ok", &bool_value) == 0) {
+    out_config->sim.ul_data_crc_ok = bool_value;
+  }
+  if (mini_gnb_c_extract_double(text, "sim", "ul_data_snr_db", &double_value) == 0) {
+    out_config->sim.ul_data_snr_db = double_value;
+  }
+  if (mini_gnb_c_extract_double(text, "sim", "ul_data_evm", &double_value) == 0) {
+    out_config->sim.ul_data_evm = double_value;
+  }
+  if (mini_gnb_c_extract_int(text, "sim", "ul_bsr_buffer_size_bytes", &value) == 0) {
+    out_config->sim.ul_bsr_buffer_size_bytes = value;
+  }
   MINI_GNB_C_LOAD_STRING("sim", "ul_prach_cf32_path", out_config->sim.ul_prach_cf32_path);
   MINI_GNB_C_LOAD_STRING("sim", "ul_msg3_cf32_path", out_config->sim.ul_msg3_cf32_path);
+  if (mini_gnb_c_extract_string(text,
+                                "sim",
+                                "ul_input_dir",
+                                out_config->sim.ul_input_dir,
+                                sizeof(out_config->sim.ul_input_dir)) != 0) {
+    out_config->sim.ul_input_dir[0] = '\0';
+  }
+  if (mini_gnb_c_extract_string(text,
+                                "sim",
+                                "ul_data_hex",
+                                out_config->sim.ul_data_hex,
+                                sizeof(out_config->sim.ul_data_hex)) != 0) {
+    (void)snprintf(out_config->sim.ul_data_hex,
+                   sizeof(out_config->sim.ul_data_hex),
+                   "%s",
+                   "554C5F44415441");
+  }
   MINI_GNB_C_LOAD_STRING("sim", "contention_id_hex", out_config->sim.contention_id_hex);
   MINI_GNB_C_LOAD_INT("sim", "establishment_cause", out_config->sim.establishment_cause, uint8_t);
   MINI_GNB_C_LOAD_INT("sim", "ue_identity_type", out_config->sim.ue_identity_type, uint8_t);
@@ -357,12 +414,14 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                "Broadcast config summary:\n"
                "  cell pci=%u band=n%u arfcn=%u scs=%ukHz bw=%uMHz plmn=%s tac=%u\n"
                "  ss0_index=%u coreset0_index=%u ssb_period_slots=%d sib1_period_slots=%d sib1_offset_slot=%d\n"
-               "RA config summary:\n"
-               "  prach_config_index=%u root_seq=%u zero_corr=%u ra_resp_window=%u msg3_delta_preamble=%d\n"
-               "UL input summary:\n"
-               "  prach_trigger_abs_slot=%d prach_retry_delay_slots=%d msg3_delay_slots=%d msg3_present=%s\n"
-               "RF config summary:\n"
-               "  driver=%s clock=%s srate=%g tx_gain=%g rx_gain=%g",
+                "RA config summary:\n"
+                "  prach_config_index=%u root_seq=%u zero_corr=%u ra_resp_window=%u msg3_delta_preamble=%d\n"
+                "UL input summary:\n"
+                "  prach_trigger_abs_slot=%d prach_retry_delay_slots=%d msg3_delay_slots=%d msg3_present=%s input_dir=%s\n"
+                "Connected traffic summary:\n"
+                "  post_msg4=%s dl_delay=%d ul_grant_delay=%d ul_k2=%d ul_present=%s\n"
+                "RF config summary:\n"
+                "  driver=%s clock=%s srate=%g tx_gain=%g rx_gain=%g",
                config->cell.pci,
                config->cell.band,
                config->cell.dl_arfcn,
@@ -380,13 +439,19 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                config->prach.zero_correlation_zone,
                config->prach.ra_resp_window,
                config->prach.msg3_delta_preamble,
-               config->sim.prach_trigger_abs_slot,
-               config->sim.prach_retry_delay_slots,
-               config->sim.msg3_delay_slots,
-               config->sim.msg3_present ? "true" : "false",
-               config->rf.device_driver,
-               config->rf.clock_src,
-               config->rf.srate,
+                config->sim.prach_trigger_abs_slot,
+                config->sim.prach_retry_delay_slots,
+                config->sim.msg3_delay_slots,
+                config->sim.msg3_present ? "true" : "false",
+                config->sim.ul_input_dir[0] != '\0' ? config->sim.ul_input_dir : "(disabled)",
+                config->sim.post_msg4_traffic_enabled ? "true" : "false",
+                config->sim.post_msg4_dl_data_delay_slots,
+                config->sim.post_msg4_ul_grant_delay_slots,
+                config->sim.post_msg4_ul_data_k2,
+                config->sim.ul_data_present ? "true" : "false",
+                config->rf.device_driver,
+                config->rf.clock_src,
+                config->rf.srate,
                config->rf.tx_gain,
                config->rf.rx_gain) >= (int)out_size) {
     return -1;

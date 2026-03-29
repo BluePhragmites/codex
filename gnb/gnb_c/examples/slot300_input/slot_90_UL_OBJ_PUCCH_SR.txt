@@ -1,0 +1,7 @@
+direction=UL
+abs_slot=90
+type=UL_OBJ_PUCCH_SR
+rnti=17923
+snr_db=13.9
+crc_ok=true
+sample_count=88

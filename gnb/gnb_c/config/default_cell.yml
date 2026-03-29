@@ -45,7 +45,7 @@ broadcast:
 
 sim:
   # Total simulated slots and frame geometry.
-  total_slots: 18
+  total_slots: 20
   slots_per_frame: 10
   # Relative offsets for Msg3 and Msg4.
   msg3_delay_slots: 4
@@ -59,9 +59,22 @@ sim:
   peak_metric: 18.5
   # Whether the mock radio provides a Msg3 burst at the UL grant slot.
   msg3_present: true
+  post_msg4_traffic_enabled: true
+  post_msg4_dl_data_delay_slots: 2
+  post_msg4_ul_grant_delay_slots: 3
+  post_msg4_ul_data_k2: 2
+  ul_data_present: true
+  ul_data_crc_ok: true
+  ul_data_snr_db: 16.0
+  ul_data_evm: 2.5
+  ul_bsr_buffer_size_bytes: 384
   # Optional external UL samples. Leave empty to use generated toy bursts.
   ul_prach_cf32_path: ""
   ul_msg3_cf32_path: ""
+  # Optional directory for slot-driven UL input files such as input/slot_20_UL_OBJ_PRACH.cf32.
+  # When this directory exists, missing slots are treated as empty UL input instead of synthetic injection.
+  ul_input_dir: "input"
+  ul_data_hex: "554C5F44415441"
   # Mock Msg3 quality indicators.
   msg3_crc_ok: true
   msg3_snr_db: 18.2

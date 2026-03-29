@@ -9,6 +9,29 @@
 #include "mini_gnb_c/common/simulator.h"
 #include "mini_gnb_c/config/config_loader.h"
 
+static void mini_gnb_c_write_test_cf32(const char* path, size_t sample_count) {
+  FILE* file = NULL;
+  size_t i = 0;
+
+  mini_gnb_c_require(path != NULL, "expected output path for cf32 input");
+  mini_gnb_c_require(mini_gnb_c_write_text_file(path, "") == 0, "expected cf32 input parent directories");
+  file = fopen(path, "wb");
+  mini_gnb_c_require(file != NULL, "expected cf32 input file to open");
+
+  for (i = 0; i < sample_count; ++i) {
+    const float pair[2] = {0.1f + (float)i * 0.001f, -0.05f - (float)i * 0.001f};
+    mini_gnb_c_require(fwrite(pair, sizeof(float), 2U, file) == 2U, "expected cf32 pair write");
+  }
+
+  fclose(file);
+}
+
+static void mini_gnb_c_write_transport_text_file(const char* path, const char* content) {
+  mini_gnb_c_require(path != NULL, "expected transport text path");
+  mini_gnb_c_require(content != NULL, "expected transport text content");
+  mini_gnb_c_require(mini_gnb_c_write_text_file(path, content) == 0, "expected transport text file write");
+}
+
 void test_integration_run(void) {
   char config_path[MINI_GNB_C_MAX_PATH];
   char output_dir[MINI_GNB_C_MAX_PATH];
@@ -38,8 +61,16 @@ void test_integration_run(void) {
   mini_gnb_c_require(summary.counters.rar_sent >= 1U, "expected RAR transmission");
   mini_gnb_c_require(summary.counters.msg3_crc_ok >= 1U, "expected Msg3 CRC success");
   mini_gnb_c_require(summary.counters.rrcsetup_sent >= 1U, "expected Msg4/RRCSetup transmission");
+  mini_gnb_c_require(summary.counters.pucch_sr_detect_ok >= 1U, "expected post-Msg4 PUCCH SR detection");
+  mini_gnb_c_require(summary.counters.ul_bsr_rx_ok >= 1U, "expected scheduled UL BSR reception");
+  mini_gnb_c_require(summary.counters.dl_data_sent >= 1U, "expected post-Msg4 PUCCH config transmission");
+  mini_gnb_c_require(summary.counters.ul_data_rx_ok >= 1U, "expected large scheduled UL data reception");
   mini_gnb_c_require(summary.ue_count > 0U, "expected at least one promoted UE context");
   mini_gnb_c_require(summary.ue_contexts[0].rrc_setup_sent, "expected UE context marked after Msg4");
+  mini_gnb_c_require(summary.ue_contexts[0].dl_data_sent, "expected UE context marked after PUCCH config");
+  mini_gnb_c_require(summary.ue_contexts[0].pucch_sr_detected, "expected UE context marked after PUCCH SR");
+  mini_gnb_c_require(summary.ue_contexts[0].ul_bsr_received, "expected UE context marked after UL BSR");
+  mini_gnb_c_require(summary.ue_contexts[0].ul_data_received, "expected UE context marked after UL data");
   mini_gnb_c_require(summary.has_ra_context, "expected RA context in summary");
   mini_gnb_c_require(summary.ra_context.has_contention_id, "expected resolved contention identity");
   mini_gnb_c_require(mini_gnb_c_bytes_to_hex(summary.ra_context.contention_id48,
@@ -86,6 +117,317 @@ void test_integration_run(void) {
   free(summary_json);
 }
 
+void test_integration_slot_input_prach(void) {
+  char config_path[MINI_GNB_C_MAX_PATH];
+  char output_dir[MINI_GNB_C_MAX_PATH];
+  char input_dir[MINI_GNB_C_MAX_PATH];
+  char prach_path[MINI_GNB_C_MAX_PATH];
+  char error_message[256];
+  mini_gnb_c_config_t config;
+  mini_gnb_c_simulator_t simulator;
+  mini_gnb_c_run_summary_t summary;
+
+  mini_gnb_c_default_config_path(config_path, sizeof(config_path));
+  mini_gnb_c_require(mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) == 0,
+                     "expected config to load");
+
+  config.sim.total_slots = 24;
+  config.sim.msg3_present = false;
+  config.sim.prach_retry_delay_slots = -1;
+
+  mini_gnb_c_make_output_dir("test_integration_slot_input_c", output_dir, sizeof(output_dir));
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "input", input_dir, sizeof(input_dir)) == 0,
+                     "expected input directory path");
+  mini_gnb_c_require(snprintf(config.sim.ul_input_dir,
+                              sizeof(config.sim.ul_input_dir),
+                              "%s",
+                              input_dir) < (int)sizeof(config.sim.ul_input_dir),
+                     "expected input directory to fit in config");
+  mini_gnb_c_require(snprintf(prach_path,
+                              sizeof(prach_path),
+                              "%s/slot_20_UL_OBJ_PRACH.cf32",
+                              input_dir) < (int)sizeof(prach_path),
+                     "expected PRACH input path");
+  mini_gnb_c_write_test_cf32(prach_path, 64U);
+
+  mini_gnb_c_simulator_init(&simulator, &config, output_dir);
+  mini_gnb_c_require(mini_gnb_c_simulator_run(&simulator, &summary) == 0, "expected simulator run");
+
+  mini_gnb_c_require(summary.counters.prach_detect_ok == 1U, "expected exactly one file-driven PRACH detection");
+  mini_gnb_c_require(summary.counters.rar_sent == 1U, "expected one RAR after file-driven PRACH");
+  mini_gnb_c_require(summary.counters.msg3_crc_ok == 0U, "expected no Msg3 decode without slot input file");
+  mini_gnb_c_require(summary.has_ra_context, "expected RA context after file-driven PRACH");
+  mini_gnb_c_require(summary.ra_context.detect_abs_slot == 20, "expected file-driven PRACH to start at abs_slot 20");
+  mini_gnb_c_require(summary.ra_context.rar_abs_slot == 21, "expected RAR immediately after slot-input PRACH");
+  mini_gnb_c_require(summary.ra_context.state == MINI_GNB_C_RA_MSG3_WAIT,
+                     "expected RAR sent and Msg3 wait state at loop end");
+}
+
+void test_integration_slot_text_transport(void) {
+  char config_path[MINI_GNB_C_MAX_PATH];
+  char output_dir[MINI_GNB_C_MAX_PATH];
+  char input_dir[MINI_GNB_C_MAX_PATH];
+  char prach_path[MINI_GNB_C_MAX_PATH];
+  char msg3_path[MINI_GNB_C_MAX_PATH];
+  char pucch_sr_path[MINI_GNB_C_MAX_PATH];
+  char bsr_path[MINI_GNB_C_MAX_PATH];
+  char ul_data_path[MINI_GNB_C_MAX_PATH];
+  char tx_dir[MINI_GNB_C_MAX_PATH];
+  char msg4_tx_path[MINI_GNB_C_MAX_PATH];
+  char msg4_pdcch_path[MINI_GNB_C_MAX_PATH];
+  char ssb_tx_path[MINI_GNB_C_MAX_PATH];
+  char dl_data_tx_path[MINI_GNB_C_MAX_PATH];
+  char dl_data_pdcch_path[MINI_GNB_C_MAX_PATH];
+  char bsr_grant_pdcch_path[MINI_GNB_C_MAX_PATH];
+  char data_grant_pdcch_path[MINI_GNB_C_MAX_PATH];
+  char error_message[256];
+  char contention_id_hex[MINI_GNB_C_MAX_TEXT];
+  mini_gnb_c_config_t config;
+  mini_gnb_c_simulator_t simulator;
+  mini_gnb_c_run_summary_t summary;
+  char* msg4_tx_text = NULL;
+  char* msg4_pdcch_text = NULL;
+  char* ssb_tx_text = NULL;
+  char* dl_data_tx_text = NULL;
+  char* dl_data_pdcch_text = NULL;
+  char* bsr_grant_pdcch_text = NULL;
+  char* data_grant_pdcch_text = NULL;
+
+  mini_gnb_c_default_config_path(config_path, sizeof(config_path));
+  mini_gnb_c_require(mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) == 0,
+                     "expected config to load");
+
+  config.sim.total_slots = 40;
+  config.sim.msg3_present = false;
+  config.sim.prach_retry_delay_slots = -1;
+  config.sim.post_msg4_traffic_enabled = true;
+  config.sim.post_msg4_dl_data_delay_slots = 2;
+  config.sim.post_msg4_ul_grant_delay_slots = 3;
+  config.sim.post_msg4_ul_data_k2 = 2;
+  config.sim.ul_data_present = false;
+  config.sim.ul_bsr_buffer_size_bytes = 384;
+
+  mini_gnb_c_make_output_dir("test_integration_slot_text_c", output_dir, sizeof(output_dir));
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "input", input_dir, sizeof(input_dir)) == 0,
+                     "expected input directory path");
+  mini_gnb_c_require(snprintf(config.sim.ul_input_dir,
+                              sizeof(config.sim.ul_input_dir),
+                              "%s",
+                              input_dir) < (int)sizeof(config.sim.ul_input_dir),
+                     "expected input directory to fit in config");
+  mini_gnb_c_require(snprintf(prach_path,
+                              sizeof(prach_path),
+                              "%s/slot_20_UL_OBJ_PRACH.txt",
+                              input_dir) < (int)sizeof(prach_path),
+                     "expected PRACH text path");
+  mini_gnb_c_require(snprintf(msg3_path,
+                              sizeof(msg3_path),
+                              "%s/slot_24_UL_OBJ_MSG3.txt",
+                              input_dir) < (int)sizeof(msg3_path),
+                     "expected Msg3 text path");
+  mini_gnb_c_require(snprintf(pucch_sr_path,
+                              sizeof(pucch_sr_path),
+                              "%s/slot_30_UL_OBJ_PUCCH_SR.txt",
+                              input_dir) < (int)sizeof(pucch_sr_path),
+                     "expected PUCCH SR text path");
+  mini_gnb_c_require(snprintf(bsr_path,
+                              sizeof(bsr_path),
+                              "%s/slot_33_UL_OBJ_DATA.txt",
+                              input_dir) < (int)sizeof(bsr_path),
+                     "expected UL BSR text path");
+  mini_gnb_c_require(snprintf(ul_data_path,
+                              sizeof(ul_data_path),
+                              "%s/slot_36_UL_OBJ_DATA.txt",
+                              input_dir) < (int)sizeof(ul_data_path),
+                     "expected UL data text path");
+
+  mini_gnb_c_write_transport_text_file(prach_path,
+                                       "direction=UL\n"
+                                       "abs_slot=20\n"
+                                       "type=UL_OBJ_PRACH\n"
+                                       "preamble_id=31\n"
+                                       "ta_est=7\n"
+                                       "peak_metric=14.5\n"
+                                       "sample_count=64\n");
+  mini_gnb_c_write_transport_text_file(msg3_path,
+                                       "direction=UL\n"
+                                       "abs_slot=24\n"
+                                       "type=UL_OBJ_MSG3\n"
+                                       "rnti=17921\n"
+                                       "snr_db=17.5\n"
+                                       "evm=1.7\n"
+                                       "crc_ok=true\n"
+                                       "sample_count=96\n"
+                                       "payload_hex=020201460110DEADBEEFCAFE05020102030405060708\n");
+  mini_gnb_c_write_transport_text_file(pucch_sr_path,
+                                       "direction=UL\n"
+                                       "abs_slot=30\n"
+                                       "type=UL_OBJ_PUCCH_SR\n"
+                                       "rnti=17921\n"
+                                       "snr_db=13.2\n"
+                                       "crc_ok=true\n"
+                                       "sample_count=72\n");
+  mini_gnb_c_write_transport_text_file(bsr_path,
+                                       "direction=UL\n"
+                                       "abs_slot=33\n"
+                                       "type=UL_OBJ_DATA\n"
+                                       "rnti=17921\n"
+                                       "snr_db=14.4\n"
+                                       "evm=1.3\n"
+                                       "crc_ok=true\n"
+                                       "sample_count=96\n"
+                                       "payload_text=BSR|bytes=384\n");
+  mini_gnb_c_write_transport_text_file(ul_data_path,
+                                       "direction=UL\n"
+                                       "abs_slot=36\n"
+                                       "type=UL_OBJ_DATA\n"
+                                       "rnti=17921\n"
+                                       "snr_db=15.1\n"
+                                       "evm=2.4\n"
+                                       "crc_ok=true\n"
+                                       "sample_count=128\n"
+                                       "payload_text=UL_DATA_TEST\n");
+
+  mini_gnb_c_simulator_init(&simulator, &config, output_dir);
+  mini_gnb_c_require(mini_gnb_c_simulator_run(&simulator, &summary) == 0, "expected simulator run");
+
+  mini_gnb_c_require(summary.counters.prach_detect_ok == 1U, "expected text-driven PRACH detection");
+  mini_gnb_c_require(summary.counters.rar_sent == 1U, "expected RAR after text-driven PRACH");
+  mini_gnb_c_require(summary.counters.msg3_crc_ok == 1U, "expected Msg3 decode from text transport");
+  mini_gnb_c_require(summary.counters.rrcsetup_sent == 1U, "expected Msg4 after text-driven Msg3");
+  mini_gnb_c_require(summary.counters.pucch_sr_detect_ok == 1U, "expected one text-driven PUCCH SR");
+  mini_gnb_c_require(summary.counters.ul_bsr_rx_ok == 1U, "expected one scheduled UL BSR");
+  mini_gnb_c_require(summary.counters.dl_data_sent == 1U, "expected one scheduled PUCCH config DL burst");
+  mini_gnb_c_require(summary.counters.ul_data_rx_ok == 1U, "expected one scheduled UL data burst");
+  mini_gnb_c_require(summary.has_ra_context, "expected RA context after text transport");
+  mini_gnb_c_require(summary.ra_context.detect_abs_slot == 20, "expected text PRACH at abs_slot 20");
+  mini_gnb_c_require(summary.ra_context.preamble_id == 31U, "expected preamble id taken from text transport");
+  mini_gnb_c_require(summary.ra_context.ta_est == 7, "expected ta_est taken from text transport");
+  mini_gnb_c_require(summary.ra_context.state == MINI_GNB_C_RA_DONE, "expected RA completion from text transport");
+  mini_gnb_c_require(summary.ue_count == 1U, "expected one promoted UE context");
+  mini_gnb_c_require(summary.ue_contexts[0].traffic_plan_scheduled, "expected post-Msg4 traffic plan scheduling");
+  mini_gnb_c_require(summary.ue_contexts[0].dl_data_sent, "expected UE context DL config marker");
+  mini_gnb_c_require(summary.ue_contexts[0].pucch_sr_detected, "expected UE context PUCCH SR marker");
+  mini_gnb_c_require(summary.ue_contexts[0].ul_bsr_received, "expected UE context UL BSR marker");
+  mini_gnb_c_require(summary.ue_contexts[0].ul_data_received, "expected UE context UL data marker");
+  mini_gnb_c_require(summary.ue_contexts[0].dl_data_abs_slot == 27, "expected DL data slot after Msg4");
+  mini_gnb_c_require(summary.ue_contexts[0].pucch_sr_abs_slot == 30, "expected PUCCH SR at abs_slot 30");
+  mini_gnb_c_require(summary.ue_contexts[0].small_ul_grant_abs_slot == 33,
+                     "expected compact BSR grant to land at abs_slot 33");
+  mini_gnb_c_require(summary.ue_contexts[0].ul_bsr_abs_slot == 33, "expected BSR on the small grant");
+  mini_gnb_c_require(summary.ue_contexts[0].large_ul_grant_abs_slot == 36,
+                     "expected large UL grant to land at abs_slot 36");
+  mini_gnb_c_require(summary.ue_contexts[0].ul_data_abs_slot == 36, "expected UL data slot after large grant");
+  mini_gnb_c_require(mini_gnb_c_bytes_to_hex(summary.ra_context.contention_id48,
+                                             6U,
+                                             contention_id_hex,
+                                             sizeof(contention_id_hex)) == 0,
+                     "expected contention identity serialization");
+  mini_gnb_c_require(strcmp(contention_id_hex, "DEADBEEFCAFE") == 0,
+                     "expected contention identity to come from Msg3 text file");
+
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "tx", tx_dir, sizeof(tx_dir)) == 0,
+                     "expected tx directory path");
+  mini_gnb_c_require(snprintf(msg4_tx_path,
+                              sizeof(msg4_tx_path),
+                              "%s/slot_25_DL_OBJ_MSG4.txt",
+                              tx_dir) < (int)sizeof(msg4_tx_path),
+                     "expected Msg4 transport text path");
+  msg4_tx_text = mini_gnb_c_read_text_file(msg4_tx_path);
+  mini_gnb_c_require(msg4_tx_text != NULL, "expected Msg4 text transport export");
+  mini_gnb_c_require(strstr(msg4_tx_text, "type=DL_OBJ_MSG4") != NULL, "expected Msg4 type in text export");
+  mini_gnb_c_require(strstr(msg4_tx_text, "payload_hex=") != NULL, "expected payload hex in text export");
+  mini_gnb_c_require(strstr(msg4_tx_text, "scheduled_by_pdcch=true") != NULL,
+                     "expected Msg4 payload export to show PDCCH scheduling");
+
+  mini_gnb_c_require(snprintf(msg4_pdcch_path,
+                              sizeof(msg4_pdcch_path),
+                              "%s/slot_25_DL_OBJ_PDCCH_DCI1_0_rnti_17921_MSG4.txt",
+                              tx_dir) < (int)sizeof(msg4_pdcch_path),
+                     "expected Msg4 PDCCH transport text path");
+  msg4_pdcch_text = mini_gnb_c_read_text_file(msg4_pdcch_path);
+  mini_gnb_c_require(msg4_pdcch_text != NULL, "expected Msg4 PDCCH text export");
+  mini_gnb_c_require(strstr(msg4_pdcch_text, "channel=PDCCH") != NULL, "expected PDCCH channel export");
+  mini_gnb_c_require(strstr(msg4_pdcch_text, "dci_format=DCI1_0") != NULL, "expected DCI1_0 export");
+  mini_gnb_c_require(strstr(msg4_pdcch_text, "scheduled_type=MSG4") != NULL,
+                     "expected PDCCH to point at Msg4");
+
+  mini_gnb_c_require(snprintf(ssb_tx_path,
+                              sizeof(ssb_tx_path),
+                              "%s/slot_20_DL_OBJ_SSB.txt",
+                              tx_dir) < (int)sizeof(ssb_tx_path),
+                     "expected SSB text path");
+  ssb_tx_text = mini_gnb_c_read_text_file(ssb_tx_path);
+  mini_gnb_c_require(ssb_tx_text != NULL, "expected SSB text export");
+  mini_gnb_c_require(strstr(ssb_tx_text, "channel=PBCH") != NULL, "expected SSB to export as PBCH");
+  mini_gnb_c_require(strstr(ssb_tx_text, "scheduled_by_pdcch=false") != NULL,
+                     "expected SSB to remain outside PDCCH scheduling");
+
+  mini_gnb_c_require(snprintf(dl_data_tx_path,
+                              sizeof(dl_data_tx_path),
+                              "%s/slot_27_DL_OBJ_DATA.txt",
+                              tx_dir) < (int)sizeof(dl_data_tx_path),
+                     "expected DL data text path");
+  dl_data_tx_text = mini_gnb_c_read_text_file(dl_data_tx_path);
+  mini_gnb_c_require(dl_data_tx_text != NULL, "expected DL data text export");
+  mini_gnb_c_require(strstr(dl_data_tx_text, "type=DL_OBJ_DATA") != NULL, "expected DL data type export");
+  mini_gnb_c_require(strstr(dl_data_tx_text, "dci_format=DCI1_1") != NULL, "expected DCI1_1 for DL data");
+  mini_gnb_c_require(strstr(dl_data_tx_text, "payload_text=PUCCH_CFG|sr_abs_slot=30") != NULL,
+                     "expected DL data payload to carry PUCCH config");
+
+  mini_gnb_c_require(snprintf(dl_data_pdcch_path,
+                              sizeof(dl_data_pdcch_path),
+                              "%s/slot_27_DL_OBJ_PDCCH_DCI1_1_rnti_17921_DATA.txt",
+                              tx_dir) < (int)sizeof(dl_data_pdcch_path),
+                     "expected DL data PDCCH path");
+  dl_data_pdcch_text = mini_gnb_c_read_text_file(dl_data_pdcch_path);
+  mini_gnb_c_require(dl_data_pdcch_text != NULL, "expected DL data PDCCH export");
+  mini_gnb_c_require(strstr(dl_data_pdcch_text, "dci_format=DCI1_1") != NULL,
+                     "expected DCI1_1 control export");
+  mini_gnb_c_require(strstr(dl_data_pdcch_text, "scheduled_abs_slot=27") != NULL,
+                     "expected DCI1_1 to point at the PUCCH config PDSCH");
+
+  mini_gnb_c_require(snprintf(bsr_grant_pdcch_path,
+                              sizeof(bsr_grant_pdcch_path),
+                              "%s/slot_31_DL_OBJ_PDCCH_DCI0_1_rnti_17921_BSR.txt",
+                              tx_dir) < (int)sizeof(bsr_grant_pdcch_path),
+                     "expected compact BSR grant PDCCH path");
+  bsr_grant_pdcch_text = mini_gnb_c_read_text_file(bsr_grant_pdcch_path);
+  mini_gnb_c_require(bsr_grant_pdcch_text != NULL, "expected compact BSR grant PDCCH export");
+  mini_gnb_c_require(strstr(bsr_grant_pdcch_text, "dci_format=DCI0_1") != NULL,
+                     "expected DCI0_1 control export for BSR");
+  mini_gnb_c_require(strstr(bsr_grant_pdcch_text, "scheduled_type=BSR") != NULL,
+                     "expected first UL grant to target BSR");
+  mini_gnb_c_require(strstr(bsr_grant_pdcch_text, "scheduled_purpose=BSR") != NULL,
+                     "expected first UL grant purpose to be BSR");
+  mini_gnb_c_require(strstr(bsr_grant_pdcch_text, "scheduled_abs_slot=33") != NULL,
+                     "expected compact grant to point at the BSR slot");
+
+  mini_gnb_c_require(snprintf(data_grant_pdcch_path,
+                              sizeof(data_grant_pdcch_path),
+                              "%s/slot_34_DL_OBJ_PDCCH_DCI0_1_rnti_17921_DATA.txt",
+                              tx_dir) < (int)sizeof(data_grant_pdcch_path),
+                     "expected large UL data grant PDCCH path");
+  data_grant_pdcch_text = mini_gnb_c_read_text_file(data_grant_pdcch_path);
+  mini_gnb_c_require(data_grant_pdcch_text != NULL, "expected large UL data grant PDCCH export");
+  mini_gnb_c_require(strstr(data_grant_pdcch_text, "dci_format=DCI0_1") != NULL,
+                     "expected DCI0_1 control export for payload");
+  mini_gnb_c_require(strstr(data_grant_pdcch_text, "scheduled_type=DATA") != NULL,
+                     "expected second UL grant to target data");
+  mini_gnb_c_require(strstr(data_grant_pdcch_text, "scheduled_purpose=DATA") != NULL,
+                     "expected second UL grant purpose to be data");
+  mini_gnb_c_require(strstr(data_grant_pdcch_text, "scheduled_abs_slot=36") != NULL,
+                     "expected large grant to point at the UL payload slot");
+
+  free(data_grant_pdcch_text);
+  free(bsr_grant_pdcch_text);
+  free(dl_data_pdcch_text);
+  free(dl_data_tx_text);
+  free(ssb_tx_text);
+  free(msg4_pdcch_text);
+  free(msg4_tx_text);
+}
+
 void test_integration_msg3_missing_retries_prach(void) {
   char config_path[MINI_GNB_C_MAX_PATH];
   char output_dir[MINI_GNB_C_MAX_PATH];
@@ -115,4 +457,96 @@ void test_integration_msg3_missing_retries_prach(void) {
   mini_gnb_c_require(summary.ra_context.state == MINI_GNB_C_RA_FAIL, "expected final RA state to be FAIL");
   mini_gnb_c_require(summary.ra_context.detect_abs_slot == 10, "expected retry PRACH to become the final RA context");
   mini_gnb_c_require(summary.ue_count == 0U, "expected no UE promotion without Msg3");
+}
+
+void test_integration_msg3_rnti_mismatch_rejected_after_retry(void) {
+  char config_path[MINI_GNB_C_MAX_PATH];
+  char output_dir[MINI_GNB_C_MAX_PATH];
+  char input_dir[MINI_GNB_C_MAX_PATH];
+  char prach_first_path[MINI_GNB_C_MAX_PATH];
+  char prach_second_path[MINI_GNB_C_MAX_PATH];
+  char msg3_second_path[MINI_GNB_C_MAX_PATH];
+  char error_message[256];
+  mini_gnb_c_config_t config;
+  mini_gnb_c_simulator_t simulator;
+  mini_gnb_c_run_summary_t summary;
+
+  mini_gnb_c_default_config_path(config_path, sizeof(config_path));
+  mini_gnb_c_require(mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) == 0,
+                     "expected config to load");
+
+  config.sim.total_slots = 50;
+  config.sim.msg3_present = false;
+  config.sim.prach_retry_delay_slots = -1;
+
+  mini_gnb_c_make_output_dir("test_integration_msg3_rnti_mismatch_c", output_dir, sizeof(output_dir));
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "input", input_dir, sizeof(input_dir)) == 0,
+                     "expected input directory path");
+  mini_gnb_c_require(snprintf(config.sim.ul_input_dir,
+                              sizeof(config.sim.ul_input_dir),
+                              "%s",
+                              input_dir) < (int)sizeof(config.sim.ul_input_dir),
+                     "expected input directory to fit in config");
+  mini_gnb_c_require(snprintf(prach_first_path,
+                              sizeof(prach_first_path),
+                              "%s/slot_20_UL_OBJ_PRACH.txt",
+                              input_dir) < (int)sizeof(prach_first_path),
+                     "expected first PRACH path");
+  mini_gnb_c_require(snprintf(prach_second_path,
+                              sizeof(prach_second_path),
+                              "%s/slot_40_UL_OBJ_PRACH.txt",
+                              input_dir) < (int)sizeof(prach_second_path),
+                     "expected second PRACH path");
+  mini_gnb_c_require(snprintf(msg3_second_path,
+                              sizeof(msg3_second_path),
+                              "%s/slot_44_UL_OBJ_MSG3.txt",
+                              input_dir) < (int)sizeof(msg3_second_path),
+                     "expected second Msg3 path");
+
+  mini_gnb_c_write_transport_text_file(prach_first_path,
+                                       "direction=UL\n"
+                                       "abs_slot=20\n"
+                                       "type=UL_OBJ_PRACH\n"
+                                       "preamble_id=27\n"
+                                       "ta_est=11\n"
+                                       "peak_metric=18.5\n"
+                                       "sample_count=64\n");
+  mini_gnb_c_write_transport_text_file(prach_second_path,
+                                       "direction=UL\n"
+                                       "abs_slot=40\n"
+                                       "type=UL_OBJ_PRACH\n"
+                                       "preamble_id=28\n"
+                                       "ta_est=9\n"
+                                       "peak_metric=17.0\n"
+                                       "sample_count=64\n");
+  mini_gnb_c_write_transport_text_file(msg3_second_path,
+                                       "direction=UL\n"
+                                       "abs_slot=44\n"
+                                       "type=UL_OBJ_MSG3\n"
+                                       "rnti=17921\n"
+                                       "snr_db=18.2\n"
+                                       "evm=2.1\n"
+                                       "crc_ok=true\n"
+                                       "sample_count=96\n"
+                                       "payload_hex=020201460110A1B2C3D4E5F603011122334455667788\n");
+
+  mini_gnb_c_simulator_init(&simulator, &config, output_dir);
+  mini_gnb_c_require(mini_gnb_c_simulator_run(&simulator, &summary) == 0, "expected simulator run");
+
+  mini_gnb_c_require(summary.counters.prach_detect_ok == 2U, "expected both PRACH attempts to be detected");
+  mini_gnb_c_require(summary.counters.rar_sent == 2U, "expected one RAR per PRACH attempt");
+  mini_gnb_c_require(summary.counters.msg3_crc_ok == 0U,
+                     "expected mismatched second-attempt Msg3 to be rejected before decode success");
+  mini_gnb_c_require(summary.counters.rrcsetup_sent == 0U, "expected no Msg4 after Msg3 RNTI mismatch");
+  mini_gnb_c_require(summary.counters.ra_timeout == 2U,
+                     "expected each attempt to end in timeout when no valid Msg3 arrives");
+  mini_gnb_c_require(summary.has_ra_context, "expected final RA context to remain visible in summary");
+  mini_gnb_c_require(summary.ra_context.detect_abs_slot == 40, "expected second PRACH to become the final RA context");
+  mini_gnb_c_require(summary.ra_context.tc_rnti == 17922U,
+                     "expected second PRACH to allocate a new TC-RNTI");
+  mini_gnb_c_require(summary.ra_context.state == MINI_GNB_C_RA_FAIL,
+                     "expected final RA state to fail after mismatched Msg3");
+  mini_gnb_c_require(strcmp(summary.ra_context.last_failure, "MSG3_TIMEOUT") == 0,
+                     "expected mismatched Msg3 to leave the RA attempt waiting until timeout");
+  mini_gnb_c_require(summary.ue_count == 0U, "expected no UE promotion when Msg3 RNTI mismatches");
 }

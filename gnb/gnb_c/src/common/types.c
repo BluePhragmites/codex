@@ -13,6 +13,10 @@ const char* mini_gnb_c_dl_object_type_to_string(const mini_gnb_c_dl_object_type_
       return "DL_OBJ_RAR";
     case MINI_GNB_C_DL_OBJ_MSG4:
       return "DL_OBJ_MSG4";
+    case MINI_GNB_C_DL_OBJ_DATA:
+      return "DL_OBJ_DATA";
+    case MINI_GNB_C_DL_OBJ_PDCCH:
+      return "DL_OBJ_PDCCH";
   }
   return "DL_OBJ_UNKNOWN";
 }
@@ -25,8 +29,26 @@ const char* mini_gnb_c_ul_burst_type_to_string(const mini_gnb_c_ul_burst_type_t 
       return "UL_BURST_PRACH";
     case MINI_GNB_C_UL_BURST_MSG3:
       return "UL_BURST_MSG3";
+    case MINI_GNB_C_UL_BURST_PUCCH_SR:
+      return "UL_BURST_PUCCH_SR";
+    case MINI_GNB_C_UL_BURST_DATA:
+      return "UL_BURST_DATA";
   }
   return "UL_BURST_UNKNOWN";
+}
+
+const char* mini_gnb_c_dci_format_to_string(const mini_gnb_c_dci_format_t format) {
+  switch (format) {
+    case MINI_GNB_C_DCI_FORMAT_0_0:
+      return "DCI0_0";
+    case MINI_GNB_C_DCI_FORMAT_0_1:
+      return "DCI0_1";
+    case MINI_GNB_C_DCI_FORMAT_1_0:
+      return "DCI1_0";
+    case MINI_GNB_C_DCI_FORMAT_1_1:
+      return "DCI1_1";
+  }
+  return "DCI_UNKNOWN";
 }
 
 const char* mini_gnb_c_ra_state_to_string(const mini_gnb_c_ra_state_t state) {

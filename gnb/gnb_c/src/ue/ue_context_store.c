@@ -26,6 +26,18 @@ mini_gnb_c_ue_context_t* mini_gnb_c_ue_context_store_promote(
   context.create_abs_slot = create_abs_slot;
   context.rrc_setup_sent = false;
   context.sent_abs_slot = -1;
+  context.traffic_plan_scheduled = false;
+  context.dl_data_sent = false;
+  context.dl_data_abs_slot = -1;
+  context.pucch_sr_detected = false;
+  context.pucch_sr_abs_slot = -1;
+  context.ul_bsr_received = false;
+  context.ul_bsr_abs_slot = -1;
+  context.ul_bsr_buffer_size_bytes = 0;
+  context.small_ul_grant_abs_slot = -1;
+  context.large_ul_grant_abs_slot = -1;
+  context.ul_data_received = false;
+  context.ul_data_abs_slot = -1;
 
   store->contexts[0] = context;
   store->count = 1;

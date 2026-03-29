@@ -24,12 +24,19 @@ bool mini_gnb_c_mock_msg3_receiver_decode(const mini_gnb_c_mock_msg3_receiver_t*
     return false;
   }
 
+  /* When the mock UL transport carries an explicit RNTI, it must match the
+   * currently scheduled TC-RNTI. Otherwise the Msg3 belongs to a different
+   * random-access attempt and must be rejected. */
+  if (burst->rnti != 0U && burst->rnti != ul_grant->tc_rnti) {
+    return false;
+  }
+
   memset(out_msg3, 0, sizeof(*out_msg3));
   out_msg3->sfn = slot->sfn;
   out_msg3->slot = slot->slot;
   out_msg3->abs_slot = slot->abs_slot;
   out_msg3->rnti = ul_grant->tc_rnti;
-  out_msg3->crc_ok = receiver->config.msg3_crc_ok;
+  out_msg3->crc_ok = burst->crc_ok_override_valid ? burst->crc_ok_override : receiver->config.msg3_crc_ok;
   out_msg3->snr_db = burst->snr_db;
   out_msg3->evm = burst->evm;
   out_msg3->mac_pdu = burst->mac_pdu;

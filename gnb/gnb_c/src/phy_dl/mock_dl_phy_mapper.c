@@ -42,6 +42,10 @@ static float mini_gnb_c_object_amplitude(mini_gnb_c_dl_object_type_t type) {
       return 0.12f;
     case MINI_GNB_C_DL_OBJ_MSG4:
       return 0.14f;
+    case MINI_GNB_C_DL_OBJ_DATA:
+      return 0.11f;
+    case MINI_GNB_C_DL_OBJ_PDCCH:
+      return 0.06f;
   }
   return 0.08f;
 }
@@ -140,6 +144,8 @@ size_t mini_gnb_c_mock_dl_phy_mapper_map(const mini_gnb_c_mock_dl_phy_mapper_t* 
     patch->type = grants[i].type;
     patch->rnti = grants[i].rnti;
     patch->payload_len = grants[i].payload.len;
+    patch->pdcch = grants[i].pdcch;
+    patch->payload = grants[i].payload;
     mini_gnb_c_generate_toy_waveform(&grants[i], patch);
   }
 

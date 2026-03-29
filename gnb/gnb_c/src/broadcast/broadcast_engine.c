@@ -3,6 +3,26 @@
 #include <stdio.h>
 #include <string.h>
 
+static void mini_gnb_c_assign_dl_pdcch(mini_gnb_c_dl_grant_t* grant) {
+  if (grant == NULL) {
+    return;
+  }
+
+  memset(&grant->pdcch, 0, sizeof(grant->pdcch));
+  grant->pdcch.valid = true;
+  grant->pdcch.format = MINI_GNB_C_DCI_FORMAT_1_0;
+  grant->pdcch.rnti = grant->rnti;
+  grant->pdcch.coreset_prb_start = 0U;
+  grant->pdcch.coreset_prb_len = 12U;
+  grant->pdcch.scheduled_prb_start = grant->prb_start;
+  grant->pdcch.scheduled_prb_len = grant->prb_len;
+  grant->pdcch.mcs = grant->mcs;
+  grant->pdcch.k2 = -1;
+  grant->pdcch.scheduled_abs_slot = grant->abs_slot;
+  grant->pdcch.scheduled_dl_type = grant->type;
+  grant->pdcch.scheduled_ul_type = MINI_GNB_C_UL_BURST_NONE;
+}
+
 static void mini_gnb_c_build_mib(const mini_gnb_c_cell_config_t* cell,
                                  const mini_gnb_c_slot_indication_t* slot,
                                  mini_gnb_c_buffer_t* out_payload) {
@@ -75,6 +95,7 @@ size_t mini_gnb_c_broadcast_schedule(const mini_gnb_c_broadcast_engine_t* engine
     grant->prb_start = 20;
     grant->prb_len = 24;
     grant->mcs = 4;
+    mini_gnb_c_assign_dl_pdcch(grant);
     mini_gnb_c_build_sib1(&engine->cell, &engine->prach, &grant->payload);
   }
 

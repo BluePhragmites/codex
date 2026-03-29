@@ -1,0 +1,9 @@
+direction=UL
+abs_slot=93
+type=UL_OBJ_DATA
+rnti=17923
+snr_db=14.7
+evm=1.4
+crc_ok=true
+sample_count=112
+payload_text=BSR|bytes=512

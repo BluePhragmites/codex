@@ -1,0 +1,9 @@
+direction=UL
+abs_slot=44
+type=UL_OBJ_MSG3
+rnti=17921
+snr_db=18.2
+evm=2.1
+crc_ok=true
+sample_count=320
+payload_hex=020201460110A1B2C3D4E5F603011122334455667788

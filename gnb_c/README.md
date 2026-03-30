@@ -21,7 +21,7 @@ The C version intentionally uses fixed-size buffers and plain C interfaces so it
 ## Build In WSL Ubuntu
 
 ```bash
-cd /mnt/d/work/codex/gnb/gnb_c
+cd /mnt/d/work/codex/gnb_c
 cmake -S . -B build -G Ninja
 cmake --build build
 ctest --test-dir build --output-on-failure

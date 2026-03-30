@@ -3,6 +3,18 @@
 #include <stdio.h>
 #include <string.h>
 
+typedef struct {
+  uint16_t prb_len;
+  uint8_t mcs;
+  uint16_t tbsize;
+} mini_gnb_c_tbsize_entry_t;
+
+static const mini_gnb_c_tbsize_entry_t mini_gnb_c_tbsize_table[] = {
+    {8U, 4U, 16U},   {12U, 4U, 24U},  {16U, 4U, 32U},  {16U, 8U, 64U},  {20U, 0U, 24U},
+    {20U, 8U, 80U},  {24U, 4U, 48U},  {24U, 8U, 96U},  {24U, 9U, 120U}, {28U, 8U, 112U},
+    {32U, 8U, 128U}, {36U, 8U, 144U}, {40U, 8U, 160U},
+};
+
 const char* mini_gnb_c_dl_object_type_to_string(const mini_gnb_c_dl_object_type_t type) {
   switch (type) {
     case MINI_GNB_C_DL_OBJ_SSB:
@@ -73,6 +85,18 @@ const char* mini_gnb_c_ra_state_to_string(const mini_gnb_c_ra_state_t state) {
       return "FAIL";
   }
   return "UNKNOWN";
+}
+
+uint16_t mini_gnb_c_lookup_tbsize(const uint16_t prb_len, const uint8_t mcs) {
+  size_t i = 0;
+
+  for (i = 0; i < (sizeof(mini_gnb_c_tbsize_table) / sizeof(mini_gnb_c_tbsize_table[0])); ++i) {
+    if (mini_gnb_c_tbsize_table[i].prb_len == prb_len && mini_gnb_c_tbsize_table[i].mcs == mcs) {
+      return mini_gnb_c_tbsize_table[i].tbsize;
+    }
+  }
+
+  return 0U;
 }
 
 void mini_gnb_c_buffer_reset(mini_gnb_c_buffer_t* buffer) {

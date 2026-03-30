@@ -276,6 +276,7 @@ void test_integration_slot_text_transport(void) {
                                        "evm=1.3\n"
                                        "crc_ok=true\n"
                                        "sample_count=96\n"
+                                       "tbsize=16\n"
                                        "payload_text=BSR|bytes=384\n");
   mini_gnb_c_write_transport_text_file(ul_data_path,
                                        "direction=UL\n"
@@ -286,6 +287,7 @@ void test_integration_slot_text_transport(void) {
                                        "evm=2.4\n"
                                        "crc_ok=true\n"
                                        "sample_count=128\n"
+                                       "tbsize=96\n"
                                        "payload_text=UL_DATA_TEST\n");
 
   mini_gnb_c_simulator_init(&simulator, &config, output_dir);
@@ -372,6 +374,7 @@ void test_integration_slot_text_transport(void) {
   mini_gnb_c_require(dl_data_tx_text != NULL, "expected DL data text export");
   mini_gnb_c_require(strstr(dl_data_tx_text, "type=DL_OBJ_DATA") != NULL, "expected DL data type export");
   mini_gnb_c_require(strstr(dl_data_tx_text, "dci_format=DCI1_1") != NULL, "expected DCI1_1 for DL data");
+  mini_gnb_c_require(strstr(dl_data_tx_text, "tbsize=120") != NULL, "expected DL data tbsize export");
   mini_gnb_c_require(strstr(dl_data_tx_text, "payload_text=PUCCH_CFG|sr_abs_slot=30") != NULL,
                      "expected DL data payload to carry PUCCH config");
 
@@ -400,6 +403,8 @@ void test_integration_slot_text_transport(void) {
                      "expected first UL grant to target BSR");
   mini_gnb_c_require(strstr(bsr_grant_pdcch_text, "scheduled_purpose=BSR") != NULL,
                      "expected first UL grant purpose to be BSR");
+  mini_gnb_c_require(strstr(bsr_grant_pdcch_text, "tbsize=16") != NULL,
+                     "expected compact BSR grant tbsize export");
   mini_gnb_c_require(strstr(bsr_grant_pdcch_text, "scheduled_abs_slot=33") != NULL,
                      "expected compact grant to point at the BSR slot");
 
@@ -416,6 +421,8 @@ void test_integration_slot_text_transport(void) {
                      "expected second UL grant to target data");
   mini_gnb_c_require(strstr(data_grant_pdcch_text, "scheduled_purpose=DATA") != NULL,
                      "expected second UL grant purpose to be data");
+  mini_gnb_c_require(strstr(data_grant_pdcch_text, "tbsize=96") != NULL,
+                     "expected large UL grant tbsize export");
   mini_gnb_c_require(strstr(data_grant_pdcch_text, "scheduled_abs_slot=36") != NULL,
                      "expected large grant to point at the UL payload slot");
 
@@ -549,4 +556,426 @@ void test_integration_msg3_rnti_mismatch_rejected_after_retry(void) {
   mini_gnb_c_require(strcmp(summary.ra_context.last_failure, "MSG3_TIMEOUT") == 0,
                      "expected mismatched Msg3 to leave the RA attempt waiting until timeout");
   mini_gnb_c_require(summary.ue_count == 0U, "expected no UE promotion when Msg3 RNTI mismatches");
+}
+
+void test_integration_scripted_schedule_files(void) {
+  char config_path[MINI_GNB_C_MAX_PATH];
+  char output_dir[MINI_GNB_C_MAX_PATH];
+  char input_dir[MINI_GNB_C_MAX_PATH];
+  char schedule_dir[MINI_GNB_C_MAX_PATH];
+  char prach_path[MINI_GNB_C_MAX_PATH];
+  char msg3_path[MINI_GNB_C_MAX_PATH];
+  char bsr_path[MINI_GNB_C_MAX_PATH];
+  char ul_data_path[MINI_GNB_C_MAX_PATH];
+  char dl_schedule_path[MINI_GNB_C_MAX_PATH];
+  char bsr_schedule_path[MINI_GNB_C_MAX_PATH];
+  char data_schedule_path[MINI_GNB_C_MAX_PATH];
+  char tx_dir[MINI_GNB_C_MAX_PATH];
+  char dl_data_tx_path[MINI_GNB_C_MAX_PATH];
+  char dl_data_pdcch_path[MINI_GNB_C_MAX_PATH];
+  char bsr_grant_pdcch_path[MINI_GNB_C_MAX_PATH];
+  char data_grant_pdcch_path[MINI_GNB_C_MAX_PATH];
+  char error_message[256];
+  mini_gnb_c_config_t config;
+  mini_gnb_c_simulator_t simulator;
+  mini_gnb_c_run_summary_t summary;
+  char* dl_data_tx_text = NULL;
+  char* dl_data_pdcch_text = NULL;
+  char* bsr_grant_pdcch_text = NULL;
+  char* data_grant_pdcch_text = NULL;
+
+  mini_gnb_c_default_config_path(config_path, sizeof(config_path));
+  mini_gnb_c_require(mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) == 0,
+                     "expected config to load");
+
+  config.sim.total_slots = 45;
+  config.sim.msg3_present = false;
+  config.sim.post_msg4_traffic_enabled = false;
+  config.sim.ul_data_present = false;
+
+  mini_gnb_c_make_output_dir("test_integration_scripted_schedule_c", output_dir, sizeof(output_dir));
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "scripted_schedule_input", input_dir, sizeof(input_dir)) == 0,
+                     "expected scripted input directory");
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "scripted_schedule_plan", schedule_dir, sizeof(schedule_dir)) ==
+                         0,
+                     "expected scripted schedule directory");
+  mini_gnb_c_require(snprintf(config.sim.ul_input_dir, sizeof(config.sim.ul_input_dir), "%s", input_dir) <
+                         (int)sizeof(config.sim.ul_input_dir),
+                     "expected input directory config");
+  mini_gnb_c_require(snprintf(config.sim.scripted_schedule_dir,
+                              sizeof(config.sim.scripted_schedule_dir),
+                              "%s",
+                              schedule_dir) < (int)sizeof(config.sim.scripted_schedule_dir),
+                     "expected scripted schedule directory config");
+
+  mini_gnb_c_require(snprintf(prach_path, sizeof(prach_path), "%s/slot_20_UL_OBJ_PRACH.txt", input_dir) <
+                         (int)sizeof(prach_path),
+                     "expected PRACH path");
+  mini_gnb_c_require(snprintf(msg3_path, sizeof(msg3_path), "%s/slot_24_UL_OBJ_MSG3.txt", input_dir) <
+                         (int)sizeof(msg3_path),
+                     "expected Msg3 path");
+  mini_gnb_c_require(snprintf(bsr_path, sizeof(bsr_path), "%s/slot_33_UL_OBJ_DATA.txt", input_dir) <
+                         (int)sizeof(bsr_path),
+                     "expected BSR path");
+  mini_gnb_c_require(snprintf(ul_data_path, sizeof(ul_data_path), "%s/slot_36_UL_OBJ_DATA.txt", input_dir) <
+                         (int)sizeof(ul_data_path),
+                     "expected UL data path");
+  mini_gnb_c_require(snprintf(dl_schedule_path, sizeof(dl_schedule_path), "%s/slot_27_SCRIPT_DL.txt", schedule_dir) <
+                         (int)sizeof(dl_schedule_path),
+                     "expected scripted DL path");
+  mini_gnb_c_require(snprintf(bsr_schedule_path, sizeof(bsr_schedule_path), "%s/slot_31_SCRIPT_UL.txt", schedule_dir) <
+                         (int)sizeof(bsr_schedule_path),
+                     "expected scripted BSR path");
+  mini_gnb_c_require(snprintf(data_schedule_path,
+                              sizeof(data_schedule_path),
+                              "%s/slot_34_SCRIPT_UL.txt",
+                              schedule_dir) < (int)sizeof(data_schedule_path),
+                     "expected scripted UL data path");
+
+  mini_gnb_c_write_transport_text_file(prach_path,
+                                       "direction=UL\n"
+                                       "abs_slot=20\n"
+                                       "type=UL_OBJ_PRACH\n"
+                                       "preamble_id=27\n"
+                                       "ta_est=11\n"
+                                       "peak_metric=18.5\n"
+                                       "sample_count=64\n");
+  mini_gnb_c_write_transport_text_file(msg3_path,
+                                       "direction=UL\n"
+                                       "abs_slot=24\n"
+                                       "type=UL_OBJ_MSG3\n"
+                                       "rnti=17921\n"
+                                       "snr_db=18.2\n"
+                                       "evm=2.1\n"
+                                       "crc_ok=true\n"
+                                       "sample_count=96\n"
+                                       "payload_hex=020201460110A1B2C3D4E5F603011122334455667788\n");
+  mini_gnb_c_write_transport_text_file(bsr_path,
+                                       "direction=UL\n"
+                                       "abs_slot=33\n"
+                                       "type=UL_OBJ_DATA\n"
+                                       "rnti=17921\n"
+                                       "snr_db=14.0\n"
+                                       "evm=1.2\n"
+                                       "crc_ok=true\n"
+                                       "sample_count=96\n"
+                                       "tbsize=24\n"
+                                       "payload_text=BSR|bytes=640\n");
+  mini_gnb_c_write_transport_text_file(ul_data_path,
+                                       "direction=UL\n"
+                                       "abs_slot=36\n"
+                                       "type=UL_OBJ_DATA\n"
+                                       "rnti=17921\n"
+                                       "snr_db=15.0\n"
+                                       "evm=1.8\n"
+                                       "crc_ok=true\n"
+                                       "sample_count=128\n"
+                                       "tbsize=64\n"
+                                       "payload_text=SCRIPTED_UL_DATA\n");
+
+  mini_gnb_c_write_transport_text_file(dl_schedule_path,
+                                       "type=SCRIPT_DL_DATA\n"
+                                       "abs_slot=27\n"
+                                       "rnti=17921\n"
+                                       "dci_format=DCI1_1\n"
+                                       "prb_start=40\n"
+                                       "prb_len=20\n"
+                                       "mcs=8\n"
+                                       "payload_text=SCRIPTED_DIRECT_DL\n");
+  mini_gnb_c_write_transport_text_file(bsr_schedule_path,
+                                       "type=SCRIPT_UL_GRANT\n"
+                                       "rnti=17921\n"
+                                       "scheduled_abs_slot=33\n"
+                                       "purpose=BSR\n"
+                                       "prb_start=58\n"
+                                       "prb_len=12\n"
+                                       "mcs=4\n"
+                                       "k2=2\n");
+  mini_gnb_c_write_transport_text_file(data_schedule_path,
+                                       "type=SCRIPT_UL_GRANT\n"
+                                       "rnti=17921\n"
+                                       "scheduled_abs_slot=36\n"
+                                       "purpose=DATA\n"
+                                       "prb_start=46\n"
+                                       "prb_len=16\n"
+                                       "mcs=8\n"
+                                       "k2=2\n");
+
+  mini_gnb_c_simulator_init(&simulator, &config, output_dir);
+  mini_gnb_c_require(mini_gnb_c_simulator_run(&simulator, &summary) == 0, "expected simulator run");
+
+  mini_gnb_c_require(summary.counters.prach_detect_ok == 1U, "expected PRACH detection");
+  mini_gnb_c_require(summary.counters.msg3_crc_ok == 1U, "expected Msg3 success");
+  mini_gnb_c_require(summary.counters.rrcsetup_sent == 1U, "expected Msg4 send");
+  mini_gnb_c_require(summary.counters.pucch_sr_detect_ok == 0U, "expected no scripted PUCCH SR");
+  mini_gnb_c_require(summary.counters.dl_data_sent == 1U, "expected one scripted DL data send");
+  mini_gnb_c_require(summary.counters.ul_bsr_rx_ok == 1U, "expected one scripted BSR receive");
+  mini_gnb_c_require(summary.counters.ul_data_rx_ok == 1U, "expected one scripted UL data receive");
+  mini_gnb_c_require(summary.ue_count == 1U, "expected one UE context");
+  mini_gnb_c_require(summary.ue_contexts[0].dl_data_abs_slot == 27, "expected scripted DL abs slot");
+  mini_gnb_c_require(summary.ue_contexts[0].ul_bsr_abs_slot == 33, "expected scripted BSR abs slot");
+  mini_gnb_c_require(summary.ue_contexts[0].large_ul_grant_abs_slot == 36, "expected scripted UL data grant slot");
+  mini_gnb_c_require(summary.ue_contexts[0].ul_data_abs_slot == 36, "expected scripted UL data abs slot");
+
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "tx", tx_dir, sizeof(tx_dir)) == 0, "expected tx dir");
+  mini_gnb_c_require(snprintf(dl_data_tx_path, sizeof(dl_data_tx_path), "%s/slot_27_DL_OBJ_DATA.txt", tx_dir) <
+                         (int)sizeof(dl_data_tx_path),
+                     "expected scripted DL tx path");
+  mini_gnb_c_require(snprintf(dl_data_pdcch_path,
+                              sizeof(dl_data_pdcch_path),
+                              "%s/slot_27_DL_OBJ_PDCCH_DCI1_1_rnti_17921_DATA.txt",
+                              tx_dir) < (int)sizeof(dl_data_pdcch_path),
+                     "expected scripted DL pdcch path");
+  mini_gnb_c_require(snprintf(bsr_grant_pdcch_path,
+                              sizeof(bsr_grant_pdcch_path),
+                              "%s/slot_31_DL_OBJ_PDCCH_DCI0_1_rnti_17921_BSR.txt",
+                              tx_dir) < (int)sizeof(bsr_grant_pdcch_path),
+                     "expected scripted BSR pdcch path");
+  mini_gnb_c_require(snprintf(data_grant_pdcch_path,
+                              sizeof(data_grant_pdcch_path),
+                              "%s/slot_34_DL_OBJ_PDCCH_DCI0_1_rnti_17921_DATA.txt",
+                              tx_dir) < (int)sizeof(data_grant_pdcch_path),
+                     "expected scripted data pdcch path");
+
+  dl_data_tx_text = mini_gnb_c_read_text_file(dl_data_tx_path);
+  dl_data_pdcch_text = mini_gnb_c_read_text_file(dl_data_pdcch_path);
+  bsr_grant_pdcch_text = mini_gnb_c_read_text_file(bsr_grant_pdcch_path);
+  data_grant_pdcch_text = mini_gnb_c_read_text_file(data_grant_pdcch_path);
+
+  mini_gnb_c_require(dl_data_tx_text != NULL, "expected scripted DL tx export");
+  mini_gnb_c_require(dl_data_pdcch_text != NULL, "expected scripted DL pdcch export");
+  mini_gnb_c_require(bsr_grant_pdcch_text != NULL, "expected scripted BSR pdcch export");
+  mini_gnb_c_require(data_grant_pdcch_text != NULL, "expected scripted data pdcch export");
+  mini_gnb_c_require(strstr(dl_data_tx_text, "payload_text=SCRIPTED_DIRECT_DL") != NULL,
+                     "expected scripted DL payload");
+  mini_gnb_c_require(strstr(dl_data_tx_text, "tbsize=80") != NULL, "expected scripted DL tbsize");
+  mini_gnb_c_require(strstr(dl_data_pdcch_text, "scheduled_prb_len=20") != NULL, "expected scripted DL prb len");
+  mini_gnb_c_require(strstr(dl_data_pdcch_text, "mcs=8") != NULL, "expected scripted DL mcs");
+  mini_gnb_c_require(strstr(dl_data_pdcch_text, "tbsize=80") != NULL, "expected scripted DL tbsize in pdcch");
+  mini_gnb_c_require(strstr(bsr_grant_pdcch_text, "scheduled_prb_len=12") != NULL,
+                     "expected scripted BSR prb len");
+  mini_gnb_c_require(strstr(bsr_grant_pdcch_text, "tbsize=24") != NULL, "expected scripted BSR tbsize");
+  mini_gnb_c_require(strstr(data_grant_pdcch_text, "scheduled_prb_len=16") != NULL,
+                     "expected scripted UL data prb len");
+  mini_gnb_c_require(strstr(data_grant_pdcch_text, "tbsize=64") != NULL, "expected scripted UL data tbsize");
+
+  free(dl_data_tx_text);
+  free(dl_data_pdcch_text);
+  free(bsr_grant_pdcch_text);
+  free(data_grant_pdcch_text);
+}
+
+void test_integration_scripted_pdcch_files(void) {
+  char config_path[MINI_GNB_C_MAX_PATH];
+  char output_dir[MINI_GNB_C_MAX_PATH];
+  char input_dir[MINI_GNB_C_MAX_PATH];
+  char pdcch_dir[MINI_GNB_C_MAX_PATH];
+  char prach_path[MINI_GNB_C_MAX_PATH];
+  char msg3_path[MINI_GNB_C_MAX_PATH];
+  char bsr_path[MINI_GNB_C_MAX_PATH];
+  char ul_data_path[MINI_GNB_C_MAX_PATH];
+  char dl_pdcch_script_path[MINI_GNB_C_MAX_PATH];
+  char bsr_pdcch_script_path[MINI_GNB_C_MAX_PATH];
+  char data_pdcch_script_path[MINI_GNB_C_MAX_PATH];
+  char tx_dir[MINI_GNB_C_MAX_PATH];
+  char dl_data_tx_path[MINI_GNB_C_MAX_PATH];
+  char dl_data_pdcch_path[MINI_GNB_C_MAX_PATH];
+  char bsr_grant_pdcch_path[MINI_GNB_C_MAX_PATH];
+  char data_grant_pdcch_path[MINI_GNB_C_MAX_PATH];
+  char error_message[256];
+  mini_gnb_c_config_t config;
+  mini_gnb_c_simulator_t simulator;
+  mini_gnb_c_run_summary_t summary;
+  char* dl_data_tx_text = NULL;
+  char* dl_data_pdcch_text = NULL;
+  char* bsr_grant_pdcch_text = NULL;
+  char* data_grant_pdcch_text = NULL;
+
+  mini_gnb_c_default_config_path(config_path, sizeof(config_path));
+  mini_gnb_c_require(mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) == 0,
+                     "expected config to load");
+
+  config.sim.total_slots = 45;
+  config.sim.msg3_present = false;
+  config.sim.post_msg4_traffic_enabled = false;
+  config.sim.ul_data_present = false;
+
+  mini_gnb_c_make_output_dir("test_integration_scripted_pdcch_c", output_dir, sizeof(output_dir));
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "scripted_pdcch_input", input_dir, sizeof(input_dir)) == 0,
+                     "expected scripted pdcch input dir");
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "scripted_pdcch_plan", pdcch_dir, sizeof(pdcch_dir)) == 0,
+                     "expected scripted pdcch plan dir");
+  mini_gnb_c_require(snprintf(config.sim.ul_input_dir, sizeof(config.sim.ul_input_dir), "%s", input_dir) <
+                         (int)sizeof(config.sim.ul_input_dir),
+                     "expected pdcch input dir config");
+  mini_gnb_c_require(snprintf(config.sim.scripted_pdcch_dir, sizeof(config.sim.scripted_pdcch_dir), "%s", pdcch_dir) <
+                         (int)sizeof(config.sim.scripted_pdcch_dir),
+                     "expected scripted pdcch dir config");
+
+  mini_gnb_c_require(snprintf(prach_path, sizeof(prach_path), "%s/slot_20_UL_OBJ_PRACH.txt", input_dir) <
+                         (int)sizeof(prach_path),
+                     "expected pdcch PRACH path");
+  mini_gnb_c_require(snprintf(msg3_path, sizeof(msg3_path), "%s/slot_24_UL_OBJ_MSG3.txt", input_dir) <
+                         (int)sizeof(msg3_path),
+                     "expected pdcch Msg3 path");
+  mini_gnb_c_require(snprintf(bsr_path, sizeof(bsr_path), "%s/slot_33_UL_OBJ_DATA.txt", input_dir) <
+                         (int)sizeof(bsr_path),
+                     "expected pdcch BSR path");
+  mini_gnb_c_require(snprintf(ul_data_path, sizeof(ul_data_path), "%s/slot_36_UL_OBJ_DATA.txt", input_dir) <
+                         (int)sizeof(ul_data_path),
+                     "expected pdcch UL data path");
+  mini_gnb_c_require(snprintf(dl_pdcch_script_path,
+                              sizeof(dl_pdcch_script_path),
+                              "%s/slot_27_SCRIPT_PDCCH_DL.txt",
+                              pdcch_dir) < (int)sizeof(dl_pdcch_script_path),
+                     "expected scripted pdcch DL path");
+  mini_gnb_c_require(snprintf(bsr_pdcch_script_path,
+                              sizeof(bsr_pdcch_script_path),
+                              "%s/slot_31_SCRIPT_PDCCH_UL.txt",
+                              pdcch_dir) < (int)sizeof(bsr_pdcch_script_path),
+                     "expected scripted pdcch BSR path");
+  mini_gnb_c_require(snprintf(data_pdcch_script_path,
+                              sizeof(data_pdcch_script_path),
+                              "%s/slot_34_SCRIPT_PDCCH_UL.txt",
+                              pdcch_dir) < (int)sizeof(data_pdcch_script_path),
+                     "expected scripted pdcch data path");
+
+  mini_gnb_c_write_transport_text_file(prach_path,
+                                       "direction=UL\n"
+                                       "abs_slot=20\n"
+                                       "type=UL_OBJ_PRACH\n"
+                                       "preamble_id=27\n"
+                                       "ta_est=11\n"
+                                       "peak_metric=18.5\n"
+                                       "sample_count=64\n");
+  mini_gnb_c_write_transport_text_file(msg3_path,
+                                       "direction=UL\n"
+                                       "abs_slot=24\n"
+                                       "type=UL_OBJ_MSG3\n"
+                                       "rnti=17921\n"
+                                       "snr_db=18.2\n"
+                                       "evm=2.1\n"
+                                       "crc_ok=true\n"
+                                       "sample_count=96\n"
+                                       "payload_hex=020201460110A1B2C3D4E5F603011122334455667788\n");
+  mini_gnb_c_write_transport_text_file(bsr_path,
+                                       "direction=UL\n"
+                                       "abs_slot=33\n"
+                                       "type=UL_OBJ_DATA\n"
+                                       "rnti=17921\n"
+                                       "snr_db=14.5\n"
+                                       "evm=1.1\n"
+                                       "crc_ok=true\n"
+                                       "sample_count=96\n"
+                                       "tbsize=16\n"
+                                       "payload_text=BSR|bytes=384\n");
+  mini_gnb_c_write_transport_text_file(ul_data_path,
+                                       "direction=UL\n"
+                                       "abs_slot=36\n"
+                                       "type=UL_OBJ_DATA\n"
+                                       "rnti=17921\n"
+                                       "snr_db=15.2\n"
+                                       "evm=1.7\n"
+                                       "crc_ok=true\n"
+                                       "sample_count=144\n"
+                                       "tbsize=128\n"
+                                       "payload_text=SCRIPTED_PDCCH_UL_DATA\n");
+
+  mini_gnb_c_write_transport_text_file(dl_pdcch_script_path,
+                                       "direction=DL\n"
+                                       "channel=PDCCH\n"
+                                       "type=DL_OBJ_PDCCH\n"
+                                       "rnti=17921\n"
+                                       "dci_format=DCI1_0\n"
+                                       "scheduled_abs_slot=27\n"
+                                       "scheduled_type=DATA\n"
+                                       "scheduled_prb_start=50\n"
+                                       "scheduled_prb_len=24\n"
+                                       "mcs=4\n"
+                                       "payload_text=SCRIPTED_PDCCH_DL\n");
+  mini_gnb_c_write_transport_text_file(bsr_pdcch_script_path,
+                                       "direction=DL\n"
+                                       "channel=PDCCH\n"
+                                       "type=DL_OBJ_PDCCH\n"
+                                       "rnti=17921\n"
+                                       "dci_format=DCI0_1\n"
+                                       "scheduled_abs_slot=33\n"
+                                       "scheduled_type=BSR\n"
+                                       "scheduled_purpose=BSR\n"
+                                       "scheduled_prb_start=60\n"
+                                       "scheduled_prb_len=8\n"
+                                       "mcs=4\n"
+                                       "k2=2\n");
+  mini_gnb_c_write_transport_text_file(data_pdcch_script_path,
+                                       "direction=DL\n"
+                                       "channel=PDCCH\n"
+                                       "type=DL_OBJ_PDCCH\n"
+                                       "rnti=17921\n"
+                                       "dci_format=DCI0_1\n"
+                                       "scheduled_abs_slot=36\n"
+                                       "scheduled_type=DATA\n"
+                                       "scheduled_purpose=DATA\n"
+                                       "scheduled_prb_start=44\n"
+                                       "scheduled_prb_len=32\n"
+                                       "mcs=8\n"
+                                       "k2=2\n");
+
+  mini_gnb_c_simulator_init(&simulator, &config, output_dir);
+  mini_gnb_c_require(mini_gnb_c_simulator_run(&simulator, &summary) == 0, "expected simulator run");
+
+  mini_gnb_c_require(summary.counters.prach_detect_ok == 1U, "expected PRACH detection");
+  mini_gnb_c_require(summary.counters.msg3_crc_ok == 1U, "expected Msg3 success");
+  mini_gnb_c_require(summary.counters.rrcsetup_sent == 1U, "expected Msg4 send");
+  mini_gnb_c_require(summary.counters.dl_data_sent == 1U, "expected one PDCCH-driven DL data send");
+  mini_gnb_c_require(summary.counters.ul_bsr_rx_ok == 1U, "expected one PDCCH-driven BSR receive");
+  mini_gnb_c_require(summary.counters.ul_data_rx_ok == 1U, "expected one PDCCH-driven UL data receive");
+  mini_gnb_c_require(summary.ue_count == 1U, "expected one UE context");
+  mini_gnb_c_require(summary.ue_contexts[0].dl_data_abs_slot == 27, "expected pdcch DL abs slot");
+  mini_gnb_c_require(summary.ue_contexts[0].ul_bsr_abs_slot == 33, "expected pdcch BSR abs slot");
+  mini_gnb_c_require(summary.ue_contexts[0].ul_data_abs_slot == 36, "expected pdcch UL data abs slot");
+
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "tx", tx_dir, sizeof(tx_dir)) == 0, "expected tx dir");
+  mini_gnb_c_require(snprintf(dl_data_tx_path, sizeof(dl_data_tx_path), "%s/slot_27_DL_OBJ_DATA.txt", tx_dir) <
+                         (int)sizeof(dl_data_tx_path),
+                     "expected pdcch DL tx path");
+  mini_gnb_c_require(snprintf(dl_data_pdcch_path,
+                              sizeof(dl_data_pdcch_path),
+                              "%s/slot_27_DL_OBJ_PDCCH_DCI1_0_rnti_17921_DATA.txt",
+                              tx_dir) < (int)sizeof(dl_data_pdcch_path),
+                     "expected pdcch DL pdcch path");
+  mini_gnb_c_require(snprintf(bsr_grant_pdcch_path,
+                              sizeof(bsr_grant_pdcch_path),
+                              "%s/slot_31_DL_OBJ_PDCCH_DCI0_1_rnti_17921_BSR.txt",
+                              tx_dir) < (int)sizeof(bsr_grant_pdcch_path),
+                     "expected pdcch BSR path");
+  mini_gnb_c_require(snprintf(data_grant_pdcch_path,
+                              sizeof(data_grant_pdcch_path),
+                              "%s/slot_34_DL_OBJ_PDCCH_DCI0_1_rnti_17921_DATA.txt",
+                              tx_dir) < (int)sizeof(data_grant_pdcch_path),
+                     "expected pdcch data path");
+
+  dl_data_tx_text = mini_gnb_c_read_text_file(dl_data_tx_path);
+  dl_data_pdcch_text = mini_gnb_c_read_text_file(dl_data_pdcch_path);
+  bsr_grant_pdcch_text = mini_gnb_c_read_text_file(bsr_grant_pdcch_path);
+  data_grant_pdcch_text = mini_gnb_c_read_text_file(data_grant_pdcch_path);
+
+  mini_gnb_c_require(dl_data_tx_text != NULL, "expected pdcch DL tx export");
+  mini_gnb_c_require(dl_data_pdcch_text != NULL, "expected pdcch DL pdcch export");
+  mini_gnb_c_require(bsr_grant_pdcch_text != NULL, "expected pdcch BSR export");
+  mini_gnb_c_require(data_grant_pdcch_text != NULL, "expected pdcch data export");
+  mini_gnb_c_require(strstr(dl_data_tx_text, "payload_text=SCRIPTED_PDCCH_DL") != NULL,
+                     "expected pdcch DL payload");
+  mini_gnb_c_require(strstr(dl_data_tx_text, "tbsize=48") != NULL, "expected pdcch DL tbsize");
+  mini_gnb_c_require(strstr(dl_data_pdcch_text, "dci_format=DCI1_0") != NULL, "expected scripted DCI1_0");
+  mini_gnb_c_require(strstr(dl_data_pdcch_text, "mcs=4") != NULL, "expected scripted DL mcs");
+  mini_gnb_c_require(strstr(dl_data_pdcch_text, "tbsize=48") != NULL, "expected scripted DL tbsize in pdcch");
+  mini_gnb_c_require(strstr(bsr_grant_pdcch_text, "tbsize=16") != NULL, "expected pdcch BSR tbsize");
+  mini_gnb_c_require(strstr(data_grant_pdcch_text, "scheduled_prb_len=32") != NULL,
+                     "expected pdcch UL data prb len");
+  mini_gnb_c_require(strstr(data_grant_pdcch_text, "tbsize=128") != NULL, "expected pdcch UL data tbsize");
+
+  free(dl_data_tx_text);
+  free(dl_data_pdcch_text);
+  free(bsr_grant_pdcch_text);
+  free(data_grant_pdcch_text);
 }

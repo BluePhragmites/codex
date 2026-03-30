@@ -1,0 +1,7 @@
+direction=UL
+abs_slot=40
+type=UL_OBJ_PRACH
+preamble_id=31
+ta_est=7
+peak_metric=14.5
+sample_count=64

@@ -57,3 +57,10 @@ void test_sib1_schedule_uses_period_and_offset(void) {
   mini_gnb_c_require(slot12.has_sib1, "expected SIB1 at abs_slot 12");
   mini_gnb_c_require(slot20.has_sib1, "expected SIB1 at abs_slot 20");
 }
+
+void test_tbsize_lookup_table(void) {
+  mini_gnb_c_require(mini_gnb_c_lookup_tbsize(8U, 4U) == 16U, "expected compact UL BSR tbsize");
+  mini_gnb_c_require(mini_gnb_c_lookup_tbsize(24U, 8U) == 96U, "expected large UL payload tbsize");
+  mini_gnb_c_require(mini_gnb_c_lookup_tbsize(24U, 9U) == 120U, "expected DL data tbsize");
+  mini_gnb_c_require(mini_gnb_c_lookup_tbsize(7U, 9U) == 0U, "expected unknown PRB/MCS pair to map to 0");
+}

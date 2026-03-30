@@ -1,0 +1,73 @@
+# Example: use explicit per-slot script files to control connected-mode
+# DL/UL scheduling after Msg4.
+
+cell:
+  dl_arfcn: 627334
+  band: 78
+  channel_bandwidth_MHz: 20
+  common_scs_khz: 30
+  pci: 1
+  plmn: "00101"
+  tac: 7
+  ss0_index: 0
+  coreset0_index: 6
+
+prach:
+  prach_config_index: 159
+  prach_root_seq_index: 1
+  zero_correlation_zone: 8
+  ra_resp_window: 4
+  msg3_delta_preamble: 0
+
+rf:
+  device_driver: "mock"
+  device_args: "loopback=true"
+  clock_src: "simulated"
+  srate: 30720000.0
+  tx_gain: 45.0
+  rx_gain: 35.0
+
+broadcast:
+  ssb_period_slots: 20
+  sib1_period_slots: 40
+  sib1_offset_slot: 4
+
+sim:
+  total_slots: 45
+  slots_per_frame: 20
+  msg3_delay_slots: 4
+  msg4_delay_slots: 1
+  prach_trigger_abs_slot: 2
+  prach_retry_delay_slots: -1
+  preamble_id: 27
+  ta_est: 11
+  peak_metric: 18.5
+
+  # Keep built-in connected scheduling off and drive the plan from
+  # examples/scripted_schedule_plan/slot_<abs_slot>_SCRIPT_*.txt.
+  msg3_present: false
+  post_msg4_traffic_enabled: false
+  ul_data_present: false
+
+  ul_data_crc_ok: true
+  ul_data_snr_db: 16.0
+  ul_data_evm: 2.5
+  ul_bsr_buffer_size_bytes: 384
+  ul_prach_cf32_path: ""
+  ul_msg3_cf32_path: ""
+  ul_input_dir: "examples/scripted_schedule_input"
+  scripted_schedule_dir: "examples/scripted_schedule_plan"
+  scripted_pdcch_dir: ""
+
+  # Fallback only. The real UL payloads come from slot_33 and slot_36 text
+  # files in examples/scripted_schedule_input/.
+  ul_data_hex: "53435249505445445F554C5F44415441"
+
+  msg3_crc_ok: true
+  msg3_snr_db: 18.2
+  msg3_evm: 2.1
+  contention_id_hex: "A1B2C3D4E5F6"
+  establishment_cause: 3
+  ue_identity_type: 1
+  ue_identity_hex: "1122334455667788"
+  include_crnti_ce: true

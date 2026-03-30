@@ -1,10 +1,10 @@
 direction=UL
-abs_slot=33
+abs_slot=53
 type=UL_OBJ_DATA
-rnti=17921
-snr_db=14.6
-evm=1.5
+rnti=17922
+snr_db=14.4
+evm=1.3
 crc_ok=true
-sample_count=112
+sample_count=96
 tbsize=16
 payload_text=BSR|bytes=384

@@ -158,16 +158,17 @@ The slot loop performs:
 14. after Msg4, queue a mock `PUCCH` config on `DCI1_1 + PDSCH`
 15. detect `PUCCH SR` and queue a compact `DCI0_1` grant for `BSR`
 16. decode the granted `BSR` and queue a larger `DCI0_1` grant for UL payload
-17. pop due scheduled UL data receptions
-18. pop due UL data grants and export standalone `DCI0_1`
-19. pop due DL grants
-20. add broadcast grants
-21. attach companion PDCCH/DCI metadata to scheduled PDSCH objects
-22. map DL grants into patches and IQ samples
-23. submit TX and export IQ / text transport / companion PDCCH text
-24. mark RAR sent, Msg4 sent, or DL data sent
-25. collect slot performance
-26. flush summary after loop end
+17. process optional scripted connected scheduling controls for the current slot
+18. pop due scheduled UL data receptions
+19. pop due UL data grants and export standalone `DCI0_1`
+20. pop due DL grants
+21. add broadcast grants
+22. attach companion PDCCH/DCI metadata to scheduled PDSCH objects
+23. map DL grants into patches and IQ samples
+24. submit TX and export IQ / text transport / companion PDCCH text
+25. mark RAR sent, Msg4 sent, or DL data sent
+26. collect slot performance
+27. flush summary after loop end
 
 ## 6. Main Execution Flow
 
@@ -235,12 +236,16 @@ The current implementation models the access procedure as:
   - build contention resolution identity + RRCSetup
   - schedule DL object and companion PDCCH metadata, then transmit
 - Connected follow-up
-  - after Msg4, queue one mock downlink `DATA` transmission with `DCI1_1 + PDSCH` carrying a `PUCCH` config string
-  - detect one mock UE `UL_OBJ_PUCCH_SR` burst
-  - queue one compact uplink `BSR` grant with standalone `DCI0_1`
-  - decode one text `BSR|bytes=...` payload from the UE
-  - queue one larger uplink `DATA` grant with standalone `DCI0_1`
-  - receive one mock UE `UL_OBJ_DATA` burst on that larger grant
+  - default mode keeps the simple built-in chain:
+    - queue one mock downlink `DATA` transmission with `DCI1_1 + PDSCH` carrying a `PUCCH` config string
+    - detect one mock UE `UL_OBJ_PUCCH_SR` burst
+    - queue one compact uplink `BSR` grant with standalone `DCI0_1`
+    - decode one text `BSR|bytes=...` payload from the UE
+    - queue one larger uplink `DATA` grant with standalone `DCI0_1`
+    - receive one mock UE `UL_OBJ_DATA` burst on that larger grant
+  - scripted mode can replace that chain with:
+    - direct per-slot `SCRIPT_DL` / `SCRIPT_UL` plan files
+    - or handcrafted `SCRIPT_PDCCH_DL` / `SCRIPT_PDCCH_UL` files that drive the later PDSCH/PUSCH expectations
 
 ## 7. Key Data Structures
 
@@ -301,6 +306,20 @@ That gives the implementation three good properties:
 - explicit data flow
 - easy testing
 - clear ownership boundaries
+
+### 7.4 Recent Scheduling Extensions
+
+The recent connected-mode testability update adds three architectural pieces:
+
+- `mini_gnb_c_sim_config_t`
+  - now includes `scripted_schedule_dir` and `scripted_pdcch_dir`
+  - these optional directories let the simulator replace the built-in post-Msg4 scheduling path with slot-scoped plan files
+- `mini_gnb_c_dl_data_schedule_request_t`
+  - now carries `prb_start`, `prb_len`, `mcs`, and `dci_format`
+  - this lets direct scripted scheduling choose the exact companion `PDCCH` metadata and the resulting `tbsize`
+- `mini_gnb_c_lookup_tbsize(prb_len, mcs)`
+  - now centralizes a small `PRB x MCS -> tbsize` lookup table in `src/common/types.c`
+  - both DL export and UL grant/export paths use the same mapping, so `tbsize` stays consistent in `DL_OBJ_DATA.txt`, `DL_OBJ_PDCCH.txt`, and `UL_OBJ_DATA.txt`
 
 ## 8. Module Responsibilities
 
@@ -449,6 +468,29 @@ This is intentionally not a generic scheduler. It only supports:
 - one compact post-Msg4 uplink `BSR` grant
 - one larger post-Msg4 uplink `DATA` grant
 - companion PDCCH metadata for those DL objects
+
+### 8.6.1 Scripted Connected Scheduling Hooks
+
+To make post-Msg4 behavior controllable for state-machine tests and upper-layer
+flow validation, `src/common/simulator.c` now adds a scripted control hook before
+the scheduler pops due connected-mode grants.
+
+That hook reads one optional file per slot from either:
+
+- `sim.scripted_schedule_dir`
+  - direct scheduling mode
+  - `slot_<abs_slot>_SCRIPT_DL.txt` directly queues a DL `DATA` object
+  - `slot_<abs_slot>_SCRIPT_UL.txt` directly queues a UL grant / receive expectation
+- `sim.scripted_pdcch_dir`
+  - PDCCH-driven mode
+  - `slot_<abs_slot>_SCRIPT_PDCCH_DL.txt` injects handcrafted DL `DCI1_x` metadata and derives the later `PDSCH`
+  - `slot_<abs_slot>_SCRIPT_PDCCH_UL.txt` injects handcrafted UL `DCI0_x` metadata and derives the later `PUSCH` expectation
+
+When either directory is configured:
+
+- the built-in post-Msg4 `PUCCH SR -> BSR -> large UL DATA` chain is disabled
+- the scripted files become the only source of connected-mode grants
+- the UE context summary is updated with the scripted DL slot and UL grant slots so integration tests can assert the intended plan directly
 
 ### 8.7 Msg3 Receiver
 

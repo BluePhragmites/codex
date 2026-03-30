@@ -1,0 +1,8 @@
+type=SCRIPT_UL_GRANT
+rnti=17921
+scheduled_abs_slot=36
+purpose=DATA
+prb_start=46
+prb_len=16
+mcs=8
+k2=2

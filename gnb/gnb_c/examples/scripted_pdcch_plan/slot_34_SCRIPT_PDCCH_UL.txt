@@ -1,0 +1,12 @@
+direction=DL
+channel=PDCCH
+type=DL_OBJ_PDCCH
+rnti=17921
+dci_format=DCI0_1
+scheduled_abs_slot=36
+scheduled_type=DATA
+scheduled_purpose=DATA
+scheduled_prb_start=44
+scheduled_prb_len=32
+mcs=8
+k2=2

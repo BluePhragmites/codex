@@ -1,9 +1,11 @@
 #include "mini_gnb_c/common/simulator.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "mini_gnb_c/common/hex.h"
+#include "mini_gnb_c/common/json_utils.h"
 
 static const char* mini_gnb_c_bool_string(bool value) {
   return value ? "true" : "false";
@@ -87,6 +89,649 @@ static uint16_t mini_gnb_c_select_large_ul_prb_len(const int buffer_size_bytes) 
   return (uint16_t)prb_len;
 }
 
+static bool mini_gnb_c_path_is_absolute(const char* path) {
+  if (path == NULL || path[0] == '\0') {
+    return false;
+  }
+  if (path[0] == '/' || path[0] == '\\') {
+    return true;
+  }
+  return strlen(path) > 1U && path[1] == ':';
+}
+
+static void mini_gnb_c_resolve_optional_dir_in_place(char* path, const size_t path_size) {
+  char resolved[MINI_GNB_C_MAX_PATH];
+
+  if (path == NULL || path_size == 0U || path[0] == '\0' || mini_gnb_c_path_is_absolute(path)) {
+    return;
+  }
+
+  if (mini_gnb_c_join_path(MINI_GNB_C_SOURCE_DIR, path, resolved, sizeof(resolved)) == 0) {
+    (void)snprintf(path, path_size, "%s", resolved);
+  }
+}
+
+static char* mini_gnb_c_ltrim(char* text) {
+  if (text == NULL) {
+    return NULL;
+  }
+  while (*text != '\0' && (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n')) {
+    ++text;
+  }
+  return text;
+}
+
+static void mini_gnb_c_rtrim(char* text) {
+  size_t len = 0;
+
+  if (text == NULL) {
+    return;
+  }
+
+  len = strlen(text);
+  while (len > 0U &&
+         (text[len - 1U] == ' ' || text[len - 1U] == '\t' || text[len - 1U] == '\r' || text[len - 1U] == '\n')) {
+    text[len - 1U] = '\0';
+    --len;
+  }
+}
+
+static void mini_gnb_c_unquote(char* text) {
+  size_t len = 0;
+
+  if (text == NULL) {
+    return;
+  }
+
+  len = strlen(text);
+  if (len >= 2U &&
+      ((text[0] == '"' && text[len - 1U] == '"') || (text[0] == '\'' && text[len - 1U] == '\''))) {
+    memmove(text, text + 1, len - 2U);
+    text[len - 2U] = '\0';
+  }
+}
+
+static int mini_gnb_c_extract_transport_value(const char* text,
+                                              const char* key,
+                                              char* out,
+                                              size_t out_size) {
+  const char* cursor = text;
+
+  if (text == NULL || key == NULL || out == NULL || out_size == 0U) {
+    return -1;
+  }
+
+  while (*cursor != '\0') {
+    char line[256];
+    size_t len = 0;
+    char* trimmed = NULL;
+    char* separator = NULL;
+    char* value = NULL;
+
+    while (cursor[len] != '\0' && cursor[len] != '\n' && cursor[len] != '\r') {
+      ++len;
+    }
+    if (len >= sizeof(line)) {
+      len = sizeof(line) - 1U;
+    }
+    memcpy(line, cursor, len);
+    line[len] = '\0';
+
+    cursor += len;
+    while (*cursor == '\n' || *cursor == '\r') {
+      ++cursor;
+    }
+
+    trimmed = mini_gnb_c_ltrim(line);
+    mini_gnb_c_rtrim(trimmed);
+    if (*trimmed == '\0' || *trimmed == '#') {
+      continue;
+    }
+
+    separator = strchr(trimmed, '=');
+    if (separator == NULL) {
+      separator = strchr(trimmed, ':');
+    }
+    if (separator == NULL) {
+      continue;
+    }
+
+    *separator = '\0';
+    mini_gnb_c_rtrim(trimmed);
+    value = mini_gnb_c_ltrim(separator + 1);
+    mini_gnb_c_rtrim(value);
+    mini_gnb_c_unquote(value);
+
+    if (strcmp(trimmed, key) != 0) {
+      continue;
+    }
+
+    return snprintf(out, out_size, "%s", value) < (int)out_size ? 0 : -1;
+  }
+
+  return -1;
+}
+
+static int mini_gnb_c_extract_transport_value_any(const char* text,
+                                                  const char* first_key,
+                                                  const char* second_key,
+                                                  char* out,
+                                                  size_t out_size) {
+  if (mini_gnb_c_extract_transport_value(text, first_key, out, out_size) == 0) {
+    return 0;
+  }
+  if (second_key != NULL && second_key[0] != '\0') {
+    return mini_gnb_c_extract_transport_value(text, second_key, out, out_size);
+  }
+  return -1;
+}
+
+static int mini_gnb_c_extract_transport_int(const char* text, const char* key, int* out) {
+  char value_text[64];
+  char* end_ptr = NULL;
+
+  if (out == NULL || mini_gnb_c_extract_transport_value(text, key, value_text, sizeof(value_text)) != 0) {
+    return -1;
+  }
+
+  *out = (int)strtol(value_text, &end_ptr, 10);
+  end_ptr = mini_gnb_c_ltrim(end_ptr);
+  return (end_ptr != value_text && end_ptr != NULL && *end_ptr == '\0') ? 0 : -1;
+}
+
+static int mini_gnb_c_build_script_path(const char* dir,
+                                        const int abs_slot,
+                                        const char* name,
+                                        char* out,
+                                        const size_t out_size) {
+  if (dir == NULL || dir[0] == '\0' || name == NULL || out == NULL || out_size == 0U) {
+    return -1;
+  }
+
+  return snprintf(out, out_size, "%s/slot_%d_%s.txt", dir, abs_slot, name) < (int)out_size ? 0 : -1;
+}
+
+static void mini_gnb_c_fill_payload_from_transport(const char* text,
+                                                   const char* default_payload_text,
+                                                   mini_gnb_c_buffer_t* out_payload) {
+  char payload_hex[MINI_GNB_C_MAX_PAYLOAD * 2U + 1U];
+  char payload_text[MINI_GNB_C_MAX_PAYLOAD + 1U];
+  size_t payload_len = 0U;
+
+  if (text == NULL || out_payload == NULL) {
+    return;
+  }
+
+  mini_gnb_c_buffer_reset(out_payload);
+  if (mini_gnb_c_extract_transport_value_any(text, "payload_hex", "mac_pdu_hex", payload_hex, sizeof(payload_hex)) ==
+          0 &&
+      mini_gnb_c_hex_to_bytes(payload_hex,
+                              out_payload->bytes,
+                              sizeof(out_payload->bytes),
+                              &payload_len) == 0) {
+    out_payload->len = payload_len;
+    return;
+  }
+
+  if (mini_gnb_c_extract_transport_value(text, "payload_text", payload_text, sizeof(payload_text)) == 0) {
+    (void)mini_gnb_c_buffer_set_text(out_payload, payload_text);
+    return;
+  }
+
+  if (default_payload_text != NULL && default_payload_text[0] != '\0') {
+    (void)mini_gnb_c_buffer_set_text(out_payload, default_payload_text);
+  }
+}
+
+static mini_gnb_c_dci_format_t mini_gnb_c_parse_dci_format(const char* text,
+                                                           const char* key,
+                                                           const mini_gnb_c_dci_format_t fallback) {
+  char value[16];
+
+  if (mini_gnb_c_extract_transport_value(text, key, value, sizeof(value)) != 0) {
+    return fallback;
+  }
+
+  if (strcmp(value, "DCI1_0") == 0) {
+    return MINI_GNB_C_DCI_FORMAT_1_0;
+  }
+  if (strcmp(value, "DCI1_1") == 0) {
+    return MINI_GNB_C_DCI_FORMAT_1_1;
+  }
+  if (strcmp(value, "DCI0_0") == 0) {
+    return MINI_GNB_C_DCI_FORMAT_0_0;
+  }
+  if (strcmp(value, "DCI0_1") == 0) {
+    return MINI_GNB_C_DCI_FORMAT_0_1;
+  }
+
+  return fallback;
+}
+
+static mini_gnb_c_ul_data_purpose_t mini_gnb_c_parse_ul_purpose(const char* text,
+                                                                 const mini_gnb_c_ul_data_purpose_t fallback) {
+  char value[32];
+
+  if (mini_gnb_c_extract_transport_value_any(text, "purpose", "scheduled_purpose", value, sizeof(value)) != 0 &&
+      mini_gnb_c_extract_transport_value(text, "scheduled_type", value, sizeof(value)) != 0 &&
+      mini_gnb_c_extract_transport_value(text, "type", value, sizeof(value)) != 0) {
+    return fallback;
+  }
+
+  if (strcmp(value, "BSR") == 0 || strcmp(value, "SCRIPT_UL_BSR") == 0) {
+    return MINI_GNB_C_UL_DATA_PURPOSE_BSR;
+  }
+  return MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD;
+}
+
+static uint16_t mini_gnb_c_resolve_script_rnti(mini_gnb_c_simulator_t* simulator, const char* text) {
+  int int_value = 0;
+  mini_gnb_c_ue_context_t* ue_context = NULL;
+
+  if (mini_gnb_c_extract_transport_int(text, "rnti", &int_value) == 0 && int_value > 0) {
+    return (uint16_t)int_value;
+  }
+
+  ue_context = mini_gnb_c_find_expected_connected_ue(simulator, 0U);
+  return ue_context != NULL ? ue_context->c_rnti : 0U;
+}
+
+static void mini_gnb_c_mark_scripted_dl_plan(mini_gnb_c_simulator_t* simulator,
+                                             const mini_gnb_c_dl_data_schedule_request_t* request) {
+  mini_gnb_c_ue_context_t* ue_context = NULL;
+
+  if (simulator == NULL || request == NULL) {
+    return;
+  }
+
+  ue_context = mini_gnb_c_find_ue_context(&simulator->ue_store, request->c_rnti);
+  if (ue_context == NULL) {
+    return;
+  }
+
+  ue_context->traffic_plan_scheduled = true;
+  ue_context->dl_data_abs_slot = request->abs_slot;
+}
+
+static void mini_gnb_c_mark_scripted_ul_plan(mini_gnb_c_simulator_t* simulator,
+                                             const mini_gnb_c_ul_data_schedule_request_t* request) {
+  mini_gnb_c_ue_context_t* ue_context = NULL;
+
+  if (simulator == NULL || request == NULL) {
+    return;
+  }
+
+  ue_context = mini_gnb_c_find_ue_context(&simulator->ue_store, request->c_rnti);
+  if (ue_context == NULL) {
+    return;
+  }
+
+  ue_context->traffic_plan_scheduled = true;
+  if (request->purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR) {
+    ue_context->small_ul_grant_abs_slot = request->abs_slot;
+  } else {
+    ue_context->large_ul_grant_abs_slot = request->abs_slot;
+  }
+}
+
+static void mini_gnb_c_arm_scripted_ul_data(mini_gnb_c_simulator_t* simulator,
+                                            const mini_gnb_c_ul_data_schedule_request_t* request) {
+  mini_gnb_c_ul_data_grant_t armed_ul_grant;
+
+  if (simulator == NULL || request == NULL) {
+    return;
+  }
+
+  memset(&armed_ul_grant, 0, sizeof(armed_ul_grant));
+  armed_ul_grant.c_rnti = request->c_rnti;
+  armed_ul_grant.abs_slot = request->abs_slot;
+  armed_ul_grant.prb_start = request->prb_start;
+  armed_ul_grant.prb_len = request->prb_len;
+  armed_ul_grant.mcs = request->mcs;
+  armed_ul_grant.k2 = request->k2;
+  armed_ul_grant.purpose = request->purpose;
+  mini_gnb_c_mock_radio_frontend_arm_ul_data(&simulator->radio, &armed_ul_grant);
+}
+
+static void mini_gnb_c_process_scripted_dl_schedule(mini_gnb_c_simulator_t* simulator,
+                                                    const mini_gnb_c_slot_indication_t* slot) {
+  char path[MINI_GNB_C_MAX_PATH];
+  char default_payload[MINI_GNB_C_MAX_TEXT];
+  char type_value[32];
+  char* text = NULL;
+  mini_gnb_c_dl_data_schedule_request_t request;
+  int int_value = 0;
+  uint16_t rnti = 0U;
+
+  if (simulator == NULL || slot == NULL || simulator->config.sim.scripted_schedule_dir[0] == '\0' ||
+      mini_gnb_c_build_script_path(simulator->config.sim.scripted_schedule_dir,
+                                   slot->abs_slot,
+                                   "SCRIPT_DL",
+                                   path,
+                                   sizeof(path)) != 0) {
+    return;
+  }
+
+  text = mini_gnb_c_read_text_file(path);
+  if (text == NULL) {
+    return;
+  }
+
+  if (mini_gnb_c_extract_transport_value(text, "type", type_value, sizeof(type_value)) == 0 &&
+      strcmp(type_value, "SCRIPT_DL_DATA") != 0 && strcmp(type_value, "DL_DATA") != 0) {
+    free(text);
+    return;
+  }
+
+  memset(&request, 0, sizeof(request));
+  rnti = mini_gnb_c_resolve_script_rnti(simulator, text);
+  if (rnti == 0U) {
+    free(text);
+    return;
+  }
+
+  request.c_rnti = rnti;
+  request.abs_slot = slot->abs_slot;
+  request.prb_start = 52U;
+  request.prb_len = 24U;
+  request.mcs = 9U;
+  request.dci_format = MINI_GNB_C_DCI_FORMAT_1_1;
+
+  if (mini_gnb_c_extract_transport_int(text, "abs_slot", &int_value) == 0) {
+    request.abs_slot = int_value;
+  }
+  if (mini_gnb_c_extract_transport_int(text, "prb_start", &int_value) == 0 && int_value >= 0) {
+    request.prb_start = (uint16_t)int_value;
+  }
+  if (mini_gnb_c_extract_transport_int(text, "prb_len", &int_value) == 0 && int_value > 0) {
+    request.prb_len = (uint16_t)int_value;
+  }
+  if (mini_gnb_c_extract_transport_int(text, "mcs", &int_value) == 0 && int_value >= 0) {
+    request.mcs = (uint8_t)int_value;
+  }
+  request.dci_format = mini_gnb_c_parse_dci_format(text, "dci_format", request.dci_format);
+  if (snprintf(default_payload,
+               sizeof(default_payload),
+               "SCRIPTED_DL|abs_slot=%d|src=direct",
+               request.abs_slot) < (int)sizeof(default_payload)) {
+    mini_gnb_c_fill_payload_from_transport(text, default_payload, &request.payload);
+  }
+
+  mini_gnb_c_initial_access_scheduler_queue_dl_data(&simulator->scheduler, &request, &simulator->metrics);
+  mini_gnb_c_mark_scripted_dl_plan(simulator, &request);
+  mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                 "scripted_schedule",
+                                 "Queued direct scripted DL schedule.",
+                                 slot->abs_slot,
+                                 "rnti=%u,dl_abs_slot=%d,prb_start=%u,prb_len=%u,mcs=%u,dci=%s,path=%s",
+                                 request.c_rnti,
+                                 request.abs_slot,
+                                 request.prb_start,
+                                 request.prb_len,
+                                 request.mcs,
+                                 mini_gnb_c_dci_format_to_string(request.dci_format),
+                                 path);
+  free(text);
+}
+
+static void mini_gnb_c_process_scripted_ul_schedule(mini_gnb_c_simulator_t* simulator,
+                                                    const mini_gnb_c_slot_indication_t* slot) {
+  char path[MINI_GNB_C_MAX_PATH];
+  char type_value[32];
+  char* text = NULL;
+  mini_gnb_c_ul_data_schedule_request_t request;
+  int int_value = 0;
+  uint16_t rnti = 0U;
+
+  if (simulator == NULL || slot == NULL || simulator->config.sim.scripted_schedule_dir[0] == '\0' ||
+      mini_gnb_c_build_script_path(simulator->config.sim.scripted_schedule_dir,
+                                   slot->abs_slot,
+                                   "SCRIPT_UL",
+                                   path,
+                                   sizeof(path)) != 0) {
+    return;
+  }
+
+  text = mini_gnb_c_read_text_file(path);
+  if (text == NULL) {
+    return;
+  }
+
+  if (mini_gnb_c_extract_transport_value(text, "type", type_value, sizeof(type_value)) == 0 &&
+      strcmp(type_value, "SCRIPT_UL_GRANT") != 0 && strcmp(type_value, "UL_GRANT") != 0 &&
+      strcmp(type_value, "SCRIPT_UL_BSR") != 0) {
+    free(text);
+    return;
+  }
+
+  memset(&request, 0, sizeof(request));
+  rnti = mini_gnb_c_resolve_script_rnti(simulator, text);
+  if (rnti == 0U) {
+    free(text);
+    return;
+  }
+
+  request.c_rnti = rnti;
+  request.pdcch_abs_slot = slot->abs_slot;
+  request.k2 = 2U;
+  request.purpose = mini_gnb_c_parse_ul_purpose(text, MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD);
+  request.prb_start = request.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? 60U : 48U;
+  request.prb_len = request.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? 8U : 24U;
+  request.mcs = request.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? 4U : 8U;
+  if (mini_gnb_c_extract_transport_int(text, "k2", &int_value) == 0 && int_value >= 0) {
+    request.k2 = (uint8_t)int_value;
+  }
+  request.abs_slot = request.pdcch_abs_slot + request.k2;
+  if (mini_gnb_c_extract_transport_int(text, "abs_slot", &int_value) == 0) {
+    request.abs_slot = int_value;
+  } else if (mini_gnb_c_extract_transport_int(text, "scheduled_abs_slot", &int_value) == 0) {
+    request.abs_slot = int_value;
+  }
+  if (mini_gnb_c_extract_transport_int(text, "prb_start", &int_value) == 0 && int_value >= 0) {
+    request.prb_start = (uint16_t)int_value;
+  } else if (mini_gnb_c_extract_transport_int(text, "scheduled_prb_start", &int_value) == 0 && int_value >= 0) {
+    request.prb_start = (uint16_t)int_value;
+  }
+  if (mini_gnb_c_extract_transport_int(text, "prb_len", &int_value) == 0 && int_value > 0) {
+    request.prb_len = (uint16_t)int_value;
+  } else if (mini_gnb_c_extract_transport_int(text, "scheduled_prb_len", &int_value) == 0 && int_value > 0) {
+    request.prb_len = (uint16_t)int_value;
+  }
+  if (mini_gnb_c_extract_transport_int(text, "mcs", &int_value) == 0 && int_value >= 0) {
+    request.mcs = (uint8_t)int_value;
+  }
+
+  mini_gnb_c_initial_access_scheduler_queue_ul_data_grant(&simulator->scheduler, &request, &simulator->metrics);
+  mini_gnb_c_arm_scripted_ul_data(simulator, &request);
+  mini_gnb_c_mark_scripted_ul_plan(simulator, &request);
+  mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                 "scripted_schedule",
+                                 "Queued direct scripted UL schedule.",
+                                 slot->abs_slot,
+                                 "rnti=%u,purpose=%s,ul_abs_slot=%d,prb_start=%u,prb_len=%u,mcs=%u,k2=%u,path=%s",
+                                 request.c_rnti,
+                                 mini_gnb_c_ul_data_purpose_string(request.purpose),
+                                 request.abs_slot,
+                                 request.prb_start,
+                                 request.prb_len,
+                                 request.mcs,
+                                 request.k2,
+                                 path);
+  free(text);
+}
+
+static void mini_gnb_c_process_scripted_pdcch_dl(mini_gnb_c_simulator_t* simulator,
+                                                 const mini_gnb_c_slot_indication_t* slot) {
+  char path[MINI_GNB_C_MAX_PATH];
+  char default_payload[MINI_GNB_C_MAX_TEXT];
+  char scheduled_type[32];
+  char* text = NULL;
+  mini_gnb_c_dl_data_schedule_request_t request;
+  int int_value = 0;
+  uint16_t rnti = 0U;
+
+  if (simulator == NULL || slot == NULL || simulator->config.sim.scripted_pdcch_dir[0] == '\0' ||
+      mini_gnb_c_build_script_path(simulator->config.sim.scripted_pdcch_dir,
+                                   slot->abs_slot,
+                                   "SCRIPT_PDCCH_DL",
+                                   path,
+                                   sizeof(path)) != 0) {
+    return;
+  }
+
+  text = mini_gnb_c_read_text_file(path);
+  if (text == NULL) {
+    return;
+  }
+
+  if (mini_gnb_c_extract_transport_value(text, "scheduled_type", scheduled_type, sizeof(scheduled_type)) == 0 &&
+      strcmp(scheduled_type, "DATA") != 0 && strcmp(scheduled_type, "DL_OBJ_DATA") != 0) {
+    free(text);
+    return;
+  }
+
+  memset(&request, 0, sizeof(request));
+  rnti = mini_gnb_c_resolve_script_rnti(simulator, text);
+  if (rnti == 0U) {
+    free(text);
+    return;
+  }
+
+  request.c_rnti = rnti;
+  request.abs_slot = slot->abs_slot;
+  request.prb_start = 52U;
+  request.prb_len = 24U;
+  request.mcs = 9U;
+  request.dci_format = mini_gnb_c_parse_dci_format(text, "dci_format", MINI_GNB_C_DCI_FORMAT_1_1);
+
+  if (mini_gnb_c_extract_transport_int(text, "scheduled_abs_slot", &int_value) == 0) {
+    request.abs_slot = int_value;
+  }
+  if (mini_gnb_c_extract_transport_int(text, "scheduled_prb_start", &int_value) == 0 && int_value >= 0) {
+    request.prb_start = (uint16_t)int_value;
+  }
+  if (mini_gnb_c_extract_transport_int(text, "scheduled_prb_len", &int_value) == 0 && int_value > 0) {
+    request.prb_len = (uint16_t)int_value;
+  }
+  if (mini_gnb_c_extract_transport_int(text, "mcs", &int_value) == 0 && int_value >= 0) {
+    request.mcs = (uint8_t)int_value;
+  }
+
+  if (snprintf(default_payload,
+               sizeof(default_payload),
+               "SCRIPTED_PDCCH_DL|abs_slot=%d",
+               request.abs_slot) < (int)sizeof(default_payload)) {
+    mini_gnb_c_fill_payload_from_transport(text, default_payload, &request.payload);
+  }
+
+  mini_gnb_c_initial_access_scheduler_queue_dl_data(&simulator->scheduler, &request, &simulator->metrics);
+  mini_gnb_c_mark_scripted_dl_plan(simulator, &request);
+  mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                 "scripted_pdcch",
+                                 "Queued DL schedule from scripted PDCCH.",
+                                 slot->abs_slot,
+                                 "rnti=%u,dl_abs_slot=%d,prb_start=%u,prb_len=%u,mcs=%u,dci=%s,path=%s",
+                                 request.c_rnti,
+                                 request.abs_slot,
+                                 request.prb_start,
+                                 request.prb_len,
+                                 request.mcs,
+                                 mini_gnb_c_dci_format_to_string(request.dci_format),
+                                 path);
+  free(text);
+}
+
+static void mini_gnb_c_process_scripted_pdcch_ul(mini_gnb_c_simulator_t* simulator,
+                                                 const mini_gnb_c_slot_indication_t* slot) {
+  char path[MINI_GNB_C_MAX_PATH];
+  char dci_value[16];
+  char* text = NULL;
+  mini_gnb_c_ul_data_schedule_request_t request;
+  int int_value = 0;
+  uint16_t rnti = 0U;
+
+  if (simulator == NULL || slot == NULL || simulator->config.sim.scripted_pdcch_dir[0] == '\0' ||
+      mini_gnb_c_build_script_path(simulator->config.sim.scripted_pdcch_dir,
+                                   slot->abs_slot,
+                                   "SCRIPT_PDCCH_UL",
+                                   path,
+                                   sizeof(path)) != 0) {
+    return;
+  }
+
+  text = mini_gnb_c_read_text_file(path);
+  if (text == NULL) {
+    return;
+  }
+
+  if (mini_gnb_c_extract_transport_value(text, "dci_format", dci_value, sizeof(dci_value)) == 0 &&
+      strcmp(dci_value, "DCI0_1") != 0 && strcmp(dci_value, "DCI0_0") != 0) {
+    free(text);
+    return;
+  }
+
+  memset(&request, 0, sizeof(request));
+  rnti = mini_gnb_c_resolve_script_rnti(simulator, text);
+  if (rnti == 0U) {
+    free(text);
+    return;
+  }
+
+  request.c_rnti = rnti;
+  request.pdcch_abs_slot = slot->abs_slot;
+  request.k2 = 2U;
+  request.purpose = mini_gnb_c_parse_ul_purpose(text, MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD);
+  request.prb_start = request.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? 60U : 48U;
+  request.prb_len = request.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? 8U : 24U;
+  request.mcs = request.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? 4U : 8U;
+  if (mini_gnb_c_extract_transport_int(text, "k2", &int_value) == 0 && int_value >= 0) {
+    request.k2 = (uint8_t)int_value;
+  }
+  request.abs_slot = request.pdcch_abs_slot + request.k2;
+  if (mini_gnb_c_extract_transport_int(text, "scheduled_abs_slot", &int_value) == 0) {
+    request.abs_slot = int_value;
+  }
+  if (mini_gnb_c_extract_transport_int(text, "scheduled_prb_start", &int_value) == 0 && int_value >= 0) {
+    request.prb_start = (uint16_t)int_value;
+  }
+  if (mini_gnb_c_extract_transport_int(text, "scheduled_prb_len", &int_value) == 0 && int_value > 0) {
+    request.prb_len = (uint16_t)int_value;
+  }
+  if (mini_gnb_c_extract_transport_int(text, "mcs", &int_value) == 0 && int_value >= 0) {
+    request.mcs = (uint8_t)int_value;
+  }
+
+  mini_gnb_c_initial_access_scheduler_queue_ul_data_grant(&simulator->scheduler, &request, &simulator->metrics);
+  mini_gnb_c_arm_scripted_ul_data(simulator, &request);
+  mini_gnb_c_mark_scripted_ul_plan(simulator, &request);
+  mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                 "scripted_pdcch",
+                                 "Queued UL expectation from scripted PDCCH.",
+                                 slot->abs_slot,
+                                 "rnti=%u,purpose=%s,ul_abs_slot=%d,prb_start=%u,prb_len=%u,mcs=%u,k2=%u,path=%s",
+                                 request.c_rnti,
+                                 mini_gnb_c_ul_data_purpose_string(request.purpose),
+                                 request.abs_slot,
+                                 request.prb_start,
+                                 request.prb_len,
+                                 request.mcs,
+                                 request.k2,
+                                 path);
+  free(text);
+}
+
+static void mini_gnb_c_process_scripted_slot_controls(mini_gnb_c_simulator_t* simulator,
+                                                      const mini_gnb_c_slot_indication_t* slot) {
+  if (simulator == NULL || slot == NULL) {
+    return;
+  }
+
+  mini_gnb_c_process_scripted_dl_schedule(simulator, slot);
+  mini_gnb_c_process_scripted_ul_schedule(simulator, slot);
+  mini_gnb_c_process_scripted_pdcch_dl(simulator, slot);
+  mini_gnb_c_process_scripted_pdcch_ul(simulator, slot);
+}
+
 static void mini_gnb_c_queue_connected_ul_grant(mini_gnb_c_simulator_t* simulator,
                                                 mini_gnb_c_ue_context_t* ue_context,
                                                 int trigger_abs_slot,
@@ -133,13 +778,18 @@ static void mini_gnb_c_schedule_post_msg4_traffic(mini_gnb_c_simulator_t* simula
   int sr_abs_slot = 0;
 
   if (simulator == NULL || ue_context == NULL || ue_context->traffic_plan_scheduled ||
-      !simulator->config.sim.post_msg4_traffic_enabled) {
+      !simulator->config.sim.post_msg4_traffic_enabled || simulator->config.sim.scripted_schedule_dir[0] != '\0' ||
+      simulator->config.sim.scripted_pdcch_dir[0] != '\0') {
     return;
   }
 
   memset(&dl_request, 0, sizeof(dl_request));
   dl_request.c_rnti = ue_context->c_rnti;
   dl_request.abs_slot = msg4_abs_slot + simulator->config.sim.post_msg4_dl_data_delay_slots;
+  dl_request.prb_start = 52U;
+  dl_request.prb_len = 24U;
+  dl_request.mcs = 9U;
+  dl_request.dci_format = MINI_GNB_C_DCI_FORMAT_1_1;
   sr_abs_slot = dl_request.abs_slot + simulator->config.sim.post_msg4_ul_grant_delay_slots;
   if (snprintf(payload_text,
                sizeof(payload_text),
@@ -171,6 +821,10 @@ void mini_gnb_c_simulator_init(mini_gnb_c_simulator_t* simulator,
 
   memset(simulator, 0, sizeof(*simulator));
   simulator->config = *config;
+  mini_gnb_c_resolve_optional_dir_in_place(simulator->config.sim.scripted_schedule_dir,
+                                           sizeof(simulator->config.sim.scripted_schedule_dir));
+  mini_gnb_c_resolve_optional_dir_in_place(simulator->config.sim.scripted_pdcch_dir,
+                                           sizeof(simulator->config.sim.scripted_pdcch_dir));
   mini_gnb_c_metrics_trace_init(&simulator->metrics, output_dir);
   mini_gnb_c_slot_engine_init(&simulator->slot_engine, config);
   mini_gnb_c_mock_radio_frontend_init(&simulator->radio, &config->rf, &config->sim);
@@ -225,11 +879,12 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                      "radio_rx",
                                      "Received UL burst.",
                                      slot.abs_slot,
-                                     "type=%s,nof_samples=%u,rnti=%u,preamble_id=%u",
+                                     "type=%s,nof_samples=%u,rnti=%u,preamble_id=%u,tbsize=%u",
                                      mini_gnb_c_ul_burst_type_to_string(burst.ul_type),
                                      burst.nof_samples,
                                      burst.rnti,
-                                     burst.preamble_id);
+                                     burst.preamble_id,
+                                     burst.tbsize);
     }
     mini_gnb_c_ra_manager_expire(&simulator->ra_manager, &slot, &simulator->metrics);
 
@@ -463,6 +1118,9 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
       (void)mini_gnb_c_bytes_to_hex(burst.mac_pdu.bytes, burst.mac_pdu.len, payload_hex, sizeof(payload_hex));
       if (ul_data_rx_grants[i].purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR) {
         const int buffer_size_bytes = crc_ok ? mini_gnb_c_parse_bsr_buffer_size_bytes(&burst.mac_pdu) : -1;
+        const uint16_t tbsize =
+            burst.tbsize != 0U ? burst.tbsize
+                               : mini_gnb_c_lookup_tbsize(ul_data_rx_grants[i].prb_len, ul_data_rx_grants[i].mcs);
         mini_gnb_c_metrics_trace_increment_named(&simulator->metrics,
                                                  (crc_ok && buffer_size_bytes >= 0) ? "ul_bsr_rx_ok"
                                                                                     : "ul_bsr_crc_fail",
@@ -473,11 +1131,12 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                            ? "Decoded scheduled UL BSR candidate."
                                            : "Failed to decode scheduled UL BSR candidate.",
                                        slot.abs_slot,
-                                       "rnti=%u,crc_ok=%s,snr_db=%.2f,evm=%.2f,buffer_size_bytes=%d,payload=%s",
+                                       "rnti=%u,crc_ok=%s,snr_db=%.2f,evm=%.2f,tbsize=%u,buffer_size_bytes=%d,payload=%s",
                                        ul_data_rx_grants[i].c_rnti,
                                        mini_gnb_c_bool_string(crc_ok),
                                        burst.snr_db,
                                        burst.evm,
+                                       tbsize,
                                        buffer_size_bytes,
                                        payload_hex);
 
@@ -488,24 +1147,30 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
             ue_context->ul_bsr_received = true;
             ue_context->ul_bsr_abs_slot = slot.abs_slot;
             ue_context->ul_bsr_buffer_size_bytes = buffer_size_bytes;
-            mini_gnb_c_queue_connected_ul_grant(simulator,
-                                                ue_context,
-                                                slot.abs_slot,
-                                                MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD,
-                                                48U,
-                                                mini_gnb_c_select_large_ul_prb_len(buffer_size_bytes),
-                                                8U);
-            mini_gnb_c_metrics_trace_event(&simulator->metrics,
-                                           "connected_scheduler",
-                                           "Queued large UL grant after BSR.",
-                                           slot.abs_slot,
-                                           "c_rnti=%u,buffer_size_bytes=%d,large_ul_grant_abs_slot=%d",
-                                           ue_context->c_rnti,
-                                           buffer_size_bytes,
-                                           ue_context->large_ul_grant_abs_slot);
+            if (simulator->config.sim.scripted_schedule_dir[0] == '\0' &&
+                simulator->config.sim.scripted_pdcch_dir[0] == '\0') {
+              mini_gnb_c_queue_connected_ul_grant(simulator,
+                                                  ue_context,
+                                                  slot.abs_slot,
+                                                  MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD,
+                                                  48U,
+                                                  mini_gnb_c_select_large_ul_prb_len(buffer_size_bytes),
+                                                  8U);
+              mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                             "connected_scheduler",
+                                             "Queued large UL grant after BSR.",
+                                             slot.abs_slot,
+                                             "c_rnti=%u,buffer_size_bytes=%d,large_ul_grant_abs_slot=%d",
+                                             ue_context->c_rnti,
+                                             buffer_size_bytes,
+                                             ue_context->large_ul_grant_abs_slot);
+            }
           }
         }
       } else {
+        const uint16_t tbsize =
+            burst.tbsize != 0U ? burst.tbsize
+                               : mini_gnb_c_lookup_tbsize(ul_data_rx_grants[i].prb_len, ul_data_rx_grants[i].mcs);
         mini_gnb_c_metrics_trace_increment_named(&simulator->metrics,
                                                  crc_ok ? "ul_data_rx_ok" : "ul_data_crc_fail",
                                                  1U);
@@ -513,11 +1178,12 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                        receiver_module,
                                        "Decoded scheduled UL data candidate.",
                                        slot.abs_slot,
-                                       "rnti=%u,crc_ok=%s,snr_db=%.2f,evm=%.2f,payload=%s",
+                                       "rnti=%u,crc_ok=%s,snr_db=%.2f,evm=%.2f,tbsize=%u,payload=%s",
                                        ul_data_rx_grants[i].c_rnti,
                                        mini_gnb_c_bool_string(crc_ok),
                                        burst.snr_db,
                                        burst.evm,
+                                       tbsize,
                                        payload_hex);
 
         if (crc_ok) {
@@ -530,6 +1196,8 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
         }
       }
     }
+
+    mini_gnb_c_process_scripted_slot_controls(simulator, &slot);
 
     ul_data_pdcch_count = mini_gnb_c_initial_access_scheduler_pop_due_ul_data_pdcch(&simulator->scheduler,
                                                                                      slot.abs_slot,

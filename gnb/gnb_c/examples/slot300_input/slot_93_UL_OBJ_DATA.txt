@@ -6,4 +6,5 @@ snr_db=14.7
 evm=1.4
 crc_ok=true
 sample_count=112
+tbsize=16
 payload_text=BSR|bytes=512

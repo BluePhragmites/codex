@@ -1,0 +1,8 @@
+type=SCRIPT_DL_DATA
+abs_slot=27
+rnti=17921
+dci_format=DCI1_1
+prb_start=40
+prb_len=20
+mcs=8
+payload_text=SCRIPTED_DIRECT_DL

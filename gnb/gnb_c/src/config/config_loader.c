@@ -296,6 +296,8 @@ int mini_gnb_c_load_config(const char* path,
   out_config->sim.ul_data_snr_db = 16.0;
   out_config->sim.ul_data_evm = 2.5;
   out_config->sim.ul_bsr_buffer_size_bytes = 384;
+  out_config->sim.scripted_schedule_dir[0] = '\0';
+  out_config->sim.scripted_pdcch_dir[0] = '\0';
   (void)snprintf(out_config->sim.ul_data_hex,
                  sizeof(out_config->sim.ul_data_hex),
                  "%s",
@@ -383,6 +385,20 @@ int mini_gnb_c_load_config(const char* path,
   }
   if (mini_gnb_c_extract_string(text,
                                 "sim",
+                                "scripted_schedule_dir",
+                                out_config->sim.scripted_schedule_dir,
+                                sizeof(out_config->sim.scripted_schedule_dir)) != 0) {
+    out_config->sim.scripted_schedule_dir[0] = '\0';
+  }
+  if (mini_gnb_c_extract_string(text,
+                                "sim",
+                                "scripted_pdcch_dir",
+                                out_config->sim.scripted_pdcch_dir,
+                                sizeof(out_config->sim.scripted_pdcch_dir)) != 0) {
+    out_config->sim.scripted_pdcch_dir[0] = '\0';
+  }
+  if (mini_gnb_c_extract_string(text,
+                                "sim",
                                 "ul_data_hex",
                                 out_config->sim.ul_data_hex,
                                 sizeof(out_config->sim.ul_data_hex)) != 0) {
@@ -417,7 +433,7 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                 "RA config summary:\n"
                 "  prach_config_index=%u root_seq=%u zero_corr=%u ra_resp_window=%u msg3_delta_preamble=%d\n"
                 "UL input summary:\n"
-                "  prach_trigger_abs_slot=%d prach_retry_delay_slots=%d msg3_delay_slots=%d msg3_present=%s input_dir=%s\n"
+                "  prach_trigger_abs_slot=%d prach_retry_delay_slots=%d msg3_delay_slots=%d msg3_present=%s input_dir=%s scripted_schedule_dir=%s scripted_pdcch_dir=%s\n"
                 "Connected traffic summary:\n"
                 "  post_msg4=%s dl_delay=%d ul_grant_delay=%d ul_k2=%d ul_present=%s\n"
                 "RF config summary:\n"
@@ -444,6 +460,8 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                 config->sim.msg3_delay_slots,
                 config->sim.msg3_present ? "true" : "false",
                 config->sim.ul_input_dir[0] != '\0' ? config->sim.ul_input_dir : "(disabled)",
+                config->sim.scripted_schedule_dir[0] != '\0' ? config->sim.scripted_schedule_dir : "(disabled)",
+                config->sim.scripted_pdcch_dir[0] != '\0' ? config->sim.scripted_pdcch_dir : "(disabled)",
                 config->sim.post_msg4_traffic_enabled ? "true" : "false",
                 config->sim.post_msg4_dl_data_delay_slots,
                 config->sim.post_msg4_ul_grant_delay_slots,

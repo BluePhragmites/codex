@@ -26,6 +26,7 @@ typedef struct {
   bool ul_data_armed;
   int ul_data_abs_slot;
   uint16_t ul_data_rnti;
+  uint16_t ul_data_tbsize;
   mini_gnb_c_ul_data_purpose_t ul_data_purpose;
   size_t prach_sample_count;
   size_t msg3_sample_count;

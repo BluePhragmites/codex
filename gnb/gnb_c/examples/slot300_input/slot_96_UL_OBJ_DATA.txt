@@ -6,4 +6,5 @@ snr_db=15.8
 evm=2.2
 crc_ok=true
 sample_count=160
+tbsize=96
 payload_text=UL_DATA_300

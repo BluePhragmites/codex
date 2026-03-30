@@ -143,6 +143,7 @@ void mini_gnb_c_initial_access_scheduler_queue_dl_data(mini_gnb_c_initial_access
                                                        const mini_gnb_c_dl_data_schedule_request_t* request,
                                                        mini_gnb_c_metrics_trace_t* metrics) {
   mini_gnb_c_dl_grant_t* grant = NULL;
+  uint16_t tbsize = 0U;
 
   if (scheduler == NULL || request == NULL || metrics == NULL ||
       scheduler->pending_dl_count >= MINI_GNB_C_MAX_GRANTS) {
@@ -154,21 +155,23 @@ void mini_gnb_c_initial_access_scheduler_queue_dl_data(mini_gnb_c_initial_access
   grant->type = MINI_GNB_C_DL_OBJ_DATA;
   grant->abs_slot = request->abs_slot;
   grant->rnti = request->c_rnti;
-  grant->prb_start = 52U;
-  grant->prb_len = 24U;
-  grant->mcs = 9U;
+  grant->prb_start = request->prb_start;
+  grant->prb_len = request->prb_len;
+  grant->mcs = request->mcs;
   grant->payload = request->payload;
-  mini_gnb_c_assign_dl_pdcch(grant, MINI_GNB_C_DCI_FORMAT_1_1);
+  mini_gnb_c_assign_dl_pdcch(grant, request->dci_format);
+  tbsize = mini_gnb_c_lookup_tbsize(grant->prb_len, grant->mcs);
 
   mini_gnb_c_metrics_trace_event(metrics,
                                  "initial_access_scheduler",
                                  "Queued connected-mode DL data transmission.",
                                  request->abs_slot,
-                                 "c_rnti=%u,dci=%s,prb_start=%u,prb_len=%u,payload_len=%zu",
+                                 "c_rnti=%u,dci=%s,prb_start=%u,prb_len=%u,tbsize=%u,payload_len=%zu",
                                  request->c_rnti,
                                  mini_gnb_c_dci_format_to_string(grant->pdcch.format),
                                  grant->prb_start,
                                  grant->prb_len,
+                                 tbsize,
                                  grant->payload.len);
 }
 
@@ -178,6 +181,7 @@ void mini_gnb_c_initial_access_scheduler_queue_ul_data_grant(
     mini_gnb_c_metrics_trace_t* metrics) {
   mini_gnb_c_ul_data_grant_t* control_grant = NULL;
   mini_gnb_c_ul_data_grant_t* rx_expectation = NULL;
+  uint16_t tbsize = 0U;
 
   if (scheduler == NULL || request == NULL || metrics == NULL ||
       scheduler->pending_ul_data_pdcch_count >= MINI_GNB_C_MAX_UL_DATA_GRANTS ||
@@ -211,18 +215,21 @@ void mini_gnb_c_initial_access_scheduler_queue_ul_data_grant(
 
   rx_expectation = &scheduler->pending_ul_data_rx[scheduler->pending_ul_data_rx_count++];
   *rx_expectation = *control_grant;
+  tbsize = mini_gnb_c_lookup_tbsize(request->prb_len, request->mcs);
 
   mini_gnb_c_metrics_trace_event(metrics,
                                  "initial_access_scheduler",
                                  "Queued connected-mode UL data grant.",
                                  request->pdcch_abs_slot,
-                                 "c_rnti=%u,dci=%s,purpose=%s,ul_abs_slot=%d,prb_start=%u,prb_len=%u,k2=%u",
+                                 "c_rnti=%u,dci=%s,purpose=%s,ul_abs_slot=%d,prb_start=%u,prb_len=%u,mcs=%u,tbsize=%u,k2=%u",
                                  request->c_rnti,
                                  mini_gnb_c_dci_format_to_string(control_grant->pdcch.format),
                                  request->purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? "BSR" : "PAYLOAD",
                                  request->abs_slot,
                                  request->prb_start,
                                  request->prb_len,
+                                 request->mcs,
+                                 tbsize,
                                  request->k2);
 }
 

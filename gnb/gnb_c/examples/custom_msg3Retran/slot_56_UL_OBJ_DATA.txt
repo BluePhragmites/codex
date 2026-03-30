@@ -1,0 +1,10 @@
+direction=UL
+abs_slot=56
+type=UL_OBJ_DATA
+rnti=17922
+snr_db=15.1
+evm=2.4
+crc_ok=true
+sample_count=128
+tbsize=96
+payload_hex=48454C4C4F5F554C5F444154415F3031

@@ -1,0 +1,9 @@
+direction=UL
+abs_slot=24
+type=UL_OBJ_MSG3
+rnti=17921
+snr_db=17.5
+evm=1.7
+crc_ok=true
+sample_count=96
+payload_hex=020201460110DEADBEEFCAFE05020102030405060708

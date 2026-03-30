@@ -129,6 +129,8 @@ typedef struct {
   char ul_prach_cf32_path[MINI_GNB_C_MAX_PATH];
   char ul_msg3_cf32_path[MINI_GNB_C_MAX_PATH];
   char ul_input_dir[MINI_GNB_C_MAX_PATH];
+  char scripted_schedule_dir[MINI_GNB_C_MAX_PATH];
+  char scripted_pdcch_dir[MINI_GNB_C_MAX_PATH];
   char ul_data_hex[MINI_GNB_C_MAX_PAYLOAD * 2 + 1];
   char contention_id_hex[32];
   uint8_t establishment_cause;
@@ -164,6 +166,7 @@ typedef struct {
   double peak_metric;
   double snr_db;
   double evm;
+  uint16_t tbsize;
   bool crc_ok_override_valid;
   bool crc_ok_override;
   mini_gnb_c_buffer_t mac_pdu;
@@ -355,6 +358,10 @@ typedef struct {
 typedef struct {
   uint16_t c_rnti;
   int abs_slot;
+  uint16_t prb_start;
+  uint16_t prb_len;
+  uint8_t mcs;
+  mini_gnb_c_dci_format_t dci_format;
   mini_gnb_c_buffer_t payload;
 } mini_gnb_c_dl_data_schedule_request_t;
 
@@ -412,6 +419,7 @@ const char* mini_gnb_c_dl_object_type_to_string(mini_gnb_c_dl_object_type_t type
 const char* mini_gnb_c_ul_burst_type_to_string(mini_gnb_c_ul_burst_type_t type);
 const char* mini_gnb_c_dci_format_to_string(mini_gnb_c_dci_format_t format);
 const char* mini_gnb_c_ra_state_to_string(mini_gnb_c_ra_state_t state);
+uint16_t mini_gnb_c_lookup_tbsize(uint16_t prb_len, uint8_t mcs);
 
 void mini_gnb_c_buffer_reset(mini_gnb_c_buffer_t* buffer);
 int mini_gnb_c_buffer_set_bytes(mini_gnb_c_buffer_t* buffer, const uint8_t* data, size_t len);

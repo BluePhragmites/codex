@@ -84,6 +84,26 @@ crc_ok=true
 payload_hex=020201460110A1B2C3D4E5F603011122334455667788
 ```
 
+`payload_hex` in `MSG3` is the mock MAC PDU bytes. The current prototype accepts a
+very simple layout:
+
+- optional `C-RNTI CE`: `02 02 <tc-rnti-low> <tc-rnti-high>`
+- then one `UL-CCCH` subPDU: `01 <len> <contention-id-48><establishment-cause><ue-identity-type><ue-identity>`
+
+For example:
+
+- `02020146` means `C-RNTI CE` with `TC-RNTI = 0x4601`
+- `0110` means the following `UL-CCCH` payload is `0x10 = 16` bytes long
+- `DEADBEEFCAFE05020102030405060708` means:
+  - contention identity `DEADBEEFCAFE`
+  - establishment cause `0x05`
+  - UE identity type `0x02`
+  - UE identity `0102030405060708`
+
+The repository now includes a compact end-to-end example at
+`config/example_custom_msg3_ul.yml` with matching files in
+`examples/custom_msg3_ul_input/`.
+
 Example `PUCCH_SR` input:
 
 ```text
@@ -103,6 +123,7 @@ abs_slot=33
 type=UL_OBJ_DATA
 rnti=17921
 crc_ok=true
+tbsize=16
 payload_text=BSR|bytes=384
 ```
 
@@ -114,7 +135,101 @@ abs_slot=36
 type=UL_OBJ_DATA
 rnti=17921
 crc_ok=true
+tbsize=96
 payload_text=UL_DATA_20
+```
+
+`tbsize` is in bytes and comes from the mock scheduler's `prb_len + mcs`
+lookup table. In the current connected-mode demo:
+
+- `BSR`: `prb_len=8`, `mcs=4`, `tbsize=16`
+- UL `DATA`: `prb_len=24`, `mcs=8`, `tbsize=96`
+- DL `DATA`: `prb_len=24`, `mcs=9`, `tbsize=120`
+
+To run the custom demo:
+
+```bash
+./build/mini_gnb_c_sim config/example_custom_msg3_ul.yml
+```
+
+That example uses:
+
+- `slot_24_UL_OBJ_MSG3.txt` to inject a hand-written `payload_hex`
+- `slot_33_UL_OBJ_DATA.txt` to inject the scheduled `BSR|bytes=384`
+- `slot_36_UL_OBJ_DATA.txt` to inject a later UL payload with `payload_hex`
+
+The repository now also includes two connected-mode scheduling demos:
+
+- `config/example_scripted_schedule.yml`
+  - uses `sim.scripted_schedule_dir=examples/scripted_schedule_plan`
+  - drives per-slot scheduling directly with `slot_<abs_slot>_SCRIPT_DL.txt` and `slot_<abs_slot>_SCRIPT_UL.txt`
+- `config/example_scripted_pdcch.yml`
+  - uses `sim.scripted_pdcch_dir=examples/scripted_pdcch_plan`
+  - feeds handcrafted `PDCCH/DCI` metadata through `slot_<abs_slot>_SCRIPT_PDCCH_DL.txt` and `slot_<abs_slot>_SCRIPT_PDCCH_UL.txt`
+
+In both modes, built-in post-Msg4 connected scheduling is suppressed so the
+script files become the only source of connected-mode grants.
+
+Example direct scheduling files:
+
+```text
+type=SCRIPT_DL_DATA
+abs_slot=27
+rnti=17921
+dci_format=DCI1_1
+prb_start=40
+prb_len=20
+mcs=8
+payload_text=SCRIPTED_DIRECT_DL
+```
+
+```text
+type=SCRIPT_UL_GRANT
+rnti=17921
+scheduled_abs_slot=36
+purpose=DATA
+prb_start=46
+prb_len=16
+mcs=8
+k2=2
+```
+
+Example PDCCH-driven scheduling files:
+
+```text
+direction=DL
+channel=PDCCH
+type=DL_OBJ_PDCCH
+rnti=17921
+dci_format=DCI1_0
+scheduled_abs_slot=27
+scheduled_type=DATA
+scheduled_prb_start=50
+scheduled_prb_len=24
+mcs=4
+payload_text=SCRIPTED_PDCCH_DL
+```
+
+```text
+direction=DL
+channel=PDCCH
+type=DL_OBJ_PDCCH
+rnti=17921
+dci_format=DCI0_1
+scheduled_abs_slot=36
+scheduled_type=DATA
+scheduled_purpose=DATA
+scheduled_prb_start=44
+scheduled_prb_len=32
+mcs=8
+k2=2
+```
+
+Run them with:
+
+```bash
+./build/mini_gnb_c_sim config/example_scripted_schedule.yml
+./build/mini_gnb_c_sim config/example_scripted_pdcch.yml
 ```
 
 Example downlink transport export:
@@ -127,6 +242,7 @@ type=DL_OBJ_MSG4
 rnti=17921
 prb_start=48
 prb_len=16
+tbsize=32
 payload_hex=1006...
 payload_text=\x10\x06...RRCSetup|cause=3|ue_type=1
 scheduled_by_pdcch=true
@@ -213,6 +329,8 @@ Useful `sim:` configuration keys:
 - `prach_retry_delay_slots`: if Msg3 is missing, inject a retry PRACH burst after this delay
 - `ul_prach_cf32_path` / `ul_msg3_cf32_path`: optional external UL sample files; empty means generated toy bursts
 - `ul_input_dir`: optional slot-driven UL input directory; when it exists, missing slots stay silent and `*.txt` files override `*.cf32`
+- `scripted_schedule_dir`: optional direct scheduling plan directory with `SCRIPT_DL` / `SCRIPT_UL` files
+- `scripted_pdcch_dir`: optional PDCCH-driven scheduling plan directory with `SCRIPT_PDCCH_DL` / `SCRIPT_PDCCH_UL` files
 - `ul_bsr_buffer_size_bytes`: default synthetic `BSR|bytes=...` payload size used after `SR`
 
 The current C prototype does not keep:

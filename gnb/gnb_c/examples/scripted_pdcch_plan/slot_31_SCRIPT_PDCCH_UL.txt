@@ -1,0 +1,12 @@
+direction=DL
+channel=PDCCH
+type=DL_OBJ_PDCCH
+rnti=17921
+dci_format=DCI0_1
+scheduled_abs_slot=33
+scheduled_type=BSR
+scheduled_purpose=BSR
+scheduled_prb_start=60
+scheduled_prb_len=8
+mcs=4
+k2=2

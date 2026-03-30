@@ -1,0 +1,8 @@
+type=SCRIPT_UL_GRANT
+rnti=17921
+scheduled_abs_slot=33
+purpose=BSR
+prb_start=58
+prb_len=12
+mcs=4
+k2=2

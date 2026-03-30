@@ -469,6 +469,7 @@ static int mini_gnb_c_write_transport_text(const char* path,
   FILE* file = NULL;
   char payload_hex[MINI_GNB_C_MAX_PAYLOAD * 2U + 1U];
   char payload_text[MINI_GNB_C_MAX_PAYLOAD * 4U + 1U];
+  uint16_t tbsize = 0U;
 
   if (path == NULL || slot == NULL || patch == NULL) {
     return -1;
@@ -482,6 +483,9 @@ static int mini_gnb_c_write_transport_text(const char* path,
   payload_hex[0] = '\0';
   (void)mini_gnb_c_bytes_to_hex(patch->payload.bytes, patch->payload.len, payload_hex, sizeof(payload_hex));
   mini_gnb_c_payload_to_text(&patch->payload, payload_text, sizeof(payload_text));
+  if (patch->pdcch.valid) {
+    tbsize = mini_gnb_c_lookup_tbsize(patch->prb_len, patch->pdcch.mcs);
+  }
 
   fprintf(file,
           "direction=DL\n"
@@ -493,6 +497,7 @@ static int mini_gnb_c_write_transport_text(const char* path,
           "rnti=%u\n"
           "prb_start=%u\n"
           "prb_len=%u\n"
+          "tbsize=%u\n"
           "payload_len=%zu\n"
           "payload_hex=%s\n"
           "payload_text=%s\n"
@@ -513,6 +518,7 @@ static int mini_gnb_c_write_transport_text(const char* path,
           patch->rnti,
           patch->prb_start,
           patch->prb_len,
+          tbsize,
           patch->payload.len,
           payload_hex,
           payload_text,
@@ -533,6 +539,7 @@ static int mini_gnb_c_write_pdcch_transport_text(const char* path,
                                                  const mini_gnb_c_tx_grid_patch_t* patch,
                                                  uint64_t tx_index) {
   FILE* file = NULL;
+  uint16_t tbsize = 0U;
 
   if (path == NULL || slot == NULL || patch == NULL || !patch->pdcch.valid) {
     return -1;
@@ -542,6 +549,7 @@ static int mini_gnb_c_write_pdcch_transport_text(const char* path,
   if (file == NULL) {
     return -1;
   }
+  tbsize = mini_gnb_c_lookup_tbsize(patch->pdcch.scheduled_prb_len, patch->pdcch.mcs);
 
   fprintf(file,
           "direction=DL\n"
@@ -561,6 +569,7 @@ static int mini_gnb_c_write_pdcch_transport_text(const char* path,
           "scheduled_prb_start=%u\n"
           "scheduled_prb_len=%u\n"
           "mcs=%u\n"
+          "tbsize=%u\n"
           "k2=%d\n"
           "tx_index=%llu\n",
           slot->abs_slot,
@@ -579,6 +588,7 @@ static int mini_gnb_c_write_pdcch_transport_text(const char* path,
           patch->pdcch.scheduled_prb_start,
           patch->pdcch.scheduled_prb_len,
           patch->pdcch.mcs,
+          tbsize,
           patch->pdcch.k2,
           (unsigned long long)tx_index);
 
@@ -961,6 +971,11 @@ static bool mini_gnb_c_try_receive_slot_text_object(mini_gnb_c_mock_radio_fronte
       out_burst->crc_ok_override = bool_value;
     }
     mini_gnb_c_fill_burst_payload_from_transport(text, &radio->ul_data_mac_pdu, &out_burst->mac_pdu);
+    if (mini_gnb_c_extract_transport_int(text, "tbsize", &int_value) == 0 && int_value > 0) {
+      out_burst->tbsize = (uint16_t)int_value;
+    } else {
+      out_burst->tbsize = radio->ul_data_tbsize;
+    }
 
     free(text);
     return true;
@@ -1058,6 +1073,7 @@ static bool mini_gnb_c_try_receive_slot_input(mini_gnb_c_mock_radio_frontend_t* 
     out_burst->rnti = radio->ul_data_armed ? radio->ul_data_rnti : 0U;
     out_burst->snr_db = radio->sim.ul_data_snr_db;
     out_burst->evm = radio->sim.ul_data_evm;
+    out_burst->tbsize = radio->ul_data_tbsize;
     out_burst->mac_pdu = radio->ul_data_mac_pdu;
     return true;
   }
@@ -1227,6 +1243,7 @@ void mini_gnb_c_mock_radio_frontend_receive(mini_gnb_c_mock_radio_frontend_t* ra
     out_burst->rnti = radio->ul_data_rnti;
     out_burst->snr_db = radio->sim.ul_data_snr_db;
     out_burst->evm = radio->sim.ul_data_evm;
+    out_burst->tbsize = radio->ul_data_tbsize;
     out_burst->crc_ok_override_valid = true;
     out_burst->crc_ok_override = radio->sim.ul_data_crc_ok;
     out_burst->mac_pdu = radio->ul_data_mac_pdu;
@@ -1291,6 +1308,7 @@ void mini_gnb_c_mock_radio_frontend_arm_ul_data(mini_gnb_c_mock_radio_frontend_t
   radio->ul_data_armed = true;
   radio->ul_data_abs_slot = ul_grant->abs_slot;
   radio->ul_data_rnti = ul_grant->c_rnti;
+  radio->ul_data_tbsize = mini_gnb_c_lookup_tbsize(ul_grant->prb_len, ul_grant->mcs);
   radio->ul_data_purpose = ul_grant->purpose;
   mini_gnb_c_build_ul_data_mac_pdu(&radio->sim, radio->ul_data_purpose, &radio->ul_data_mac_pdu);
 }
@@ -1330,6 +1348,7 @@ void mini_gnb_c_mock_radio_frontend_submit_tx(mini_gnb_c_mock_radio_frontend_t* 
     int text_export_ok = 0;
     int pdcch_export_ok = 0;
     int written = 0;
+    uint16_t tbsize = patch->pdcch.valid ? mini_gnb_c_lookup_tbsize(patch->prb_len, patch->pdcch.mcs) : 0U;
 
     ++radio->tx_burst_count;
 
@@ -1382,11 +1401,12 @@ void mini_gnb_c_mock_radio_frontend_submit_tx(mini_gnb_c_mock_radio_frontend_t* 
 
     written = snprintf(details,
                        sizeof(details),
-                       "type=%s,rnti=%u,prb_start=%u,prb_len=%u,payload_len=%zu,sample_count=%zu",
+                       "type=%s,rnti=%u,prb_start=%u,prb_len=%u,tbsize=%u,payload_len=%zu,sample_count=%zu",
                        mini_gnb_c_dl_object_type_to_string(patch->type),
                        patch->rnti,
                        patch->prb_start,
                        patch->prb_len,
+                       tbsize,
                        patch->payload_len,
                        patch->sample_count);
     if (export_ok && written >= 0 && (size_t)written < sizeof(details)) {
@@ -1469,10 +1489,11 @@ void mini_gnb_c_mock_radio_frontend_submit_pdcch(mini_gnb_c_mock_radio_frontend_
                                    "radio_tx",
                                    "Submitted standalone PDCCH.",
                                    slot->abs_slot,
-                                   "type=DL_OBJ_PDCCH,rnti=%u,dci_format=%s,scheduled_type=%s,tx_path=%s",
+                                   "type=DL_OBJ_PDCCH,rnti=%u,dci_format=%s,scheduled_type=%s,tbsize=%u,tx_path=%s",
                                    pdcch->rnti,
                                    mini_gnb_c_dci_format_to_string(pdcch->format),
                                    mini_gnb_c_scheduled_object_name(pdcch),
+                                   mini_gnb_c_lookup_tbsize(pdcch->scheduled_prb_len, pdcch->mcs),
                                    pdcch_path);
   }
 }

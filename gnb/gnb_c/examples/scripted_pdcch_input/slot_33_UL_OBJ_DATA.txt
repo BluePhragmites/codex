@@ -2,9 +2,9 @@ direction=UL
 abs_slot=33
 type=UL_OBJ_DATA
 rnti=17921
-snr_db=14.6
-evm=1.5
+snr_db=14.5
+evm=1.1
 crc_ok=true
-sample_count=112
+sample_count=96
 tbsize=16
 payload_text=BSR|bytes=384

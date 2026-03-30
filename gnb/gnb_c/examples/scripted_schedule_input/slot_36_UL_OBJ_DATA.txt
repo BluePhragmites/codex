@@ -1,0 +1,10 @@
+direction=UL
+abs_slot=36
+type=UL_OBJ_DATA
+rnti=17921
+snr_db=15.0
+evm=1.8
+crc_ok=true
+sample_count=128
+tbsize=64
+payload_text=SCRIPTED_UL_DATA

@@ -62,6 +62,10 @@ target_compile_definitions(mini_gnb_c_lib
 add_executable(mini_gnb_c_sim apps/mini_gnb_c_sim.c)
 target_link_libraries(mini_gnb_c_sim PRIVATE mini_gnb_c_lib)
 
+if(NOT WIN32)
+  add_executable(ngap_probe apps/ngap_probe.c)
+endif()
+
 add_executable(mini_gnb_c_tests
   tests/test_main.c
   tests/test_config.c

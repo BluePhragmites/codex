@@ -28,6 +28,15 @@ ctest --test-dir build --output-on-failure
 ./build/mini_gnb_c_sim
 ```
 
+For a minimal N2 reachability check against Open5GS AMF over SCTP:
+
+```bash
+./build/ngap_probe 192.168.1.10 38412 5000
+```
+
+`ngap_probe` sends one captured `NGSetupRequest` payload with `NGAP PPID=60` and
+waits for a single response. A successful probe prints `NGSetupResponse detected.`
+
 The current WSL validation result is:
 
 - configure: passed

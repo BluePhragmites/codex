@@ -44,6 +44,20 @@ The current WSL validation result is:
 - `ctest --test-dir build --output-on-failure`: passed
 - `./build/mini_gnb_c_sim`: passed
 
+On a native Ubuntu host, the observed behavior can differ from WSL networking.
+In one non-WSL validation, Open5GS AMF reachability was confirmed with both the
+local listener address and the LAN address:
+
+```bash
+./build/ngap_probe 127.0.0.5 38412 5000
+./build/ngap_probe 192.168.1.10 38412 5000
+```
+
+Both probes returned `NGSetupResponse detected.`. The WSL validation above does
+not imply that off-box SCTP reachability behaves the same way inside WSL; if
+you run this from WSL, verify that the AMF IP is reachable from the WSL guest
+network before assuming the same result.
+
 The simulator writes:
 
 - `out/trace.json`

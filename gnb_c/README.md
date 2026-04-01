@@ -37,6 +37,71 @@ For a minimal N2 reachability check against Open5GS AMF over SCTP:
 `ngap_probe` sends one captured `NGSetupRequest` payload with `NGAP PPID=60` and
 waits for a single response. A successful probe prints `NGSetupResponse detected.`
 
+For a deeper Open5GS validation against the local AMF and UPF, use replay mode:
+
+```bash
+./build/ngap_probe --replay --upf-ip 127.0.0.7 --upf-port 2152 127.0.0.5 38412 5000
+```
+
+In replay mode, `ngap_probe` follows the same N2 attach/session step order as
+`gnb_ngap.pcap`, but the gNB-originated uplink NGAP messages are built locally
+instead of copied from the capture:
+
+- `InitialUEMessage`, all `UplinkNASTransport` messages, `InitialContextSetupResponse`,
+  and `PDUSessionResourceSetupResponse` are encoded from NGAP IEs at runtime
+- `AuthenticationResponse` is generated from the runtime `RAND/AUTN`
+- `SecurityModeComplete`, `RegistrationComplete`, and the PDU session NAS uplinks
+  have their NAS MAC recomputed from the runtime `KAMF/KNAS`
+- `gnb_ngap.pcap` is now only a reference capture for step alignment and later
+  Wireshark comparison; replay still runs if that reference file is absent
+- top-level `NAS-PDU` and `PDUSessionResourceSetupRequest` session data are parsed
+  through bounded IE decoding instead of whole-frame byte-pattern scans
+- after `PDUSessionResourceSetupRequest`, the probe extracts the session N3 tunnel
+  parameters from the AMF response, including the UPF IP, UL TEID, QFI, and UE IPv4
+- after `PDUSessionResourceSetupResponse`, the probe sends a GTP-U `Echo Request`
+  to the configured or parsed UPF and then sends one minimal G-PDU using the parsed
+  TEID, QFI, and UE IPv4
+- `--gpdu-dst-ip <ipv4>` can be used to change the inner IPv4 destination carried
+  inside that session G-PDU; the default is `10.45.0.1`
+- by default, the probe also writes runtime exchange traces to
+  `out/ngap_probe_ngap_runtime.pcap` and `out/ngap_probe_gtpu_runtime.pcap`
+- `--ngap-trace-pcap <path>` and `--gtpu-trace-pcap <path>` can override those outputs
+
+This means the current `--replay` mode validates:
+
+- N2 SCTP + NGAP setup to the AMF
+- 5G AKA and protected NAS closure for one UE
+- PDU session setup signaling up to `PDUSessionResourceSetupResponse`
+- basic N3 UDP/GTP-U reachability to the UPF
+- session-level N3 decapsulation in the UPF with one minimal UE IPv4/UDP payload
+
+On the local Open5GS setup used during development, this was verified with:
+
+```bash
+./build/ngap_probe --replay --upf-ip 127.0.0.7 --upf-port 2152 127.0.0.5 38412 5000
+ip -s link show dev ogstun
+```
+
+The replay output showed a parsed session such as:
+
+- `UPF=127.0.0.7`
+- `TEID=0x0000ef26`
+- `QFI=1`
+- `UE IPv4=10.45.0.7`
+
+and `ogstun` RX counters increased by exactly one packet and 43 bytes, matching the
+single inner IPv4/UDP probe payload emitted through the parsed GTP-U session tunnel.
+
+The generated trace pcaps are intended for later Wireshark inspection:
+
+- `out/ngap_probe_ngap_runtime.pcap`
+  - same payload-only format as `gnb_ngap.pcap`
+  - contains the dynamically encoded uplink NGAP messages plus the AMF responses
+  - link type is `Private use 5`
+- `out/ngap_probe_gtpu_runtime.pcap`
+  - stores synthetic outer IPv4/UDP packets carrying the emitted and received GTP-U payloads
+  - link type is `Raw IP`
+
 The current WSL validation result is:
 
 - configure: passed

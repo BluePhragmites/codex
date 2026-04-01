@@ -64,6 +64,8 @@ target_link_libraries(mini_gnb_c_sim PRIVATE mini_gnb_c_lib)
 
 if(NOT WIN32)
   add_executable(ngap_probe apps/ngap_probe.c)
+  target_compile_definitions(ngap_probe PRIVATE MINI_GNB_C_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  target_link_libraries(ngap_probe PRIVATE ogscrypt)
 endif()
 
 add_executable(mini_gnb_c_tests

@@ -37,6 +37,7 @@ There are no threads, no locks, and no asynchronous queues in the current implem
 The entrypoint is:
 
 - `apps/mini_gnb_c_sim.c`
+- `apps/ngap_probe.c`
 
 The top-level composition root is:
 
@@ -61,6 +62,27 @@ The simulator object directly owns all major modules:
 - `ue_store`
 
 So the code architecture is a **composition-based modular design**, not inheritance and not callback-driven orchestration.
+
+`apps/ngap_probe.c` is intentionally separate from the slot-driven simulator. It is a
+small external-system validation tool for Open5GS bring-up:
+
+- default mode
+  - one-shot `NGSetupRequest` probe for basic N2 SCTP/NGAP reachability
+- replay mode
+  - follows the same N2 attach/session step order as `gnb_ngap.pcap`
+  - dynamically encodes every gNB-originated uplink NGAP message instead of copying uplink frames
+  - generates the runtime-sensitive UE NAS messages from the AMF challenge
+  - recomputes protected NAS MACs after `SecurityModeCommand`
+  - treats `gnb_ngap.pcap` as an optional reference capture for alignment and comparison
+  - parses top-level `NAS-PDU` and session-level transfer data through bounded IE decoding
+  - extracts session-level N3 parameters from `PDUSessionResourceSetupRequest`
+  - validates N3 reachability with a GTP-U `Echo Request` to the configured or parsed UPF
+  - emits one minimal session G-PDU using the parsed UL TEID, QFI, and UE IPv4
+  - writes runtime trace pcaps for later NGAP and GTP-U inspection
+
+So `ngap_probe` is not part of the radio simulator loop. It is a protocol bring-up
+tool that shares the same repository because it validates the external Open5GS
+integration path that the prototype gNB is expected to use.
 
 ## 3. Directory Layout
 

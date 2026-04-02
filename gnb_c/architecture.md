@@ -89,6 +89,15 @@ same core/session and N3 code paths:
 - `n3/gtpu_tunnel`
   - builds and validates the minimal GTP-U Echo and UL G-PDU packets used by replay mode
 
+The next local-loop milestone also needs a filesystem-backed exchange between the
+future UE helper process and the simulator. The first version of that transport now
+exists as:
+
+- `link/json_link`
+  - builds stable JSON event filenames
+  - writes event envelopes with `tmp + rename` atomicity
+  - is intended for low-rate local control/data event exchange, not high-throughput user-plane traffic
+
 So `ngap_probe` is not part of the radio simulator loop. It is a protocol bring-up
 tool that shares the same repository because it validates the external Open5GS
 integration path that the prototype gNB is expected to use.
@@ -126,6 +135,8 @@ Subsystem mapping:
   - minimal RRC CCCH parser/builder
 - `core`
   - reusable single-UE session state for AMF/N3 integration
+- `link`
+  - reusable local JSON exchange helpers for the future UE/gNB filesystem bridge
 - `n3`
   - reusable GTP-U packet builders and validators
 - `phy_dl`

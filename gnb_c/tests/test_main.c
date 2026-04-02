@@ -9,6 +9,8 @@ void test_core_session_tracks_user_plane_state(void);
 void test_core_session_rejects_invalid_values(void);
 void test_gtpu_builders_encode_expected_headers(void);
 void test_gtpu_builders_reject_missing_state(void);
+void test_json_link_builds_stable_event_path(void);
+void test_json_link_emits_atomic_event_file(void);
 void test_ra_manager_flow(void);
 void test_ra_timeout(void);
 void test_mac_rrc_and_msg4_contention_identity(void);
@@ -32,6 +34,8 @@ int main(void) {
       {"test_core_session_rejects_invalid_values", test_core_session_rejects_invalid_values},
       {"test_gtpu_builders_encode_expected_headers", test_gtpu_builders_encode_expected_headers},
       {"test_gtpu_builders_reject_missing_state", test_gtpu_builders_reject_missing_state},
+      {"test_json_link_builds_stable_event_path", test_json_link_builds_stable_event_path},
+      {"test_json_link_emits_atomic_event_file", test_json_link_emits_atomic_event_file},
       {"test_ra_manager_flow", test_ra_manager_flow},
       {"test_ra_timeout", test_ra_timeout},
       {"test_mac_rrc_and_msg4_contention_identity", test_mac_rrc_and_msg4_contention_identity},

@@ -1,6 +1,6 @@
 # gnb_c End-to-End UE/gNB/Core Plan
 
-Last updated: 2026-04-02 (Stage A milestone committed locally)
+Last updated: 2026-04-02 (Stage B1 complete)
 
 ## Completed Tasks
 
@@ -12,10 +12,12 @@ Last updated: 2026-04-02 (Stage A milestone committed locally)
 - [x] 2026-04-02: Added unit coverage for the new helpers in `tests/test_core_session.c` and `tests/test_gtpu_tunnel.c`, and kept `ctest --test-dir build --output-on-failure` passing.
 - [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the Stage A reusable modules and the tracked implementation plan.
 - [x] 2026-04-02: Created a local Stage A milestone commit: `Extract reusable core session and GTP-U helpers`.
+- [x] 2026-04-02: Added the Stage B1 JSON exchange helper in `include/mini_gnb_c/link/json_link.h` and `src/link/json_link.c`.
+- [x] 2026-04-02: Added `tests/test_json_link.c` and kept `ctest --test-dir build --output-on-failure` passing after the Stage B1 JSON exchange work.
+- [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the Stage B1 local JSON exchange foundation.
 
 ## Pending Tasks
 
-- [ ] Stage B1: Add a tracked local exchange layer for UE <-> gNB control/data events with atomic JSON file writes.
 - [ ] Stage B2: Implement a minimal single-UE FSM process in a new `apps/mini_ue_c.c`.
 - [ ] Stage B3: Connect `mini_gnb_c_sim` to the local UE exchange so Msg1/Msg3/SR/BSR/UL-DATA can run without handcrafted example inputs.
 - [ ] Stage B4: Add tests and docs for the local UE <-> gNB loop.

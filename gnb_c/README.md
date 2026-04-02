@@ -78,6 +78,14 @@ later UE/gNB/core integration work:
 - the current extraction is covered by unit tests in `tests/test_core_session.c` and
   `tests/test_gtpu_tunnel.c`
 
+For the next local UE/gNB loop milestone, the repository now also includes a tracked
+JSON exchange helper:
+
+- `include/mini_gnb_c/link/json_link.h`
+  - emits atomic event files with a stable `seq_<nnnnnn>_<source>_<type>.json` naming pattern
+  - writes through `tmp + rename` so a local UE process and the simulator can exchange
+    small control/data events through the filesystem without partially written files
+
 This means the current `--replay` mode validates:
 
 - N2 SCTP + NGAP setup to the AMF

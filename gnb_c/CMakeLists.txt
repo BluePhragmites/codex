@@ -33,6 +33,7 @@ add_library(mini_gnb_c_lib
   src/common/simulator.c
   src/core/core_session.c
   src/config/config_loader.c
+  src/link/json_link.c
   src/timing/slot_engine.c
   src/n3/gtpu_tunnel.c
   src/radio/mock_radio_frontend.c
@@ -75,6 +76,7 @@ add_executable(mini_gnb_c_tests
   tests/test_config.c
   tests/test_core_session.c
   tests/test_gtpu_tunnel.c
+  tests/test_json_link.c
   tests/test_ra_manager.c
   tests/test_mac_rrc.c
   tests/test_integration.c

@@ -1,19 +1,19 @@
 # gnb_c End-to-End UE/gNB/Core Plan
 
-Last updated: 2026-04-02
+Last updated: 2026-04-02 (Stage A1-A5 complete)
 
 ## Completed Tasks
 
 - [x] 2026-04-02: Reviewed the current `mini_gnb_c_sim` and `ngap_probe` architecture and mapped the staged implementation order.
 - [x] 2026-04-02: Created this tracked implementation plan file with explicit completed and pending task sections.
+- [x] 2026-04-02: Extracted reusable single-UE core session helpers into `include/mini_gnb_c/core/core_session.h` and `src/core/core_session.c`.
+- [x] 2026-04-02: Extracted reusable GTP-U packet builders and validators into `include/mini_gnb_c/n3/gtpu_tunnel.h` and `src/n3/gtpu_tunnel.c`.
+- [x] 2026-04-02: Updated `apps/ngap_probe.c` to consume the extracted Stage A session and GTP-U helpers.
+- [x] 2026-04-02: Added unit coverage for the new helpers in `tests/test_core_session.c` and `tests/test_gtpu_tunnel.c`, and kept `ctest --test-dir build --output-on-failure` passing.
+- [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the Stage A reusable modules and the tracked implementation plan.
 
 ## Pending Tasks
 
-- [ ] Stage A1: Extract reusable single-UE core session state helpers from `apps/ngap_probe.c` into `mini_gnb_c_lib`.
-- [ ] Stage A2: Extract reusable GTP-U packet builders and validators from `apps/ngap_probe.c` into `mini_gnb_c_lib`.
-- [ ] Stage A3: Update `apps/ngap_probe.c` to use the new reusable session and GTP-U helpers without regressing current replay behavior.
-- [ ] Stage A4: Add unit tests for the new reusable session and GTP-U helpers and wire them into `mini_gnb_c_tests`.
-- [ ] Stage A5: Update `gnb_c/README.md` and `gnb_c/architecture.md` to document the new reusable Stage A modules and the tracked implementation progress.
 - [ ] Stage A6: Create a local milestone commit after Stage A code, tests, and docs pass.
 - [ ] Stage B1: Add a tracked local exchange layer for UE <-> gNB control/data events with atomic JSON file writes.
 - [ ] Stage B2: Implement a minimal single-UE FSM process in a new `apps/mini_ue_c.c`.

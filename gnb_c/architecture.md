@@ -80,6 +80,15 @@ small external-system validation tool for Open5GS bring-up:
   - emits one minimal session G-PDU using the parsed UL TEID, QFI, and UE IPv4
   - writes runtime trace pcaps for later NGAP and GTP-U inspection
 
+The probe started as a single-file bring-up tool, but the current implementation is
+now being split into reusable support modules so the simulator can later share the
+same core/session and N3 code paths:
+
+- `core/core_session`
+  - owns single-UE AMF/session/N3 state such as identifiers, counters, UPF tunnel, QFI, and UE IPv4
+- `n3/gtpu_tunnel`
+  - builds and validates the minimal GTP-U Echo and UL G-PDU packets used by replay mode
+
 So `ngap_probe` is not part of the radio simulator loop. It is a protocol bring-up
 tool that shares the same repository because it validates the external Open5GS
 integration path that the prototype gNB is expected to use.
@@ -115,6 +124,10 @@ Subsystem mapping:
   - Msg3 MAC PDU demux
 - `rrc`
   - minimal RRC CCCH parser/builder
+- `core`
+  - reusable single-UE session state for AMF/N3 integration
+- `n3`
+  - reusable GTP-U packet builders and validators
 - `phy_dl`
   - toy DL waveform mapping
 - `radio`

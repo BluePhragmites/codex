@@ -13,10 +13,11 @@ The C version intentionally uses fixed-size buffers and plain C interfaces so it
 ## Layout
 
 - `config/`: static YAML configuration
-- `apps/`: simulator entrypoint
+- `apps/`: executable entrypoints such as `mini_gnb_c_sim` and `ngap_probe`
 - `include/mini_gnb_c/`: public C headers by subsystem
 - `src/`: implementation modules
 - `tests/`: unit and integration tests
+- `implementation_plan.md`: tracked end-to-end UE/gNB/core delivery plan with completed and pending tasks
 
 ## Build In WSL Ubuntu
 
@@ -66,6 +67,16 @@ instead of copied from the capture:
 - by default, the probe also writes runtime exchange traces to
   `out/ngap_probe_ngap_runtime.pcap` and `out/ngap_probe_gtpu_runtime.pcap`
 - `--ngap-trace-pcap <path>` and `--gtpu-trace-pcap <path>` can override those outputs
+
+The replay code is also now starting to split into reusable library modules for the
+later UE/gNB/core integration work:
+
+- `include/mini_gnb_c/core/core_session.h`
+  - stores single-UE AMF/session/N3 state that will later be shared by the simulator bridge
+- `include/mini_gnb_c/n3/gtpu_tunnel.h`
+  - builds and validates the minimal GTP-U Echo and UL G-PDU packets used by replay mode
+- the current extraction is covered by unit tests in `tests/test_core_session.c` and
+  `tests/test_gtpu_tunnel.c`
 
 This means the current `--replay` mode validates:
 

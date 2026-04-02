@@ -31,8 +31,10 @@ add_library(mini_gnb_c_lib
   src/common/hex.c
   src/common/json_utils.c
   src/common/simulator.c
+  src/core/core_session.c
   src/config/config_loader.c
   src/timing/slot_engine.c
+  src/n3/gtpu_tunnel.c
   src/radio/mock_radio_frontend.c
   src/broadcast/broadcast_engine.c
   src/phy_ul/mock_prach_detector.c
@@ -65,12 +67,14 @@ target_link_libraries(mini_gnb_c_sim PRIVATE mini_gnb_c_lib)
 if(NOT WIN32)
   add_executable(ngap_probe apps/ngap_probe.c)
   target_compile_definitions(ngap_probe PRIVATE MINI_GNB_C_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
-  target_link_libraries(ngap_probe PRIVATE ogscrypt)
+  target_link_libraries(ngap_probe PRIVATE mini_gnb_c_lib ogscrypt)
 endif()
 
 add_executable(mini_gnb_c_tests
   tests/test_main.c
   tests/test_config.c
+  tests/test_core_session.c
+  tests/test_gtpu_tunnel.c
   tests/test_ra_manager.c
   tests/test_mac_rrc.c
   tests/test_integration.c

@@ -13,6 +13,9 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include "mini_gnb_c/core/core_session.h"
+#include "mini_gnb_c/n3/gtpu_tunnel.h"
+
 #ifndef IPPROTO_SCTP
 #define IPPROTO_SCTP 132
 #endif
@@ -180,16 +183,6 @@ typedef struct {
   uint8_t ciphering_algorithm;
   uint8_t integrity_algorithm;
 } mini_gnb_c_aka_context_t;
-
-typedef struct {
-  char upf_ip[INET_ADDRSTRLEN];
-  uint32_t upf_teid;
-  uint8_t qfi;
-  uint8_t ue_ipv4[4];
-  int upf_tunnel_valid;
-  int qfi_valid;
-  int ue_ipv4_valid;
-} mini_gnb_c_gtpu_session_t;
 
 typedef struct {
   const uint8_t* bytes;
@@ -1153,12 +1146,13 @@ static int mini_gnb_c_patch_security_protected_uplink_message(uint8_t* bytes,
 
 static int mini_gnb_c_extract_open5gs_upf_tunnel(const uint8_t* bytes,
                                                  size_t length,
-                                                 mini_gnb_c_gtpu_session_t* gtpu_session) {
+                                                 mini_gnb_c_core_session_t* core_session) {
   mini_gnb_c_ie_sequence_t transfer_sequence;
   mini_gnb_c_ngap_ie_t gtp_tunnel_ie;
   struct in_addr upf_addr;
+  char upf_ip[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
 
-  if (bytes == NULL || gtpu_session == NULL) {
+  if (bytes == NULL || core_session == NULL) {
     return -1;
   }
 
@@ -1171,23 +1165,23 @@ static int mini_gnb_c_extract_open5gs_upf_tunnel(const uint8_t* bytes,
   }
 
   memcpy(&upf_addr.s_addr, gtp_tunnel_ie.value.bytes + 2u, 4u);
-  if (inet_ntop(AF_INET, &upf_addr, gtpu_session->upf_ip, sizeof(gtpu_session->upf_ip)) == NULL) {
+  if (inet_ntop(AF_INET, &upf_addr, upf_ip, sizeof(upf_ip)) == NULL) {
     perror("inet_ntop(UPF IP)");
     return -1;
   }
 
-  gtpu_session->upf_teid = mini_gnb_c_read_u32_be(gtp_tunnel_ie.value.bytes + 6u);
-  gtpu_session->upf_tunnel_valid = 1;
-  return 0;
+  return mini_gnb_c_core_session_set_upf_tunnel(core_session,
+                                                upf_ip,
+                                                mini_gnb_c_read_u32_be(gtp_tunnel_ie.value.bytes + 6u));
 }
 
 static int mini_gnb_c_extract_open5gs_qfi(const uint8_t* bytes,
                                           size_t length,
-                                          mini_gnb_c_gtpu_session_t* gtpu_session) {
+                                          mini_gnb_c_core_session_t* core_session) {
   mini_gnb_c_ie_sequence_t transfer_sequence;
   mini_gnb_c_ngap_ie_t qos_flow_ie;
 
-  if (bytes == NULL || gtpu_session == NULL) {
+  if (bytes == NULL || core_session == NULL) {
     return -1;
   }
   if (mini_gnb_c_extract_pdu_session_setup_transfer_sequence(bytes, length, &transfer_sequence) != 0 ||
@@ -1198,20 +1192,18 @@ static int mini_gnb_c_extract_open5gs_qfi(const uint8_t* bytes,
     return -1;
   }
 
-  gtpu_session->qfi = qos_flow_ie.value.bytes[1];
-  gtpu_session->qfi_valid = 1;
-  return 0;
+  return mini_gnb_c_core_session_set_qfi(core_session, qos_flow_ie.value.bytes[1]);
 }
 
 static int mini_gnb_c_extract_open5gs_ue_ipv4(const uint8_t* bytes,
                                               size_t length,
-                                              mini_gnb_c_gtpu_session_t* gtpu_session) {
+                                              mini_gnb_c_core_session_t* core_session) {
   mini_gnb_c_ngap_ie_t session_list_ie;
   const uint8_t* nas = NULL;
   size_t nas_offset = 0u;
   size_t index = 0;
 
-  if (bytes == NULL || gtpu_session == NULL) {
+  if (bytes == NULL || core_session == NULL) {
     return -1;
   }
 
@@ -1232,8 +1224,7 @@ static int mini_gnb_c_extract_open5gs_ue_ipv4(const uint8_t* bytes,
         session_list_ie.value.bytes[index + 2u] != 0x01u) {
       continue;
     }
-    memcpy(gtpu_session->ue_ipv4, session_list_ie.value.bytes + index + 3u, 4u);
-    gtpu_session->ue_ipv4_valid = 1;
+    mini_gnb_c_core_session_set_ue_ipv4(core_session, session_list_ie.value.bytes + index + 3u);
     return 0;
   }
 
@@ -1241,8 +1232,8 @@ static int mini_gnb_c_extract_open5gs_ue_ipv4(const uint8_t* bytes,
 }
 
 static uint16_t mini_gnb_c_checksum16(const uint8_t* data, size_t length) {
-  uint32_t sum = 0;
-  size_t index = 0;
+  uint32_t sum = 0u;
+  size_t index = 0u;
 
   if (data == NULL) {
     return 0u;
@@ -1562,68 +1553,8 @@ static void mini_gnb_c_trace_gtpu_rx(int socket_fd,
   mini_gnb_c_trace_gtpu_packet(src_addr, &dst_addr, udp_payload, udp_payload_length);
 }
 
-static int mini_gnb_c_build_ipv4_udp_probe(const mini_gnb_c_probe_options_t* options,
-                                           const mini_gnb_c_gtpu_session_t* gtpu_session,
-                                           uint8_t* packet,
-                                           size_t packet_capacity,
-                                           size_t* packet_length) {
-  static const uint8_t k_udp_payload[] = "mini_gnb_c_gpdu";
-  struct in_addr dst_addr;
-  uint16_t total_length = 0u;
-  uint16_t udp_length = 0u;
-
-  if (options == NULL || gtpu_session == NULL || packet == NULL || packet_length == NULL) {
-    return -1;
-  }
-  if (!gtpu_session->ue_ipv4_valid) {
-    return -1;
-  }
-  if (inet_pton(AF_INET, options->gpdu_dst_ip, &dst_addr) != 1) {
-    fprintf(stderr, "invalid gpdu_dst_ip: %s\n", options->gpdu_dst_ip);
-    return -1;
-  }
-
-  total_length = (uint16_t)(20u + 8u + sizeof(k_udp_payload) - 1u);
-  udp_length = (uint16_t)(8u + sizeof(k_udp_payload) - 1u);
-  if ((size_t)total_length > packet_capacity) {
-    return -1;
-  }
-
-  memset(packet, 0, total_length);
-  packet[0] = 0x45u;
-  packet[1] = 0x00u;
-  packet[2] = (uint8_t)(total_length >> 8u);
-  packet[3] = (uint8_t)(total_length & 0xffu);
-  packet[4] = 0x12u;
-  packet[5] = 0x34u;
-  packet[6] = 0x00u;
-  packet[7] = 0x00u;
-  packet[8] = 64u;
-  packet[9] = 17u;
-  memcpy(packet + 12u, gtpu_session->ue_ipv4, 4u);
-  memcpy(packet + 16u, &dst_addr.s_addr, 4u);
-  {
-    uint16_t ip_checksum = mini_gnb_c_checksum16(packet, 20u);
-    packet[10] = (uint8_t)(ip_checksum >> 8u);
-    packet[11] = (uint8_t)(ip_checksum & 0xffu);
-  }
-
-  packet[20] = 0xd4u;
-  packet[21] = 0x31u;
-  packet[22] = 0x82u;
-  packet[23] = 0x9au;
-  packet[24] = (uint8_t)(udp_length >> 8u);
-  packet[25] = (uint8_t)(udp_length & 0xffu);
-  packet[26] = 0x00u;
-  packet[27] = 0x00u;
-  memcpy(packet + 28u, k_udp_payload, sizeof(k_udp_payload) - 1u);
-
-  *packet_length = total_length;
-  return 0;
-}
-
 static int mini_gnb_c_send_gtpu_gpdu(const mini_gnb_c_probe_options_t* options,
-                                     const mini_gnb_c_gtpu_session_t* gtpu_session) {
+                                     const mini_gnb_c_core_session_t* core_session) {
   int socket_fd = -1;
   struct sockaddr_in upf_addr;
   uint8_t inner_packet[256];
@@ -1632,24 +1563,32 @@ static int mini_gnb_c_send_gtpu_gpdu(const mini_gnb_c_probe_options_t* options,
   size_t gtpu_packet_length = 0u;
   const char* upf_ip = NULL;
 
-  if (options == NULL || gtpu_session == NULL) {
+  if (options == NULL || core_session == NULL) {
     return -1;
   }
-  if (!gtpu_session->upf_tunnel_valid || !gtpu_session->ue_ipv4_valid) {
+  if (!core_session->upf_tunnel_valid || !core_session->ue_ipv4_valid) {
     fprintf(stderr, "missing parsed UPF tunnel or UE IPv4 for G-PDU probe\n");
     return -1;
   }
-  if (!gtpu_session->qfi_valid) {
+  if (!core_session->qfi_valid) {
     fprintf(stderr, "missing parsed QFI for G-PDU probe\n");
     return -1;
   }
 
-  upf_ip = gtpu_session->upf_ip[0] != '\0' ? gtpu_session->upf_ip : options->upf_ip;
-  if (mini_gnb_c_build_ipv4_udp_probe(options,
-                                      gtpu_session,
-                                      inner_packet,
-                                      sizeof(inner_packet),
-                                      &inner_packet_length) != 0) {
+  upf_ip = core_session->upf_ip[0] != '\0' ? core_session->upf_ip : options->upf_ip;
+  if (mini_gnb_c_gtpu_build_ipv4_udp_probe(core_session,
+                                           options->gpdu_dst_ip,
+                                           inner_packet,
+                                           sizeof(inner_packet),
+                                           &inner_packet_length) != 0) {
+    return -1;
+  }
+  if (mini_gnb_c_gtpu_build_gpdu(core_session,
+                                 inner_packet,
+                                 inner_packet_length,
+                                 gtpu_packet,
+                                 sizeof(gtpu_packet),
+                                 &gtpu_packet_length) != 0) {
     return -1;
   }
 
@@ -1660,33 +1599,6 @@ static int mini_gnb_c_send_gtpu_gpdu(const mini_gnb_c_probe_options_t* options,
     fprintf(stderr, "invalid UPF IP for G-PDU probe: %s\n", upf_ip);
     return -1;
   }
-
-  gtpu_packet_length = 16u + inner_packet_length;
-  if (gtpu_packet_length > sizeof(gtpu_packet)) {
-    return -1;
-  }
-
-  memset(gtpu_packet, 0, gtpu_packet_length);
-  gtpu_packet[0] = 0x34u; /* GTPv1-U, PT=1, E=1 */
-  gtpu_packet[1] = 0xffu; /* G-PDU */
-  {
-    uint16_t gtp_length = (uint16_t)(inner_packet_length + 8u);
-    gtpu_packet[2] = (uint8_t)(gtp_length >> 8u);
-    gtpu_packet[3] = (uint8_t)(gtp_length & 0xffu);
-  }
-  gtpu_packet[4] = (uint8_t)(gtpu_session->upf_teid >> 24u);
-  gtpu_packet[5] = (uint8_t)((gtpu_session->upf_teid >> 16u) & 0xffu);
-  gtpu_packet[6] = (uint8_t)((gtpu_session->upf_teid >> 8u) & 0xffu);
-  gtpu_packet[7] = (uint8_t)(gtpu_session->upf_teid & 0xffu);
-  gtpu_packet[8] = 0x00u;
-  gtpu_packet[9] = 0x00u;
-  gtpu_packet[10] = 0x00u;
-  gtpu_packet[11] = 0x85u; /* PDU Session Container */
-  gtpu_packet[12] = 0x01u; /* extension length */
-  gtpu_packet[13] = 0x10u; /* UL PDU Session Information */
-  gtpu_packet[14] = (uint8_t)(gtpu_session->qfi & 0x3fu);
-  gtpu_packet[15] = 0x00u; /* no more extension headers */
-  memcpy(gtpu_packet + 16u, inner_packet, inner_packet_length);
 
   socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
   if (socket_fd < 0) {
@@ -1707,12 +1619,12 @@ static int mini_gnb_c_send_gtpu_gpdu(const mini_gnb_c_probe_options_t* options,
   printf("Sending GTP-U G-PDU to parsed UPF tunnel %s:%u TEID=0x%08x QFI=%u UE=%u.%u.%u.%u dst=%s...\n",
          upf_ip,
          options->upf_port,
-         gtpu_session->upf_teid,
-         gtpu_session->qfi,
-         gtpu_session->ue_ipv4[0],
-         gtpu_session->ue_ipv4[1],
-         gtpu_session->ue_ipv4[2],
-         gtpu_session->ue_ipv4[3],
+         core_session->upf_teid,
+         core_session->qfi,
+         core_session->ue_ipv4[0],
+         core_session->ue_ipv4[1],
+         core_session->ue_ipv4[2],
+         core_session->ue_ipv4[3],
          options->gpdu_dst_ip);
   if (send(socket_fd, gtpu_packet, gtpu_packet_length, 0) != (ssize_t)gtpu_packet_length) {
     perror("send(GTP-U G-PDU)");
@@ -1992,10 +1904,11 @@ static int mini_gnb_c_recv_ngap(int socket_fd,
 }
 
 static int mini_gnb_c_run_gtpu_echo_probe(const mini_gnb_c_probe_options_t* options,
-                                          const mini_gnb_c_gtpu_session_t* gtpu_session) {
+                                          const mini_gnb_c_core_session_t* core_session) {
   int socket_fd = -1;
   struct sockaddr_in upf_addr;
   uint8_t request[14];
+  size_t request_length = 0u;
   uint8_t response[256];
   struct sockaddr_in from_addr;
   socklen_t from_addr_len = (socklen_t)sizeof(from_addr);
@@ -2008,8 +1921,8 @@ static int mini_gnb_c_run_gtpu_echo_probe(const mini_gnb_c_probe_options_t* opti
   }
 
   upf_ip = options->upf_ip;
-  if (gtpu_session != NULL && gtpu_session->upf_tunnel_valid && gtpu_session->upf_ip[0] != '\0') {
-    upf_ip = gtpu_session->upf_ip;
+  if (core_session != NULL && core_session->upf_tunnel_valid && core_session->upf_ip[0] != '\0') {
+    upf_ip = core_session->upf_ip;
   }
 
   memset(&upf_addr, 0, sizeof(upf_addr));
@@ -2036,23 +1949,18 @@ static int mini_gnb_c_run_gtpu_echo_probe(const mini_gnb_c_probe_options_t* opti
     return -1;
   }
 
-  memset(request, 0, sizeof(request));
-  request[0] = 0x32u; /* GTPv1-U, PT=1, S=1 */
-  request[1] = 0x01u; /* Echo Request */
-  request[2] = 0x00u;
-  request[3] = 0x06u; /* seq/npdu/next + recovery IE */
-  request[8] = (uint8_t)(sequence_number >> 8u);
-  request[9] = (uint8_t)(sequence_number & 0xffu);
-  request[12] = 0x0eu; /* Recovery IE */
-  request[13] = 0x00u; /* restart counter */
+  if (mini_gnb_c_gtpu_build_echo_request(sequence_number, request, sizeof(request), &request_length) != 0) {
+    close(socket_fd);
+    return -1;
+  }
 
   printf("Sending GTP-U Echo Request to UPF %s:%u...\n", upf_ip, options->upf_port);
-  if (send(socket_fd, request, sizeof(request), 0) != (ssize_t)sizeof(request)) {
+  if (send(socket_fd, request, request_length, 0) != (ssize_t)request_length) {
     perror("send(GTP-U Echo Request)");
     close(socket_fd);
     return -1;
   }
-  mini_gnb_c_trace_gtpu_tx(socket_fd, &upf_addr, request, sizeof(request));
+  mini_gnb_c_trace_gtpu_tx(socket_fd, &upf_addr, request, request_length);
 
   bytes_received = recvfrom(socket_fd,
                             response,
@@ -2074,13 +1982,8 @@ static int mini_gnb_c_run_gtpu_echo_probe(const mini_gnb_c_probe_options_t* opti
   printf("GTP-U response hex:\n");
   mini_gnb_c_print_hex(response, (size_t)bytes_received);
 
-  if ((size_t)bytes_received < sizeof(request) || response[0] != 0x32u || response[1] != 0x02u) {
-    fprintf(stderr, "unexpected GTP-U Echo Response header\n");
-    close(socket_fd);
-    return -1;
-  }
-  if (response[8] != request[8] || response[9] != request[9]) {
-    fprintf(stderr, "unexpected GTP-U Echo Response sequence number\n");
+  if (mini_gnb_c_gtpu_validate_echo_response(response, (size_t)bytes_received, sequence_number) != 0) {
+    fprintf(stderr, "unexpected GTP-U Echo Response content\n");
     close(socket_fd);
     return -1;
   }
@@ -2313,7 +2216,7 @@ static int mini_gnb_c_replay_socket_type(const char* socket_name,
   int runtime_ue_token_valid = 0;
   mini_gnb_c_aka_context_t aka_request;
   mini_gnb_c_aka_context_t aka_result;
-  mini_gnb_c_gtpu_session_t gtpu_session;
+  mini_gnb_c_core_session_t core_session;
   int aka_request_valid = 0;
 
   if (options == NULL) {
@@ -2321,7 +2224,7 @@ static int mini_gnb_c_replay_socket_type(const char* socket_name,
   }
 
   memset(frames, 0, sizeof(frames));
-  memset(&gtpu_session, 0, sizeof(gtpu_session));
+  mini_gnb_c_core_session_reset(&core_session);
 
   if (options->replay_pcap_path != NULL && options->replay_pcap_path[0] != '\0') {
     struct stat replay_pcap_stat;
@@ -2673,26 +2576,26 @@ static int mini_gnb_c_replay_socket_type(const char* socket_name,
                aka_result.integrity_algorithm);
       }
       if (step->frame_number == 14u) {
-        if (mini_gnb_c_extract_open5gs_upf_tunnel(response, response_length, &gtpu_session) == 0) {
+        if (mini_gnb_c_extract_open5gs_upf_tunnel(response, response_length, &core_session) == 0) {
           printf("Parsed UPF tunnel from PDUSessionResourceSetupRequest: %s TEID=0x%08x\n",
-                 gtpu_session.upf_ip,
-                 gtpu_session.upf_teid);
+                 core_session.upf_ip,
+                 core_session.upf_teid);
         } else {
           fprintf(stderr, "warning: failed to parse UPF tunnel from PDUSessionResourceSetupRequest\n");
         }
 
-        if (mini_gnb_c_extract_open5gs_qfi(response, response_length, &gtpu_session) == 0) {
-          printf("Parsed QFI from PDUSessionResourceSetupRequest: %u\n", gtpu_session.qfi);
+        if (mini_gnb_c_extract_open5gs_qfi(response, response_length, &core_session) == 0) {
+          printf("Parsed QFI from PDUSessionResourceSetupRequest: %u\n", core_session.qfi);
         } else {
           fprintf(stderr, "warning: failed to parse QFI from PDUSessionResourceSetupRequest\n");
         }
 
-        if (mini_gnb_c_extract_open5gs_ue_ipv4(response, response_length, &gtpu_session) == 0) {
+        if (mini_gnb_c_extract_open5gs_ue_ipv4(response, response_length, &core_session) == 0) {
           printf("Parsed UE IPv4 from PDU Session Establishment Accept: %u.%u.%u.%u\n",
-                 gtpu_session.ue_ipv4[0],
-                 gtpu_session.ue_ipv4[1],
-                 gtpu_session.ue_ipv4[2],
-                 gtpu_session.ue_ipv4[3]);
+                 core_session.ue_ipv4[0],
+                 core_session.ue_ipv4[1],
+                 core_session.ue_ipv4[2],
+                 core_session.ue_ipv4[3]);
         } else {
           fprintf(stderr, "warning: failed to parse UE IPv4 from PDU Session Establishment Accept\n");
         }
@@ -2705,13 +2608,13 @@ static int mini_gnb_c_replay_socket_type(const char* socket_name,
   printf("Replay reached PDU Session Resource Setup Response.\n");
   printf("This confirms N2 attach/session signaling up to SMF/UPF resource setup against the AMF.\n");
 
-  if (mini_gnb_c_run_gtpu_echo_probe(options, &gtpu_session) != 0) {
+  if (mini_gnb_c_run_gtpu_echo_probe(options, &core_session) != 0) {
     close(socket_fd);
     mini_gnb_c_free_pcap_frames(frames, frame_count);
     return 1;
   }
 
-  if (mini_gnb_c_send_gtpu_gpdu(options, &gtpu_session) != 0) {
+  if (mini_gnb_c_send_gtpu_gpdu(options, &core_session) != 0) {
     close(socket_fd);
     mini_gnb_c_free_pcap_frames(frames, frame_count);
     return 1;

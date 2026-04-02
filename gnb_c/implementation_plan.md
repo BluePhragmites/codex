@@ -1,6 +1,6 @@
 # gnb_c End-to-End UE/gNB/Core Plan
 
-Last updated: 2026-04-02 (Stage B1 complete)
+Last updated: 2026-04-02 (Stage C groundwork in progress)
 
 ## Completed Tasks
 
@@ -15,13 +15,20 @@ Last updated: 2026-04-02 (Stage B1 complete)
 - [x] 2026-04-02: Added the Stage B1 JSON exchange helper in `include/mini_gnb_c/link/json_link.h` and `src/link/json_link.c`.
 - [x] 2026-04-02: Added `tests/test_json_link.c` and kept `ctest --test-dir build --output-on-failure` passing after the Stage B1 JSON exchange work.
 - [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the Stage B1 local JSON exchange foundation.
+- [x] 2026-04-02: Added the Stage B2 standalone UE app in `apps/mini_ue_c.c`.
+- [x] 2026-04-02: Added the reusable UE event FSM in `include/mini_gnb_c/ue/mini_ue_fsm.h` and `src/ue/mini_ue_fsm.c`.
+- [x] 2026-04-02: Added `tests/test_mini_ue_fsm.c` and kept `ctest --test-dir build --output-on-failure` passing after the Stage B2 UE process work.
+- [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the Stage B2 standalone UE process and FSM.
+- [x] 2026-04-02: Connected `mini_gnb_c_sim` and `mock_radio_frontend` to consume ordered `ue_to_gnb/*.json` events from `sim.local_exchange_dir`.
+- [x] 2026-04-02: Added the Stage B3 local-loop integration coverage in `tests/test_integration.c` so PRACH, Msg3, SR, BSR, and UL DATA can run from the UE event plan without handcrafted slot input files.
+- [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the Stage B3 and Stage B4 filesystem-backed UE/gNB loop.
+- [x] 2026-04-02: Created a local Stage B milestone commit for the filesystem-backed UE/gNB loop after validating build, `ctest`, and a manual `mini_ue_c -> mini_gnb_c_sim` run.
+- [x] 2026-04-02: Extended `mini_gnb_c_ue_context_t` with embedded `core_session` state so promoted UEs now have a stable place for upcoming AMF/session/N3 bridge data.
+- [x] 2026-04-02: Added `tests/test_ue_context_store.c` plus integration assertions for the exported `core_session` summary shape, and kept `ctest --test-dir build --output-on-failure` passing.
+- [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the Stage C groundwork for UE context and summary state export.
 
 ## Pending Tasks
 
-- [ ] Stage B2: Implement a minimal single-UE FSM process in a new `apps/mini_ue_c.c`.
-- [ ] Stage B3: Connect `mini_gnb_c_sim` to the local UE exchange so Msg1/Msg3/SR/BSR/UL-DATA can run without handcrafted example inputs.
-- [ ] Stage B4: Add tests and docs for the local UE <-> gNB loop.
-- [ ] Stage B5: Create a local milestone commit after the local UE/gNB loop is stable.
 - [ ] Stage C1: Introduce a gNB-to-core bridge that reuses extracted NGAP/NAS helpers and attaches the promoted UE context to AMF session state.
 - [ ] Stage C2: Extend the UE context and run summary with AMF/session/N3 state such as `ran_ue_ngap_id`, `amf_ue_ngap_id`, `pdu_session_id`, `ue_ipv4`, `teid`, and `qfi`.
 - [ ] Stage C3: Bridge UE NAS uplinks and AMF NAS downlinks through the gNB process.

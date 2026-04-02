@@ -80,6 +80,56 @@ static void mini_gnb_c_json_write_string(FILE* file, const char* text) {
   fputc('"', file);
 }
 
+static void mini_gnb_c_write_json_uint_or_null(FILE* file, bool valid, uint32_t value) {
+  if (valid) {
+    fprintf(file, "%u", value);
+  } else {
+    fputs("null", file);
+  }
+}
+
+static void mini_gnb_c_write_json_string_or_null(FILE* file, const char* text, bool valid) {
+  if (valid && text != NULL && text[0] != '\0') {
+    mini_gnb_c_json_write_string(file, text);
+  } else {
+    fputs("null", file);
+  }
+}
+
+static void mini_gnb_c_write_core_session_json(FILE* file, const mini_gnb_c_core_session_t* session) {
+  char ue_ipv4_text[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
+
+  if (file == NULL || session == NULL) {
+    fputs("null", file);
+    return;
+  }
+
+  fputs("{\"c_rnti\":", file);
+  fprintf(file, "%u", session->c_rnti);
+  fputs(",\"ran_ue_ngap_id\":", file);
+  mini_gnb_c_write_json_uint_or_null(file, session->ran_ue_ngap_id_valid, session->ran_ue_ngap_id);
+  fputs(",\"amf_ue_ngap_id\":", file);
+  mini_gnb_c_write_json_uint_or_null(file, session->amf_ue_ngap_id_valid, session->amf_ue_ngap_id);
+  fputs(",\"pdu_session_id\":", file);
+  mini_gnb_c_write_json_uint_or_null(file, session->pdu_session_id_valid, session->pdu_session_id);
+  fputs(",\"upf_ip\":", file);
+  mini_gnb_c_write_json_string_or_null(file, session->upf_ip, session->upf_tunnel_valid);
+  fputs(",\"upf_teid\":", file);
+  mini_gnb_c_write_json_uint_or_null(file, session->upf_tunnel_valid, session->upf_teid);
+  fputs(",\"qfi\":", file);
+  mini_gnb_c_write_json_uint_or_null(file, session->qfi_valid, session->qfi);
+  fputs(",\"ue_ipv4\":", file);
+  if (mini_gnb_c_core_session_format_ue_ipv4(session, ue_ipv4_text, sizeof(ue_ipv4_text)) == 0) {
+    mini_gnb_c_json_write_string(file, ue_ipv4_text);
+  } else {
+    fputs("null", file);
+  }
+  fprintf(file,
+          ",\"uplink_nas_count\":%u,\"downlink_nas_count\":%u}",
+          session->uplink_nas_count,
+          session->downlink_nas_count);
+}
+
 static void mini_gnb_c_write_trace_json(FILE* file, const mini_gnb_c_metrics_trace_t* metrics) {
   size_t i = 0;
 
@@ -213,6 +263,9 @@ static void mini_gnb_c_write_ue_contexts_json(FILE* file,
             ue_contexts[i].tc_rnti,
             ue_contexts[i].c_rnti);
     mini_gnb_c_json_write_string(file, contention_id_hex);
+    fprintf(file,
+            ",\"core_session\":");
+    mini_gnb_c_write_core_session_json(file, &ue_contexts[i].core_session);
     fprintf(file,
             ",\"create_abs_slot\":%d,\"rrc_setup_sent\":%s,\"sent_abs_slot\":%d,"
             "\"traffic_plan_scheduled\":%s,\"dl_data_sent\":%s,\"dl_data_abs_slot\":%d,"

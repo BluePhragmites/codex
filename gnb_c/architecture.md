@@ -98,6 +98,51 @@ exists as:
   - writes event envelopes with `tmp + rename` atomicity
   - is intended for low-rate local control/data event exchange, not high-throughput user-plane traffic
 
+On top of that transport, the first UE-side process now exists:
+
+- `ue/mini_ue_fsm`
+  - generates the deterministic single-UE event plan used for the local filesystem workflow
+  - currently assumes the same fixed timing as the mock gNB:
+    - `PRACH`
+    - `MSG3`
+    - post-Msg4 `PUCCH_SR`
+    - scheduled `BSR`
+    - scheduled UL `DATA`
+- `apps/mini_ue_c.c`
+  - loads the YAML config
+  - resolves `sim.local_exchange_dir`
+  - emits the UE event sequence into `ue_to_gnb/`
+
+That filesystem-backed path is now connected end-to-end inside the simulator:
+
+- `radio/mock_radio_frontend`
+  - resolves `sim.local_exchange_dir/ue_to_gnb`
+  - consumes ordered `seq_<nnnnnn>_ue_*.json` envelopes
+  - maps `PRACH`, `MSG3`, `PUCCH_SR`, `BSR`, and `DATA` into the existing uplink burst representation
+  - keeps the existing slot-input text transport as a lower-priority fallback for tests and manual bring-up
+  - suppresses the synthetic single-UE injection when local exchange mode is active so the UE process drives the slot loop
+
+So the current local bring-up path is:
+
+1. `apps/mini_ue_c.c` writes the deterministic single-UE event plan into `ue_to_gnb/`
+2. `radio/mock_radio_frontend` consumes those events slot by slot
+3. `src/common/simulator.c` runs the unchanged RA, MAC, scheduler, and metrics flow on top of the consumed bursts
+4. `tests/test_integration.c:test_integration_local_exchange_ue_plan()` verifies the full PRACH, Msg3, SR, BSR, and UL DATA path without handcrafted slot input files
+
+To prepare the next AMF/session integration stage, the promoted UE state now also
+owns an embedded core-session object:
+
+- `common/types.h`
+  - `mini_gnb_c_ue_context_t` now embeds `mini_gnb_c_core_session_t`
+- `ue/ue_context_store`
+  - seeds that embedded session with the promoted `C-RNTI`
+  - leaves NGAP/session/N3 identifiers empty until the bridge starts populating them
+- `metrics/metrics_trace`
+  - exports the embedded `core_session` object in `summary.json`
+  - keeps unresolved fields as `null`, so the summary schema is already stable before the bridge is live
+- `tests/test_ue_context_store.c`
+  - verifies that UE promotion initializes the embedded bridge state cleanly
+
 So `ngap_probe` is not part of the radio simulator loop. It is a protocol bring-up
 tool that shares the same repository because it validates the external Open5GS
 integration path that the prototype gNB is expected to use.
@@ -139,6 +184,8 @@ Subsystem mapping:
   - reusable local JSON exchange helpers for the future UE/gNB filesystem bridge
 - `n3`
   - reusable GTP-U packet builders and validators
+- `ue`
+  - minimal UE-side FSM and context helpers for the local-loop bring-up path
 - `phy_dl`
   - toy DL waveform mapping
 - `radio`
@@ -189,7 +236,7 @@ This is implemented in:
 The slot loop performs:
 
 1. create slot context
-2. receive UL radio burst from slot input files or mock injection
+2. receive UL radio burst from local exchange JSON events, slot input files, or mock injection
 3. expire old RA context if needed
 4. detect PRACH from the received UL burst
 5. create and queue RAR if PRACH exists

@@ -45,6 +45,7 @@ add_library(mini_gnb_c_lib
   src/phy_dl/mock_dl_phy_mapper.c
   src/scheduler/initial_access_scheduler.c
   src/phy_ul/mock_msg3_receiver.c
+  src/ue/mini_ue_fsm.c
   src/mac/mac_ul_demux.c
   src/rrc/rrc_ccch_stub.c
   src/ue/ue_context_store.c
@@ -65,6 +66,9 @@ target_compile_definitions(mini_gnb_c_lib
 add_executable(mini_gnb_c_sim apps/mini_gnb_c_sim.c)
 target_link_libraries(mini_gnb_c_sim PRIVATE mini_gnb_c_lib)
 
+add_executable(mini_ue_c apps/mini_ue_c.c)
+target_link_libraries(mini_ue_c PRIVATE mini_gnb_c_lib)
+
 if(NOT WIN32)
   add_executable(ngap_probe apps/ngap_probe.c)
   target_compile_definitions(ngap_probe PRIVATE MINI_GNB_C_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
@@ -75,8 +79,10 @@ add_executable(mini_gnb_c_tests
   tests/test_main.c
   tests/test_config.c
   tests/test_core_session.c
+  tests/test_ue_context_store.c
   tests/test_gtpu_tunnel.c
   tests/test_json_link.c
+  tests/test_mini_ue_fsm.c
   tests/test_ra_manager.c
   tests/test_mac_rrc.c
   tests/test_integration.c

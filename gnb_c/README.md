@@ -86,6 +86,62 @@ JSON exchange helper:
   - writes through `tmp + rename` so a local UE process and the simulator can exchange
     small control/data events through the filesystem without partially written files
 
+The first UE-side user process now exists as well:
+
+- `apps/mini_ue_c.c`
+  - loads the existing YAML config
+  - uses `sim.local_exchange_dir` as the root exchange directory
+  - emits one deterministic single-UE event plan into `ue_to_gnb/`
+- `include/mini_gnb_c/ue/mini_ue_fsm.h`
+  - exposes the reusable UE event generator used by `mini_ue_c`
+  - currently emits `PRACH`, `MSG3`, `PUCCH_SR`, `BSR`, and `DATA` events using the same timing assumptions as the mock gNB
+
+The simulator can now consume the same UE event files directly:
+
+- `src/radio/mock_radio_frontend.c`
+  - resolves `sim.local_exchange_dir`
+  - reads ordered `ue_to_gnb/seq_<nnnnnn>_ue_*.json` events before falling back to older slot-input files
+  - maps `PRACH`, `MSG3`, `PUCCH_SR`, `BSR`, and `DATA` JSON envelopes into the existing mock uplink burst types
+  - disables the legacy synthetic uplink injection when local exchange mode is active so the UE process fully drives the attach path
+
+You can run the current local UE/gNB loop with:
+
+```bash
+./build/mini_ue_c config/default_cell.yml
+./build/mini_gnb_c_sim config/default_cell.yml
+```
+
+With the default config, the UE writes event files such as:
+
+- `out/local_exchange/ue_to_gnb/seq_000001_ue_PRACH.json`
+- `out/local_exchange/ue_to_gnb/seq_000002_ue_MSG3.json`
+- `out/local_exchange/ue_to_gnb/seq_000003_ue_PUCCH_SR.json`
+
+and the simulator consumes them to complete the current local attach loop:
+
+- `PRACH -> RAR -> MSG3 -> MSG4`
+- post-attach `PUCCH_SR`
+- scheduled `BSR`
+- scheduled UL `DATA`
+
+This local filesystem loop is covered by the integration test:
+
+- `tests/test_integration.c`
+  - `test_integration_local_exchange_ue_plan`
+  - emits the deterministic UE event plan into a temporary `local_exchange/ue_to_gnb/` directory
+  - runs `mini_gnb_c_sim` against that directory and verifies PRACH, Msg3, SR, BSR, UL DATA, and the promoted UE summary state
+
+The promoted UE state now also carries the future core-bridge placeholder:
+
+- `include/mini_gnb_c/common/types.h`
+  - `mini_gnb_c_ue_context_t` embeds `mini_gnb_c_core_session_t`
+  - the embedded session is seeded with the promoted `C-RNTI` even before any AMF bridge exists
+- `out/summary.json`
+  - each `ue_contexts[]` entry now exports a nested `core_session` object
+  - the current local loop leaves NGAP/session/N3 fields as `null`, which gives the next Stage C bridge work a stable summary shape to fill
+- `tests/test_ue_context_store.c`
+  - verifies that UE promotion initializes the embedded `core_session` state cleanly
+
 This means the current `--replay` mode validates:
 
 - N2 SCTP + NGAP setup to the AMF

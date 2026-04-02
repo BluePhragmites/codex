@@ -8,6 +8,8 @@
 #include "mini_gnb_c/common/json_utils.h"
 #include "mini_gnb_c/common/simulator.h"
 #include "mini_gnb_c/config/config_loader.h"
+#include "mini_gnb_c/link/json_link.h"
+#include "mini_gnb_c/ue/mini_ue_fsm.h"
 
 static void mini_gnb_c_write_test_cf32(const char* path, size_t sample_count) {
   FILE* file = NULL;
@@ -32,6 +34,38 @@ static void mini_gnb_c_write_transport_text_file(const char* path, const char* c
   mini_gnb_c_require(mini_gnb_c_write_text_file(path, content) == 0, "expected transport text file write");
 }
 
+static void mini_gnb_c_emit_test_ue_plan(const mini_gnb_c_sim_config_t* sim, const char* exchange_dir) {
+  mini_gnb_c_mini_ue_fsm_t fsm;
+  mini_gnb_c_ue_event_t event;
+
+  mini_gnb_c_require(sim != NULL, "expected sim config for UE plan");
+  mini_gnb_c_require(exchange_dir != NULL, "expected exchange directory for UE plan");
+
+  mini_gnb_c_mini_ue_fsm_init(&fsm, sim);
+  while (mini_gnb_c_mini_ue_fsm_next_event(&fsm, &event) > 0) {
+    char payload_json[2048];
+    char emitted_path[MINI_GNB_C_MAX_PATH];
+
+    mini_gnb_c_require(mini_gnb_c_ue_event_build_payload_json(&event, payload_json, sizeof(payload_json)) == 0,
+                       "expected UE event payload JSON");
+    mini_gnb_c_require(mini_gnb_c_json_link_emit_event(exchange_dir,
+                                                       "ue_to_gnb",
+                                                       "ue",
+                                                       mini_gnb_c_ue_event_type_to_string(event.type),
+                                                       event.sequence,
+                                                       event.abs_slot,
+                                                       payload_json,
+                                                       emitted_path,
+                                                       sizeof(emitted_path)) == 0,
+                       "expected local exchange event emission");
+  }
+}
+
+static void mini_gnb_c_disable_local_exchange(mini_gnb_c_config_t* config) {
+  mini_gnb_c_require(config != NULL, "expected config to disable local exchange");
+  config->sim.local_exchange_dir[0] = '\0';
+}
+
 void test_integration_run(void) {
   char config_path[MINI_GNB_C_MAX_PATH];
   char output_dir[MINI_GNB_C_MAX_PATH];
@@ -53,6 +87,7 @@ void test_integration_run(void) {
   mini_gnb_c_default_config_path(config_path, sizeof(config_path));
   mini_gnb_c_require(mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) == 0,
                      "expected config to load");
+  mini_gnb_c_disable_local_exchange(&config);
   mini_gnb_c_make_output_dir("test_integration_c", output_dir, sizeof(output_dir));
   mini_gnb_c_simulator_init(&simulator, &config, output_dir);
   mini_gnb_c_require(mini_gnb_c_simulator_run(&simulator, &summary) == 0, "expected simulator run");
@@ -71,6 +106,10 @@ void test_integration_run(void) {
   mini_gnb_c_require(summary.ue_contexts[0].pucch_sr_detected, "expected UE context marked after PUCCH SR");
   mini_gnb_c_require(summary.ue_contexts[0].ul_bsr_received, "expected UE context marked after UL BSR");
   mini_gnb_c_require(summary.ue_contexts[0].ul_data_received, "expected UE context marked after UL data");
+  mini_gnb_c_require(summary.ue_contexts[0].core_session.c_rnti == summary.ue_contexts[0].c_rnti,
+                     "expected UE core session seed to follow promoted C-RNTI");
+  mini_gnb_c_require(!summary.ue_contexts[0].core_session.ran_ue_ngap_id_valid,
+                     "expected no NGAP state before Stage C bridge");
   mini_gnb_c_require(summary.has_ra_context, "expected RA context in summary");
   mini_gnb_c_require(summary.ra_context.has_contention_id, "expected resolved contention identity");
   mini_gnb_c_require(mini_gnb_c_bytes_to_hex(summary.ra_context.contention_id48,
@@ -88,6 +127,8 @@ void test_integration_run(void) {
 
   summary_json = mini_gnb_c_read_text_file(summary.summary_path);
   mini_gnb_c_require(summary_json != NULL, "expected summary.json to be readable");
+  mini_gnb_c_require(strstr(summary_json, "\"core_session\":{\"c_rnti\":17921") != NULL,
+                     "expected summary JSON core session block");
 
   (void)snprintf(iq_cf32_name,
                  sizeof(iq_cf32_name),
@@ -130,6 +171,7 @@ void test_integration_slot_input_prach(void) {
   mini_gnb_c_default_config_path(config_path, sizeof(config_path));
   mini_gnb_c_require(mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) == 0,
                      "expected config to load");
+  mini_gnb_c_disable_local_exchange(&config);
 
   config.sim.total_slots = 24;
   config.sim.msg3_present = false;
@@ -161,6 +203,59 @@ void test_integration_slot_input_prach(void) {
   mini_gnb_c_require(summary.ra_context.rar_abs_slot == 21, "expected RAR immediately after slot-input PRACH");
   mini_gnb_c_require(summary.ra_context.state == MINI_GNB_C_RA_MSG3_WAIT,
                      "expected RAR sent and Msg3 wait state at loop end");
+}
+
+void test_integration_local_exchange_ue_plan(void) {
+  char config_path[MINI_GNB_C_MAX_PATH];
+  char output_dir[MINI_GNB_C_MAX_PATH];
+  char exchange_dir[MINI_GNB_C_MAX_PATH];
+  char error_message[256];
+  mini_gnb_c_config_t ue_config;
+  mini_gnb_c_config_t gnb_config;
+  mini_gnb_c_simulator_t simulator;
+  mini_gnb_c_run_summary_t summary;
+  char* summary_json = NULL;
+
+  mini_gnb_c_default_config_path(config_path, sizeof(config_path));
+  mini_gnb_c_require(mini_gnb_c_load_config(config_path, &ue_config, error_message, sizeof(error_message)) == 0,
+                     "expected UE config to load");
+  mini_gnb_c_require(mini_gnb_c_load_config(config_path, &gnb_config, error_message, sizeof(error_message)) == 0,
+                     "expected gNB config to load");
+
+  mini_gnb_c_make_output_dir("test_local_exchange_loop", output_dir, sizeof(output_dir));
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "local_exchange", exchange_dir, sizeof(exchange_dir)) == 0,
+                     "expected local exchange directory path");
+
+  (void)snprintf(ue_config.sim.local_exchange_dir, sizeof(ue_config.sim.local_exchange_dir), "%s", exchange_dir);
+  mini_gnb_c_emit_test_ue_plan(&ue_config.sim, exchange_dir);
+
+  (void)snprintf(gnb_config.sim.local_exchange_dir, sizeof(gnb_config.sim.local_exchange_dir), "%s", exchange_dir);
+  gnb_config.sim.ul_input_dir[0] = '\0';
+  gnb_config.sim.msg3_present = false;
+  gnb_config.sim.ul_data_present = false;
+
+  mini_gnb_c_simulator_init(&simulator, &gnb_config, output_dir);
+  mini_gnb_c_require(mini_gnb_c_simulator_run(&simulator, &summary) == 0,
+                     "expected simulator run from local exchange events");
+
+  mini_gnb_c_require(summary.counters.prach_detect_ok >= 1U, "expected PRACH from local exchange");
+  mini_gnb_c_require(summary.counters.msg3_crc_ok >= 1U, "expected Msg3 from local exchange");
+  mini_gnb_c_require(summary.counters.pucch_sr_detect_ok >= 1U, "expected PUCCH SR from local exchange");
+  mini_gnb_c_require(summary.counters.ul_bsr_rx_ok >= 1U, "expected BSR from local exchange");
+  mini_gnb_c_require(summary.counters.ul_data_rx_ok >= 1U, "expected UL data from local exchange");
+  mini_gnb_c_require(summary.ue_count == 1U, "expected one promoted UE from local exchange");
+  mini_gnb_c_require(summary.ue_contexts[0].tc_rnti == 0x4601U, "expected deterministic UE RNTI");
+  mini_gnb_c_require(summary.ue_contexts[0].ul_bsr_buffer_size_bytes == 384, "expected BSR size from UE plan");
+  mini_gnb_c_require(summary.ue_contexts[0].core_session.c_rnti == 0x4601U,
+                     "expected local exchange UE context to seed core session");
+
+  summary_json = mini_gnb_c_read_text_file(summary.summary_path);
+  mini_gnb_c_require(summary_json != NULL, "expected local exchange summary");
+  mini_gnb_c_require(strstr(summary_json, "\"ul_data_rx_ok\":1") != NULL,
+                     "expected summary counters for local exchange run");
+  mini_gnb_c_require(strstr(summary_json, "\"core_session\":{\"c_rnti\":17921") != NULL,
+                     "expected local exchange summary core session block");
+  free(summary_json);
 }
 
 void test_integration_slot_text_transport(void) {
@@ -196,6 +291,7 @@ void test_integration_slot_text_transport(void) {
   mini_gnb_c_default_config_path(config_path, sizeof(config_path));
   mini_gnb_c_require(mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) == 0,
                      "expected config to load");
+  mini_gnb_c_disable_local_exchange(&config);
 
   config.sim.total_slots = 40;
   config.sim.msg3_present = false;
@@ -446,6 +542,7 @@ void test_integration_msg3_missing_retries_prach(void) {
   mini_gnb_c_default_config_path(config_path, sizeof(config_path));
   mini_gnb_c_require(mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) == 0,
                      "expected config to load");
+  mini_gnb_c_disable_local_exchange(&config);
 
   config.sim.msg3_present = false;
   config.sim.total_slots = 18;
@@ -481,6 +578,7 @@ void test_integration_msg3_rnti_mismatch_rejected_after_retry(void) {
   mini_gnb_c_default_config_path(config_path, sizeof(config_path));
   mini_gnb_c_require(mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) == 0,
                      "expected config to load");
+  mini_gnb_c_disable_local_exchange(&config);
 
   config.sim.total_slots = 50;
   config.sim.msg3_present = false;
@@ -587,6 +685,7 @@ void test_integration_scripted_schedule_files(void) {
   mini_gnb_c_default_config_path(config_path, sizeof(config_path));
   mini_gnb_c_require(mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) == 0,
                      "expected config to load");
+  mini_gnb_c_disable_local_exchange(&config);
 
   config.sim.total_slots = 45;
   config.sim.msg3_present = false;
@@ -794,6 +893,7 @@ void test_integration_scripted_pdcch_files(void) {
   mini_gnb_c_default_config_path(config_path, sizeof(config_path));
   mini_gnb_c_require(mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) == 0,
                      "expected config to load");
+  mini_gnb_c_disable_local_exchange(&config);
 
   config.sim.total_slots = 45;
   config.sim.msg3_present = false;

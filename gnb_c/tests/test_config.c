@@ -21,6 +21,8 @@ void test_config_loads(void) {
   mini_gnb_c_require(config.sim.prach_retry_delay_slots == 4, "expected PRACH retry delay");
   mini_gnb_c_require(config.sim.msg3_present, "expected Msg3 burst enabled");
   mini_gnb_c_require(strcmp(config.sim.ul_input_dir, "input") == 0, "expected default slot input directory");
+  mini_gnb_c_require(strcmp(config.sim.local_exchange_dir, "out/local_exchange") == 0,
+                     "expected default local exchange directory");
   mini_gnb_c_require(config.sim.post_msg4_traffic_enabled, "expected post-Msg4 traffic enabled");
   mini_gnb_c_require(config.sim.post_msg4_dl_data_delay_slots == 2, "expected DL data delay");
   mini_gnb_c_require(config.sim.post_msg4_ul_grant_delay_slots == 3, "expected UL grant delay");

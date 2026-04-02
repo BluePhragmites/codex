@@ -1,6 +1,7 @@
 #ifndef MINI_GNB_C_RADIO_MOCK_RADIO_FRONTEND_H
 #define MINI_GNB_C_RADIO_MOCK_RADIO_FRONTEND_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -14,6 +15,8 @@ typedef struct {
   uint64_t tx_burst_count;
   int64_t last_hw_time_ns;
   bool slot_input_mode_enabled;
+  bool local_exchange_mode_enabled;
+  uint32_t local_exchange_next_sequence;
   bool initial_prach_emitted;
   bool retry_prach_armed;
   int retry_prach_abs_slot;

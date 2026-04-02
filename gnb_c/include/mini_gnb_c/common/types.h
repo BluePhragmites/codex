@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "mini_gnb_c/core/core_session.h"
+
 #define MINI_GNB_C_MAX_PAYLOAD 512
 #define MINI_GNB_C_MAX_TEXT 128
 #define MINI_GNB_C_MAX_PATH 260
@@ -129,6 +131,7 @@ typedef struct {
   char ul_prach_cf32_path[MINI_GNB_C_MAX_PATH];
   char ul_msg3_cf32_path[MINI_GNB_C_MAX_PATH];
   char ul_input_dir[MINI_GNB_C_MAX_PATH];
+  char local_exchange_dir[MINI_GNB_C_MAX_PATH];
   char scripted_schedule_dir[MINI_GNB_C_MAX_PATH];
   char scripted_pdcch_dir[MINI_GNB_C_MAX_PATH];
   char ul_data_hex[MINI_GNB_C_MAX_PAYLOAD * 2 + 1];
@@ -292,6 +295,7 @@ typedef struct {
   uint16_t tc_rnti;
   uint16_t c_rnti;
   uint8_t contention_id48[6];
+  mini_gnb_c_core_session_t core_session;
   int create_abs_slot;
   bool rrc_setup_sent;
   int sent_abs_slot;

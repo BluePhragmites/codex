@@ -74,6 +74,8 @@ sim:
   # Optional directory for slot-driven UL input files such as input/slot_20_UL_OBJ_PRACH.cf32.
   # When this directory exists, missing slots are treated as empty UL input instead of synthetic injection.
   ul_input_dir: "input"
+  # Optional local UE<->gNB exchange directory for the upcoming JSON event-based workflow.
+  local_exchange_dir: "out/local_exchange"
   ul_data_hex: "554C5F44415441"
   # Mock Msg3 quality indicators.
   msg3_crc_ok: true

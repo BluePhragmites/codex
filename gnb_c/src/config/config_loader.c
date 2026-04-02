@@ -288,6 +288,12 @@ int mini_gnb_c_load_config(const char* path,
 
   memset(out_config, 0, sizeof(*out_config));
   out_config->sim.post_msg4_traffic_enabled = false;
+  out_config->core.enabled = false;
+  (void)snprintf(out_config->core.amf_ip, sizeof(out_config->core.amf_ip), "%s", "127.0.0.5");
+  out_config->core.amf_port = 38412u;
+  out_config->core.timeout_ms = 5000u;
+  out_config->core.ran_ue_ngap_id_base = 1u;
+  out_config->core.default_pdu_session_id = 1u;
   out_config->sim.post_msg4_dl_data_delay_slots = 2;
   out_config->sim.post_msg4_ul_grant_delay_slots = 3;
   out_config->sim.post_msg4_ul_data_k2 = 2;
@@ -330,6 +336,26 @@ int mini_gnb_c_load_config(const char* path,
   MINI_GNB_C_LOAD_DOUBLE("rf", "srate", out_config->rf.srate);
   MINI_GNB_C_LOAD_DOUBLE("rf", "tx_gain", out_config->rf.tx_gain);
   MINI_GNB_C_LOAD_DOUBLE("rf", "rx_gain", out_config->rf.rx_gain);
+
+  if (mini_gnb_c_extract_bool(text, "core", "enabled", &bool_value) == 0) {
+    out_config->core.enabled = bool_value;
+  }
+  if (mini_gnb_c_extract_string(text, "core", "amf_ip", out_config->core.amf_ip, sizeof(out_config->core.amf_ip)) !=
+      0) {
+    (void)snprintf(out_config->core.amf_ip, sizeof(out_config->core.amf_ip), "%s", "127.0.0.5");
+  }
+  if (mini_gnb_c_extract_int(text, "core", "amf_port", &value) == 0) {
+    out_config->core.amf_port = (uint32_t)value;
+  }
+  if (mini_gnb_c_extract_int(text, "core", "timeout_ms", &value) == 0) {
+    out_config->core.timeout_ms = (uint32_t)value;
+  }
+  if (mini_gnb_c_extract_int(text, "core", "ran_ue_ngap_id_base", &value) == 0) {
+    out_config->core.ran_ue_ngap_id_base = (uint16_t)value;
+  }
+  if (mini_gnb_c_extract_int(text, "core", "default_pdu_session_id", &value) == 0) {
+    out_config->core.default_pdu_session_id = (uint8_t)value;
+  }
 
   MINI_GNB_C_LOAD_INT("broadcast", "ssb_period_slots", out_config->broadcast.ssb_period_slots, int);
   MINI_GNB_C_LOAD_INT("broadcast", "sib1_period_slots", out_config->broadcast.sib1_period_slots, int);
@@ -444,6 +470,8 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                 "  prach_trigger_abs_slot=%d prach_retry_delay_slots=%d msg3_delay_slots=%d msg3_present=%s input_dir=%s local_exchange_dir=%s scripted_schedule_dir=%s scripted_pdcch_dir=%s\n"
                 "Connected traffic summary:\n"
                 "  post_msg4=%s dl_delay=%d ul_grant_delay=%d ul_k2=%d ul_present=%s\n"
+                "Core bridge summary:\n"
+                "  enabled=%s amf=%s:%u timeout_ms=%u ran_ue_ngap_id_base=%u default_pdu_session_id=%u\n"
                 "RF config summary:\n"
                 "  driver=%s clock=%s srate=%g tx_gain=%g rx_gain=%g",
                config->cell.pci,
@@ -476,6 +504,12 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                 config->sim.post_msg4_ul_grant_delay_slots,
                 config->sim.post_msg4_ul_data_k2,
                 config->sim.ul_data_present ? "true" : "false",
+                config->core.enabled ? "true" : "false",
+                config->core.amf_ip,
+                config->core.amf_port,
+                config->core.timeout_ms,
+                config->core.ran_ue_ngap_id_base,
+                config->core.default_pdu_session_id,
                 config->rf.device_driver,
                 config->rf.clock_src,
                 config->rf.srate,

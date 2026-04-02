@@ -100,6 +100,15 @@ typedef struct {
 } mini_gnb_c_rf_config_t;
 
 typedef struct {
+  bool enabled;
+  char amf_ip[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
+  uint32_t amf_port;
+  uint32_t timeout_ms;
+  uint16_t ran_ue_ngap_id_base;
+  uint8_t default_pdu_session_id;
+} mini_gnb_c_core_config_t;
+
+typedef struct {
   int ssb_period_slots;
   int sib1_period_slots;
   int sib1_offset_slot;
@@ -146,6 +155,7 @@ typedef struct {
   mini_gnb_c_cell_config_t cell;
   mini_gnb_c_prach_config_t prach;
   mini_gnb_c_rf_config_t rf;
+  mini_gnb_c_core_config_t core;
   mini_gnb_c_broadcast_config_t broadcast;
   mini_gnb_c_sim_config_t sim;
 } mini_gnb_c_config_t;

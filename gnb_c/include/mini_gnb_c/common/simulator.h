@@ -4,6 +4,7 @@
 #include "mini_gnb_c/broadcast/broadcast_engine.h"
 #include "mini_gnb_c/common/types.h"
 #include "mini_gnb_c/config/config_loader.h"
+#include "mini_gnb_c/core/gnb_core_bridge.h"
 #include "mini_gnb_c/mac/mac_ul_demux.h"
 #include "mini_gnb_c/metrics/metrics_trace.h"
 #include "mini_gnb_c/phy_dl/mock_dl_phy_mapper.h"
@@ -28,6 +29,7 @@ typedef struct {
   mini_gnb_c_mock_msg3_receiver_t msg3_receiver;
   mini_gnb_c_mock_dl_phy_mapper_t dl_mapper;
   mini_gnb_c_ue_context_store_t ue_store;
+  mini_gnb_c_gnb_core_bridge_t core_bridge;
 } mini_gnb_c_simulator_t;
 
 void mini_gnb_c_simulator_init(mini_gnb_c_simulator_t* simulator,

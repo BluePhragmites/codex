@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "mini_gnb_c/core/core_session.h"
+#include "mini_gnb_c/ngap/ngap_runtime.h"
 #include "mini_gnb_c/n3/gtpu_tunnel.h"
 
 #ifndef IPPROTO_SCTP
@@ -81,12 +82,6 @@ static const uint8_t k_ngsetup_request[] = {
     0x00, 0x64, 0xf0, 0x99, 0x00, 0x00, 0x00, 0x08, 0x00, 0x15, 0x40, 0x01, 0x60,
 };
 
-static const uint8_t k_ran_ue_ngap_id[] = {0x00u, 0x00u};
-static const uint8_t k_user_location_information_nr[] = {
-    0x40, 0x64, 0xf0, 0x99, 0x00, 0x06, 0x6c, 0x00, 0x00, 0x64, 0xf0, 0x99, 0x00, 0x00, 0x01,
-};
-static const uint8_t k_rrc_establishment_cause_mo_signalling[] = {0x18u};
-static const uint8_t k_ue_context_request_requested[] = {0x00u};
 static const uint8_t k_initial_registration_request_nas[] = {
     0x7e, 0x01, 0xda, 0xb8, 0x93, 0xa0, 0x04, 0x7e, 0x00, 0x41, 0x29, 0x00, 0x0b, 0xf2,
     0x64, 0xf0, 0x99, 0x02, 0x00, 0x40, 0xc0, 0x00, 0x06, 0x01, 0x2e, 0x02, 0xf0, 0xf0,
@@ -117,10 +112,6 @@ static const uint8_t k_pdu_session_establishment_request_nas_template[] = {
     0x00, 0x83, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x0d, 0x00, 0x00,
     0x05, 0x00, 0x00, 0x11, 0x00, 0x00, 0x10, 0x00, 0x12, 0x01, 0x81, 0x25, 0x08, 0x07,
     0x64, 0x65, 0x66, 0x61, 0x75, 0x6c, 0x74,
-};
-static const uint8_t k_pdu_session_resource_setup_response_list[] = {
-    0x00, 0x00, 0x01, 0x0d, 0x00, 0x03, 0xe0, 0x7f, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-    0x01, 0x00, 0x01,
 };
 
 typedef enum {
@@ -207,13 +198,6 @@ typedef struct {
   FILE* file;
   uint32_t linktype;
 } mini_gnb_c_pcap_writer_t;
-
-typedef struct {
-  uint16_t id;
-  uint8_t criticality;
-  const uint8_t* value;
-  size_t value_length;
-} mini_gnb_c_build_ie_t;
 
 static int mini_gnb_c_set_timeouts(int socket_fd, uint32_t timeout_ms);
 static mini_gnb_c_pcap_writer_t g_mini_gnb_c_ngap_trace_writer;
@@ -329,11 +313,6 @@ static int mini_gnb_c_parse_u32(const char* text, uint32_t* value) {
   return 0;
 }
 
-static uint32_t mini_gnb_c_read_u32_be(const uint8_t* bytes) {
-  return ((uint32_t)bytes[0] << 24u) | ((uint32_t)bytes[1] << 16u) |
-         ((uint32_t)bytes[2] << 8u) | (uint32_t)bytes[3];
-}
-
 static uint32_t mini_gnb_c_read_u32_le(const uint8_t* bytes) {
   return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8u) | ((uint32_t)bytes[2] << 16u) |
          ((uint32_t)bytes[3] << 24u);
@@ -362,122 +341,6 @@ static int mini_gnb_c_decode_compact_length(const uint8_t* bytes,
 
   *value_out = (size_t)bytes[0];
   *consumed_out = 1u;
-  return 0;
-}
-
-static int mini_gnb_c_encode_compact_length(uint8_t* bytes,
-                                            size_t capacity,
-                                            size_t value,
-                                            size_t* encoded_length_out) {
-  if (bytes == NULL || encoded_length_out == NULL) {
-    return -1;
-  }
-  if (value < 128u) {
-    if (capacity < 1u) {
-      return -1;
-    }
-    bytes[0] = (uint8_t)value;
-    *encoded_length_out = 1u;
-    return 0;
-  }
-  if (value > 255u || capacity < 2u) {
-    return -1;
-  }
-
-  bytes[0] = 0x80u;
-  bytes[1] = (uint8_t)value;
-  *encoded_length_out = 2u;
-  return 0;
-}
-
-static int mini_gnb_c_build_octet_string_value(const uint8_t* octets,
-                                               size_t octets_length,
-                                               uint8_t* encoded_value,
-                                               size_t encoded_value_capacity,
-                                               size_t* encoded_value_length_out) {
-  size_t length_field_size = 0u;
-
-  if (octets == NULL || encoded_value == NULL || encoded_value_length_out == NULL) {
-    return -1;
-  }
-  if (mini_gnb_c_encode_compact_length(encoded_value,
-                                       encoded_value_capacity,
-                                       octets_length,
-                                       &length_field_size) != 0) {
-    return -1;
-  }
-  if (length_field_size + octets_length > encoded_value_capacity) {
-    return -1;
-  }
-
-  memcpy(encoded_value + length_field_size, octets, octets_length);
-  *encoded_value_length_out = length_field_size + octets_length;
-  return 0;
-}
-
-static int mini_gnb_c_build_ngap_message(uint8_t pdu_type,
-                                         uint8_t procedure_code,
-                                         uint8_t criticality,
-                                         const mini_gnb_c_build_ie_t* ies,
-                                         size_t ie_count,
-                                         uint8_t* out,
-                                         size_t out_capacity,
-                                         size_t* out_length) {
-  uint8_t payload[2048];
-  size_t payload_length = 0u;
-  size_t ie_index = 0u;
-  size_t top_length_field_size = 0u;
-
-  if (ies == NULL || out == NULL || out_length == NULL || ie_count > 255u) {
-    return -1;
-  }
-
-  memset(payload, 0, sizeof(payload));
-  payload[0] = 0x00u;
-  payload[1] = 0x00u;
-  payload[2] = (uint8_t)ie_count;
-  payload_length = 3u;
-
-  for (ie_index = 0u; ie_index < ie_count; ++ie_index) {
-    size_t ie_length_field_size = 0u;
-
-    if (payload_length + 5u + ies[ie_index].value_length > sizeof(payload)) {
-      return -1;
-    }
-
-    payload[payload_length++] = (uint8_t)(ies[ie_index].id >> 8u);
-    payload[payload_length++] = (uint8_t)(ies[ie_index].id & 0xffu);
-    payload[payload_length++] = ies[ie_index].criticality;
-    if (mini_gnb_c_encode_compact_length(payload + payload_length,
-                                         sizeof(payload) - payload_length,
-                                         ies[ie_index].value_length,
-                                         &ie_length_field_size) != 0) {
-      return -1;
-    }
-    payload_length += ie_length_field_size;
-    memcpy(payload + payload_length, ies[ie_index].value, ies[ie_index].value_length);
-    payload_length += ies[ie_index].value_length;
-  }
-
-  if (out_capacity < 4u) {
-    return -1;
-  }
-
-  out[0] = pdu_type;
-  out[1] = procedure_code;
-  out[2] = criticality;
-  if (mini_gnb_c_encode_compact_length(out + 3u,
-                                       out_capacity - 3u,
-                                       payload_length,
-                                       &top_length_field_size) != 0) {
-    return -1;
-  }
-  if (3u + top_length_field_size + payload_length > out_capacity) {
-    return -1;
-  }
-
-  memcpy(out + 3u + top_length_field_size, payload, payload_length);
-  *out_length = 3u + top_length_field_size + payload_length;
   return 0;
 }
 
@@ -622,50 +485,6 @@ static int mini_gnb_c_decode_octet_string(const mini_gnb_c_octets_t* encoded_val
   return 0;
 }
 
-static int mini_gnb_c_find_tail_ie_sequence(const uint8_t* bytes,
-                                            size_t length,
-                                            const uint16_t* required_ids,
-                                            size_t required_id_count,
-                                            mini_gnb_c_ie_sequence_t* sequence_out) {
-  size_t count_offset = 0u;
-  int found = 0;
-
-  if (bytes == NULL || sequence_out == NULL) {
-    return -1;
-  }
-
-  for (count_offset = 0u; count_offset + 3u <= length; ++count_offset) {
-    mini_gnb_c_ie_sequence_t sequence;
-    mini_gnb_c_ie_sequence_t cursor;
-    mini_gnb_c_ngap_ie_t ie;
-    size_t required_hits = 0u;
-    size_t id_index = 0u;
-
-    if (mini_gnb_c_ie_sequence_init_at(bytes, length, count_offset, &sequence) != 0) {
-      continue;
-    }
-
-    cursor = sequence;
-    while (mini_gnb_c_ie_sequence_next(&cursor, &ie) == 0) {
-      for (id_index = 0u; id_index < required_id_count; ++id_index) {
-        if (ie.id == required_ids[id_index]) {
-          required_hits += 1u;
-          break;
-        }
-      }
-    }
-
-    if (cursor.index != cursor.count || cursor.next_offset != length || required_hits < required_id_count) {
-      continue;
-    }
-
-    *sequence_out = sequence;
-    found = 1;
-  }
-
-  return found ? 0 : -1;
-}
-
 static int mini_gnb_c_extract_ngap_nas_pdu(const uint8_t* bytes,
                                            size_t length,
                                            mini_gnb_c_octets_t* nas_pdu_out) {
@@ -678,155 +497,6 @@ static int mini_gnb_c_extract_ngap_nas_pdu(const uint8_t* bytes,
     return -1;
   }
   return mini_gnb_c_decode_octet_string(&nas_ie.value, nas_pdu_out);
-}
-
-static int mini_gnb_c_extract_pdu_session_setup_transfer_sequence(const uint8_t* bytes,
-                                                                  size_t length,
-                                                                  mini_gnb_c_ie_sequence_t* transfer_sequence) {
-  static const uint16_t k_required_transfer_ies[] = {0x008bu, 0x0088u};
-  mini_gnb_c_ngap_ie_t session_list_ie;
-
-  if (transfer_sequence == NULL) {
-    return -1;
-  }
-  if (mini_gnb_c_extract_ngap_ie(bytes, length, 0x004au, &session_list_ie) != 0) {
-    return -1;
-  }
-
-  return mini_gnb_c_find_tail_ie_sequence(session_list_ie.value.bytes,
-                                          session_list_ie.value.length,
-                                          k_required_transfer_ies,
-                                          sizeof(k_required_transfer_ies) / sizeof(k_required_transfer_ies[0]),
-                                          transfer_sequence);
-}
-
-static int mini_gnb_c_extract_amf_ue_ngap_id(const uint8_t* bytes,
-                                             size_t length,
-                                             uint8_t amf_ue_ngap_id[2]) {
-  mini_gnb_c_ngap_ie_t ie;
-
-  if (amf_ue_ngap_id == NULL) {
-    return -1;
-  }
-  if (mini_gnb_c_extract_ngap_ie(bytes, length, 0x000au, &ie) != 0 || ie.value.length != 2u) {
-    return -1;
-  }
-
-  amf_ue_ngap_id[0] = ie.value.bytes[0];
-  amf_ue_ngap_id[1] = ie.value.bytes[1];
-  return 0;
-}
-
-static int mini_gnb_c_build_initial_ue_message(uint8_t* message,
-                                               size_t message_capacity,
-                                               size_t* message_length) {
-  uint8_t nas_ie_value[MINI_GNB_C_NAS_MAX_LEN];
-  size_t nas_ie_value_length = 0u;
-  const mini_gnb_c_build_ie_t ies[] = {
-      {0x0055u, 0x00u, k_ran_ue_ngap_id, sizeof(k_ran_ue_ngap_id)},
-      {0x0026u, 0x00u, nas_ie_value, 0u},
-      {0x0079u, 0x00u, k_user_location_information_nr, sizeof(k_user_location_information_nr)},
-      {0x005au, 0x40u, k_rrc_establishment_cause_mo_signalling, sizeof(k_rrc_establishment_cause_mo_signalling)},
-      {0x0070u, 0x40u, k_ue_context_request_requested, sizeof(k_ue_context_request_requested)},
-  };
-  mini_gnb_c_build_ie_t working_ies[sizeof(ies) / sizeof(ies[0])];
-
-  if (message == NULL || message_length == NULL) {
-    return -1;
-  }
-  if (mini_gnb_c_build_octet_string_value(k_initial_registration_request_nas,
-                                          sizeof(k_initial_registration_request_nas),
-                                          nas_ie_value,
-                                          sizeof(nas_ie_value),
-                                          &nas_ie_value_length) != 0) {
-    return -1;
-  }
-
-  memcpy(working_ies, ies, sizeof(working_ies));
-  working_ies[1].value_length = nas_ie_value_length;
-  return mini_gnb_c_build_ngap_message(0x00u,
-                                       0x0fu,
-                                       0x40u,
-                                       working_ies,
-                                       sizeof(working_ies) / sizeof(working_ies[0]),
-                                       message,
-                                       message_capacity,
-                                       message_length);
-}
-
-static int mini_gnb_c_build_uplink_nas_transport(const uint8_t amf_ue_ngap_id[2],
-                                                 const uint8_t* nas_ie_value,
-                                                 size_t nas_ie_value_length,
-                                                 uint8_t* message,
-                                                 size_t message_capacity,
-                                                 size_t* message_length) {
-  const mini_gnb_c_build_ie_t ies[] = {
-      {0x000au, 0x00u, amf_ue_ngap_id, 2u},
-      {0x0055u, 0x00u, k_ran_ue_ngap_id, sizeof(k_ran_ue_ngap_id)},
-      {0x0026u, 0x00u, nas_ie_value, nas_ie_value_length},
-      {0x0079u, 0x40u, k_user_location_information_nr, sizeof(k_user_location_information_nr)},
-  };
-
-  if (amf_ue_ngap_id == NULL || nas_ie_value == NULL || message == NULL || message_length == NULL) {
-    return -1;
-  }
-
-  return mini_gnb_c_build_ngap_message(0x00u,
-                                       0x2eu,
-                                       0x40u,
-                                       ies,
-                                       sizeof(ies) / sizeof(ies[0]),
-                                       message,
-                                       message_capacity,
-                                       message_length);
-}
-
-static int mini_gnb_c_build_initial_context_setup_response(const uint8_t amf_ue_ngap_id[2],
-                                                           uint8_t* message,
-                                                           size_t message_capacity,
-                                                           size_t* message_length) {
-  const mini_gnb_c_build_ie_t ies[] = {
-      {0x000au, 0x40u, amf_ue_ngap_id, 2u},
-      {0x0055u, 0x40u, k_ran_ue_ngap_id, sizeof(k_ran_ue_ngap_id)},
-  };
-
-  if (amf_ue_ngap_id == NULL || message == NULL || message_length == NULL) {
-    return -1;
-  }
-
-  return mini_gnb_c_build_ngap_message(0x20u,
-                                       0x0eu,
-                                       0x00u,
-                                       ies,
-                                       sizeof(ies) / sizeof(ies[0]),
-                                       message,
-                                       message_capacity,
-                                       message_length);
-}
-
-static int mini_gnb_c_build_pdu_session_resource_setup_response(const uint8_t amf_ue_ngap_id[2],
-                                                                uint8_t* message,
-                                                                size_t message_capacity,
-                                                                size_t* message_length) {
-  const mini_gnb_c_build_ie_t ies[] = {
-      {0x000au, 0x40u, amf_ue_ngap_id, 2u},
-      {0x0055u, 0x40u, k_ran_ue_ngap_id, sizeof(k_ran_ue_ngap_id)},
-      {0x004bu, 0x40u, k_pdu_session_resource_setup_response_list,
-       sizeof(k_pdu_session_resource_setup_response_list)},
-  };
-
-  if (amf_ue_ngap_id == NULL || message == NULL || message_length == NULL) {
-    return -1;
-  }
-
-  return mini_gnb_c_build_ngap_message(0x20u,
-                                       0x1du,
-                                       0x00u,
-                                       ies,
-                                       sizeof(ies) / sizeof(ies[0]),
-                                       message,
-                                       message_capacity,
-                                       message_length);
 }
 
 static int mini_gnb_c_parse_hex_string(const char* text, uint8_t* output, size_t output_len) {
@@ -1142,93 +812,6 @@ static int mini_gnb_c_patch_security_protected_uplink_message(uint8_t* bytes,
 
   memcpy(bytes + outer_offset + 2u, mac, sizeof(mac));
   return 0;
-}
-
-static int mini_gnb_c_extract_open5gs_upf_tunnel(const uint8_t* bytes,
-                                                 size_t length,
-                                                 mini_gnb_c_core_session_t* core_session) {
-  mini_gnb_c_ie_sequence_t transfer_sequence;
-  mini_gnb_c_ngap_ie_t gtp_tunnel_ie;
-  struct in_addr upf_addr;
-  char upf_ip[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
-
-  if (bytes == NULL || core_session == NULL) {
-    return -1;
-  }
-
-  if (mini_gnb_c_extract_pdu_session_setup_transfer_sequence(bytes, length, &transfer_sequence) != 0 ||
-      mini_gnb_c_find_ie_in_sequence(&transfer_sequence, 0x008bu, &gtp_tunnel_ie) != 0) {
-    return -1;
-  }
-  if (gtp_tunnel_ie.value.length < 10u || gtp_tunnel_ie.value.bytes[1] != 0xf0u) {
-    return -1;
-  }
-
-  memcpy(&upf_addr.s_addr, gtp_tunnel_ie.value.bytes + 2u, 4u);
-  if (inet_ntop(AF_INET, &upf_addr, upf_ip, sizeof(upf_ip)) == NULL) {
-    perror("inet_ntop(UPF IP)");
-    return -1;
-  }
-
-  return mini_gnb_c_core_session_set_upf_tunnel(core_session,
-                                                upf_ip,
-                                                mini_gnb_c_read_u32_be(gtp_tunnel_ie.value.bytes + 6u));
-}
-
-static int mini_gnb_c_extract_open5gs_qfi(const uint8_t* bytes,
-                                          size_t length,
-                                          mini_gnb_c_core_session_t* core_session) {
-  mini_gnb_c_ie_sequence_t transfer_sequence;
-  mini_gnb_c_ngap_ie_t qos_flow_ie;
-
-  if (bytes == NULL || core_session == NULL) {
-    return -1;
-  }
-  if (mini_gnb_c_extract_pdu_session_setup_transfer_sequence(bytes, length, &transfer_sequence) != 0 ||
-      mini_gnb_c_find_ie_in_sequence(&transfer_sequence, 0x0088u, &qos_flow_ie) != 0) {
-    return -1;
-  }
-  if (qos_flow_ie.value.length < 2u || qos_flow_ie.value.bytes[1] == 0u || qos_flow_ie.value.bytes[1] > 63u) {
-    return -1;
-  }
-
-  return mini_gnb_c_core_session_set_qfi(core_session, qos_flow_ie.value.bytes[1]);
-}
-
-static int mini_gnb_c_extract_open5gs_ue_ipv4(const uint8_t* bytes,
-                                              size_t length,
-                                              mini_gnb_c_core_session_t* core_session) {
-  mini_gnb_c_ngap_ie_t session_list_ie;
-  const uint8_t* nas = NULL;
-  size_t nas_offset = 0u;
-  size_t index = 0;
-
-  if (bytes == NULL || core_session == NULL) {
-    return -1;
-  }
-
-  if (mini_gnb_c_extract_ngap_ie(bytes, length, 0x004au, &session_list_ie) != 0) {
-    return -1;
-  }
-
-  nas = mini_gnb_c_find_nas_message(session_list_ie.value.bytes,
-                                    session_list_ie.value.length,
-                                    0x68u,
-                                    &nas_offset);
-  if (nas == NULL) {
-    return -1;
-  }
-
-  for (index = nas_offset; index + 6u < session_list_ie.value.length; ++index) {
-    if (session_list_ie.value.bytes[index] != 0x29u || session_list_ie.value.bytes[index + 1u] != 0x05u ||
-        session_list_ie.value.bytes[index + 2u] != 0x01u) {
-      continue;
-    }
-    mini_gnb_c_core_session_set_ue_ipv4(core_session, session_list_ie.value.bytes + index + 3u);
-    return 0;
-  }
-
-  return -1;
 }
 
 static uint16_t mini_gnb_c_checksum16(const uint8_t* data, size_t length) {
@@ -2212,8 +1795,9 @@ static int mini_gnb_c_replay_socket_type(const char* socket_name,
   size_t response_length = 0u;
   size_t step_index = 0u;
   uint8_t tx_message[4096];
-  uint8_t runtime_ue_token[2] = {0x01u, 0x00u};
-  int runtime_ue_token_valid = 0;
+  const uint16_t ran_ue_ngap_id = 0u;
+  uint16_t runtime_amf_ue_ngap_id = 0u;
+  int runtime_amf_ue_ngap_id_valid = 0;
   mini_gnb_c_aka_context_t aka_request;
   mini_gnb_c_aka_context_t aka_result;
   mini_gnb_c_core_session_t core_session;
@@ -2308,7 +1892,7 @@ static int mini_gnb_c_replay_socket_type(const char* socket_name,
                 options->replay_pcap_path);
       }
     }
-    if (step->frame_number > 3u && !runtime_ue_token_valid) {
+    if (step->frame_number > 3u && !runtime_amf_ue_ngap_id_valid) {
       fprintf(stderr, "missing runtime AMF UE token before replay frame %u\n", step->frame_number);
       close(socket_fd);
       mini_gnb_c_free_pcap_frames(frames, frame_count);
@@ -2321,9 +1905,12 @@ static int mini_gnb_c_replay_socket_type(const char* socket_name,
         tx_message_length = sizeof(k_ngsetup_request);
         break;
       case 3u:
-        if (mini_gnb_c_build_initial_ue_message(tx_message,
-                                                sizeof(tx_message),
-                                                &tx_message_length) != 0) {
+        if (mini_gnb_c_ngap_build_initial_ue_message(k_initial_registration_request_nas,
+                                                     sizeof(k_initial_registration_request_nas),
+                                                     ran_ue_ngap_id,
+                                                     tx_message,
+                                                     sizeof(tx_message),
+                                                     &tx_message_length) != 0) {
           fprintf(stderr, "failed to build InitialUEMessage\n");
           close(socket_fd);
           mini_gnb_c_free_pcap_frames(frames, frame_count);
@@ -2331,20 +1918,13 @@ static int mini_gnb_c_replay_socket_type(const char* socket_name,
         }
         break;
       case 5u: {
-        uint8_t nas_ie_value[MINI_GNB_C_NAS_MAX_LEN];
-        size_t nas_ie_value_length = 0u;
-
-        if (mini_gnb_c_build_octet_string_value(k_identity_response_nas,
-                                                sizeof(k_identity_response_nas),
-                                                nas_ie_value,
-                                                sizeof(nas_ie_value),
-                                                &nas_ie_value_length) != 0 ||
-            mini_gnb_c_build_uplink_nas_transport(runtime_ue_token,
-                                                  nas_ie_value,
-                                                  nas_ie_value_length,
-                                                  tx_message,
-                                                  sizeof(tx_message),
-                                                  &tx_message_length) != 0) {
+        if (mini_gnb_c_ngap_build_uplink_nas_transport(runtime_amf_ue_ngap_id,
+                                                       ran_ue_ngap_id,
+                                                       k_identity_response_nas,
+                                                       sizeof(k_identity_response_nas),
+                                                       tx_message,
+                                                       sizeof(tx_message),
+                                                       &tx_message_length) != 0) {
           fprintf(stderr, "failed to build IdentityResponse UplinkNASTransport\n");
           close(socket_fd);
           mini_gnb_c_free_pcap_frames(frames, frame_count);
@@ -2355,8 +1935,6 @@ static int mini_gnb_c_replay_socket_type(const char* socket_name,
       case 7u: {
         uint8_t auth_response_nas[MINI_GNB_C_NAS_MAX_LEN];
         size_t auth_response_nas_len = 0u;
-        uint8_t nas_ie_value[MINI_GNB_C_NAS_MAX_LEN];
-        size_t nas_ie_value_length = 0u;
 
         if (!aka_request_valid) {
           fprintf(stderr, "missing runtime AuthenticationRequest before frame 7 replay\n");
@@ -2369,17 +1947,13 @@ static int mini_gnb_c_replay_socket_type(const char* socket_name,
                                                auth_response_nas,
                                                &auth_response_nas_len,
                                                &aka_result) != 0 ||
-            mini_gnb_c_build_octet_string_value(auth_response_nas,
-                                                auth_response_nas_len,
-                                                nas_ie_value,
-                                                sizeof(nas_ie_value),
-                                                &nas_ie_value_length) != 0 ||
-            mini_gnb_c_build_uplink_nas_transport(runtime_ue_token,
-                                                  nas_ie_value,
-                                                  nas_ie_value_length,
-                                                  tx_message,
-                                                  sizeof(tx_message),
-                                                  &tx_message_length) != 0) {
+            mini_gnb_c_ngap_build_uplink_nas_transport(runtime_amf_ue_ngap_id,
+                                                       ran_ue_ngap_id,
+                                                       auth_response_nas,
+                                                       auth_response_nas_len,
+                                                       tx_message,
+                                                       sizeof(tx_message),
+                                                       &tx_message_length) != 0) {
           fprintf(stderr, "failed to build AuthenticationResponse UplinkNASTransport\n");
           close(socket_fd);
           mini_gnb_c_free_pcap_frames(frames, frame_count);
@@ -2394,8 +1968,7 @@ static int mini_gnb_c_replay_socket_type(const char* socket_name,
         const uint8_t* nas_template = NULL;
         size_t nas_template_length = 0u;
         uint8_t inner_message_type = 0u;
-        uint8_t nas_ie_value[MINI_GNB_C_NAS_MAX_LEN];
-        size_t nas_ie_value_length = 0u;
+        uint8_t nas_message[MINI_GNB_C_NAS_MAX_LEN];
 
         if (step->frame_number == 9u) {
           nas_template = k_security_mode_complete_nas_template;
@@ -2411,21 +1984,24 @@ static int mini_gnb_c_replay_socket_type(const char* socket_name,
           inner_message_type = 0x67u;
         }
 
-        if (mini_gnb_c_build_octet_string_value(nas_template,
-                                                nas_template_length,
-                                                nas_ie_value,
-                                                sizeof(nas_ie_value),
-                                                &nas_ie_value_length) != 0 ||
-            mini_gnb_c_patch_security_protected_uplink_message(nas_ie_value,
-                                                               nas_ie_value_length,
+        if (nas_template_length > sizeof(nas_message)) {
+          fprintf(stderr, "NAS template too large for replay frame %u\n", step->frame_number);
+          close(socket_fd);
+          mini_gnb_c_free_pcap_frames(frames, frame_count);
+          return 1;
+        }
+        memcpy(nas_message, nas_template, nas_template_length);
+        if (mini_gnb_c_patch_security_protected_uplink_message(nas_message,
+                                                               nas_template_length,
                                                                inner_message_type,
                                                                &aka_result) != 0 ||
-            mini_gnb_c_build_uplink_nas_transport(runtime_ue_token,
-                                                  nas_ie_value,
-                                                  nas_ie_value_length,
-                                                  tx_message,
-                                                  sizeof(tx_message),
-                                                  &tx_message_length) != 0) {
+            mini_gnb_c_ngap_build_uplink_nas_transport(runtime_amf_ue_ngap_id,
+                                                       ran_ue_ngap_id,
+                                                       nas_message,
+                                                       nas_template_length,
+                                                       tx_message,
+                                                       sizeof(tx_message),
+                                                       &tx_message_length) != 0) {
           fprintf(stderr, "failed to build security-protected UplinkNASTransport for replay frame %u\n",
                   step->frame_number);
           close(socket_fd);
@@ -2436,10 +2012,11 @@ static int mini_gnb_c_replay_socket_type(const char* socket_name,
         break;
       }
       case 11u:
-        if (mini_gnb_c_build_initial_context_setup_response(runtime_ue_token,
-                                                            tx_message,
-                                                            sizeof(tx_message),
-                                                            &tx_message_length) != 0) {
+        if (mini_gnb_c_ngap_build_initial_context_setup_response(runtime_amf_ue_ngap_id,
+                                                                 ran_ue_ngap_id,
+                                                                 tx_message,
+                                                                 sizeof(tx_message),
+                                                                 &tx_message_length) != 0) {
           fprintf(stderr, "failed to build InitialContextSetupResponse\n");
           close(socket_fd);
           mini_gnb_c_free_pcap_frames(frames, frame_count);
@@ -2447,10 +2024,11 @@ static int mini_gnb_c_replay_socket_type(const char* socket_name,
         }
         break;
       case 16u:
-        if (mini_gnb_c_build_pdu_session_resource_setup_response(runtime_ue_token,
-                                                                 tx_message,
-                                                                 sizeof(tx_message),
-                                                                 &tx_message_length) != 0) {
+        if (mini_gnb_c_ngap_build_pdu_session_resource_setup_response(runtime_amf_ue_ngap_id,
+                                                                      ran_ue_ngap_id,
+                                                                      tx_message,
+                                                                      sizeof(tx_message),
+                                                                      &tx_message_length) != 0) {
           fprintf(stderr, "failed to build PDUSessionResourceSetupResponse\n");
           close(socket_fd);
           mini_gnb_c_free_pcap_frames(frames, frame_count);
@@ -2514,11 +2092,9 @@ static int mini_gnb_c_replay_socket_type(const char* socket_name,
       }
 
       if (step->frame_number == 3u &&
-          mini_gnb_c_extract_amf_ue_ngap_id(response, response_length, runtime_ue_token) == 0) {
-        runtime_ue_token_valid = 1;
-        printf("Captured runtime UE NGAP token bytes: %02x %02x\n",
-               runtime_ue_token[0],
-               runtime_ue_token[1]);
+          mini_gnb_c_ngap_extract_amf_ue_ngap_id(response, response_length, &runtime_amf_ue_ngap_id) == 0) {
+        runtime_amf_ue_ngap_id_valid = 1;
+        printf("Captured runtime AMF UE NGAP ID: 0x%04x\n", runtime_amf_ue_ngap_id);
       }
       if (step->frame_number == 5u) {
         uint8_t nas_message_type = mini_gnb_c_extract_nas_message_type(response, response_length);
@@ -2576,28 +2152,18 @@ static int mini_gnb_c_replay_socket_type(const char* socket_name,
                aka_result.integrity_algorithm);
       }
       if (step->frame_number == 14u) {
-        if (mini_gnb_c_extract_open5gs_upf_tunnel(response, response_length, &core_session) == 0) {
+        if (mini_gnb_c_ngap_extract_open5gs_user_plane_state(response, response_length, &core_session) == 0) {
           printf("Parsed UPF tunnel from PDUSessionResourceSetupRequest: %s TEID=0x%08x\n",
                  core_session.upf_ip,
                  core_session.upf_teid);
-        } else {
-          fprintf(stderr, "warning: failed to parse UPF tunnel from PDUSessionResourceSetupRequest\n");
-        }
-
-        if (mini_gnb_c_extract_open5gs_qfi(response, response_length, &core_session) == 0) {
           printf("Parsed QFI from PDUSessionResourceSetupRequest: %u\n", core_session.qfi);
-        } else {
-          fprintf(stderr, "warning: failed to parse QFI from PDUSessionResourceSetupRequest\n");
-        }
-
-        if (mini_gnb_c_extract_open5gs_ue_ipv4(response, response_length, &core_session) == 0) {
           printf("Parsed UE IPv4 from PDU Session Establishment Accept: %u.%u.%u.%u\n",
                  core_session.ue_ipv4[0],
                  core_session.ue_ipv4[1],
                  core_session.ue_ipv4[2],
                  core_session.ue_ipv4[3]);
         } else {
-          fprintf(stderr, "warning: failed to parse UE IPv4 from PDU Session Establishment Accept\n");
+          fprintf(stderr, "warning: failed to parse Open5GS user-plane state from PDUSessionResourceSetupRequest\n");
         }
       }
     } else if (step->post_send_delay_ms > 0u) {

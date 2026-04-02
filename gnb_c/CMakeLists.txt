@@ -31,9 +31,12 @@ add_library(mini_gnb_c_lib
   src/common/hex.c
   src/common/json_utils.c
   src/common/simulator.c
+  src/core/gnb_core_bridge.c
   src/core/core_session.c
   src/config/config_loader.c
   src/link/json_link.c
+  src/ngap/ngap_runtime.c
+  src/ngap/ngap_transport.c
   src/timing/slot_engine.c
   src/n3/gtpu_tunnel.c
   src/radio/mock_radio_frontend.c
@@ -80,7 +83,9 @@ add_executable(mini_gnb_c_tests
   tests/test_config.c
   tests/test_core_session.c
   tests/test_ue_context_store.c
+  tests/test_gnb_core_bridge.c
   tests/test_gtpu_tunnel.c
+  tests/test_ngap_runtime.c
   tests/test_json_link.c
   tests/test_mini_ue_fsm.c
   tests/test_ra_manager.c

@@ -86,8 +86,18 @@ same core/session and N3 code paths:
 
 - `core/core_session`
   - owns single-UE AMF/session/N3 state such as identifiers, counters, UPF tunnel, QFI, and UE IPv4
+- `ngap/ngap_runtime`
+  - builds the minimal reusable NGAP requests and responses needed by the Open5GS flow
+  - parses AMF UE NGAP ID, `NAS-PDU`, and Open5GS user-plane session data from NGAP messages
+- `ngap/ngap_transport`
+  - owns the reusable SCTP transport wrapper for simulator-side AMF connectivity
+  - supports injected transport ops so bridge tests can run without a live AMF
 - `n3/gtpu_tunnel`
   - builds and validates the minimal GTP-U Echo and UL G-PDU packets used by replay mode
+
+`apps/ngap_probe.c` now consumes the extracted `ngap/ngap_runtime` helpers instead
+of owning those builders and Open5GS session parsers inline. That keeps the replay
+tool usable while moving the future gNB core-bridge entrypoints into `mini_gnb_c_lib`.
 
 The next local-loop milestone also needs a filesystem-backed exchange between the
 future UE helper process and the simulator. The first version of that transport now
@@ -142,6 +152,32 @@ owns an embedded core-session object:
   - keeps unresolved fields as `null`, so the summary schema is already stable before the bridge is live
 - `tests/test_ue_context_store.c`
   - verifies that UE promotion initializes the embedded bridge state cleanly
+
+The first live simulator-side core bridge is now wired on top of that state:
+
+- `core/gnb_core_bridge`
+  - owns the single-UE gNB-to-AMF bridge runtime
+  - seeds `ran_ue_ngap_id` from `core.ran_ue_ngap_id_base`
+  - seeds the requested `pdu_session_id`
+  - opens the reusable `ngap/ngap_transport` SCTP transport to the configured AMF
+  - completes one `NGSetupRequest -> NGSetupResponse` handshake
+  - sends one reusable `InitialUEMessage` through `ngap/ngap_runtime`
+  - parses the first `AMF UE NGAP ID` and `NAS-PDU` returned by the AMF
+  - increments the UE-side uplink/downlink NAS counters once that first exchange completes
+  - emits the first `DL_NAS` event into `sim.local_exchange_dir/gnb_to_ue/` when the local filesystem workflow is enabled
+- `config/default_cell.yml`
+  - now includes an optional `core:` section
+  - the section now also carries a `timeout_ms` setting for the SCTP bridge
+  - the bridge is disabled by default so older local-loop runs do not change behavior
+- `src/common/simulator.c`
+  - invokes the bridge immediately after `ue_context_store` promotion
+  - keeps the bridge outcome inside the embedded `core_session`, so the summary schema stays aligned with the future live AMF bridge
+
+This is now a minimal live control-plane bridge, but only for the first NAS hop.
+The simulator can bring up SCTP + NGAP to the AMF and surface the first AMF NAS
+downlink into the local UE exchange directory. It still does not yet drive the
+full UE NAS state machine or parse later PDU-session user-plane state inside the
+simulator path.
 
 So `ngap_probe` is not part of the radio simulator loop. It is a protocol bring-up
 tool that shares the same repository because it validates the external Open5GS

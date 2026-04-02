@@ -36,6 +36,15 @@ rf:
   tx_gain: 45.0
   rx_gain: 35.0
 
+core:
+  # Future AMF/core bridge configuration.
+  enabled: false
+  amf_ip: "127.0.0.5"
+  amf_port: 38412
+  timeout_ms: 5000
+  ran_ue_ngap_id_base: 1
+  default_pdu_session_id: 1
+
 broadcast:
   # Broadcast periodicity in slots.
   ssb_period_slots: 2

@@ -821,23 +821,28 @@ void mini_gnb_c_simulator_init(mini_gnb_c_simulator_t* simulator,
 
   memset(simulator, 0, sizeof(*simulator));
   simulator->config = *config;
+  mini_gnb_c_resolve_optional_dir_in_place(simulator->config.sim.local_exchange_dir,
+                                           sizeof(simulator->config.sim.local_exchange_dir));
   mini_gnb_c_resolve_optional_dir_in_place(simulator->config.sim.scripted_schedule_dir,
                                            sizeof(simulator->config.sim.scripted_schedule_dir));
   mini_gnb_c_resolve_optional_dir_in_place(simulator->config.sim.scripted_pdcch_dir,
                                            sizeof(simulator->config.sim.scripted_pdcch_dir));
   mini_gnb_c_metrics_trace_init(&simulator->metrics, output_dir);
-  mini_gnb_c_slot_engine_init(&simulator->slot_engine, config);
-  mini_gnb_c_mock_radio_frontend_init(&simulator->radio, &config->rf, &config->sim);
+  mini_gnb_c_slot_engine_init(&simulator->slot_engine, &simulator->config);
+  mini_gnb_c_mock_radio_frontend_init(&simulator->radio, &simulator->config.rf, &simulator->config.sim);
   mini_gnb_c_broadcast_engine_init(&simulator->broadcast,
-                                   &config->cell,
-                                   &config->prach,
-                                   &config->broadcast);
-  mini_gnb_c_mock_prach_detector_init(&simulator->prach_detector, &config->sim);
-  mini_gnb_c_ra_manager_init(&simulator->ra_manager, &config->prach, &config->sim);
+                                   &simulator->config.cell,
+                                   &simulator->config.prach,
+                                   &simulator->config.broadcast);
+  mini_gnb_c_mock_prach_detector_init(&simulator->prach_detector, &simulator->config.sim);
+  mini_gnb_c_ra_manager_init(&simulator->ra_manager, &simulator->config.prach, &simulator->config.sim);
   mini_gnb_c_initial_access_scheduler_init(&simulator->scheduler);
-  mini_gnb_c_mock_msg3_receiver_init(&simulator->msg3_receiver, &config->sim);
+  mini_gnb_c_mock_msg3_receiver_init(&simulator->msg3_receiver, &simulator->config.sim);
   mini_gnb_c_mock_dl_phy_mapper_init(&simulator->dl_mapper);
   mini_gnb_c_ue_context_store_init(&simulator->ue_store);
+  mini_gnb_c_gnb_core_bridge_init(&simulator->core_bridge,
+                                  &simulator->config.core,
+                                  simulator->config.sim.local_exchange_dir);
 }
 
 int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
@@ -1018,6 +1023,17 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                                     &request_info,
                                                     slot.abs_slot);
             if (ue_context != NULL) {
+              if (mini_gnb_c_gnb_core_bridge_on_ue_promoted(&simulator->core_bridge,
+                                                            ue_context,
+                                                            &simulator->metrics,
+                                                            slot.abs_slot) != 0) {
+                mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                               "gnb_core_bridge",
+                                               "Failed to prepare InitialUEMessage for promoted UE.",
+                                               slot.abs_slot,
+                                               "c_rnti=%u",
+                                               ue_context->c_rnti);
+              }
               mini_gnb_c_metrics_trace_event(&simulator->metrics,
                                              "ue_context_store",
                                              "Promoted RA context into minimal UE context.",

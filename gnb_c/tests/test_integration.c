@@ -9,6 +9,7 @@
 #include "mini_gnb_c/common/simulator.h"
 #include "mini_gnb_c/config/config_loader.h"
 #include "mini_gnb_c/link/json_link.h"
+#include "mini_gnb_c/ngap/ngap_runtime.h"
 #include "mini_gnb_c/ue/mini_ue_fsm.h"
 
 static void mini_gnb_c_write_test_cf32(const char* path, size_t sample_count) {
@@ -64,6 +65,101 @@ static void mini_gnb_c_emit_test_ue_plan(const mini_gnb_c_sim_config_t* sim, con
 static void mini_gnb_c_disable_local_exchange(mini_gnb_c_config_t* config) {
   mini_gnb_c_require(config != NULL, "expected config to disable local exchange");
   config->sim.local_exchange_dir[0] = '\0';
+}
+
+typedef struct {
+  uint8_t responses[2][MINI_GNB_C_CORE_BRIDGE_MAX_MESSAGE];
+  size_t response_lengths[2];
+  size_t response_count;
+  size_t response_index;
+  uint8_t sent_messages[2][MINI_GNB_C_CORE_BRIDGE_MAX_MESSAGE];
+  size_t sent_lengths[2];
+  size_t sent_count;
+} mini_gnb_c_integration_fake_ngap_transport_t;
+
+static int mini_gnb_c_integration_fake_transport_connect(mini_gnb_c_ngap_transport_t* transport,
+                                                         const char* amf_ip,
+                                                         uint32_t amf_port,
+                                                         uint32_t timeout_ms) {
+  (void)amf_ip;
+  (void)amf_port;
+  (void)timeout_ms;
+  mini_gnb_c_require(transport != NULL, "expected transport in integration fake connect");
+  transport->socket_fd = 1;
+  return 0;
+}
+
+static int mini_gnb_c_integration_fake_transport_send(mini_gnb_c_ngap_transport_t* transport,
+                                                      const uint8_t* bytes,
+                                                      size_t length) {
+  mini_gnb_c_integration_fake_ngap_transport_t* fake = NULL;
+
+  mini_gnb_c_require(transport != NULL && bytes != NULL && length > 0u,
+                     "expected fake integration send arguments");
+  fake = (mini_gnb_c_integration_fake_ngap_transport_t*)transport->user_data;
+  mini_gnb_c_require(fake != NULL, "expected fake integration transport state");
+  mini_gnb_c_require(fake->sent_count < 2u, "unexpected extra integration send");
+  mini_gnb_c_require(length <= sizeof(fake->sent_messages[0]), "expected integration send capacity");
+  memcpy(fake->sent_messages[fake->sent_count], bytes, length);
+  fake->sent_lengths[fake->sent_count] = length;
+  ++fake->sent_count;
+  return 0;
+}
+
+static int mini_gnb_c_integration_fake_transport_recv(mini_gnb_c_ngap_transport_t* transport,
+                                                      uint8_t* response,
+                                                      size_t response_capacity,
+                                                      size_t* response_length) {
+  mini_gnb_c_integration_fake_ngap_transport_t* fake = NULL;
+  size_t length = 0u;
+
+  mini_gnb_c_require(transport != NULL && response != NULL && response_length != NULL,
+                     "expected fake integration recv arguments");
+  fake = (mini_gnb_c_integration_fake_ngap_transport_t*)transport->user_data;
+  mini_gnb_c_require(fake != NULL, "expected fake integration transport state");
+  mini_gnb_c_require(fake->response_index < fake->response_count, "unexpected extra integration recv");
+  length = fake->response_lengths[fake->response_index];
+  mini_gnb_c_require(length <= response_capacity, "expected integration recv capacity");
+  memcpy(response, fake->responses[fake->response_index], length);
+  *response_length = length;
+  ++fake->response_index;
+  return 0;
+}
+
+static void mini_gnb_c_integration_fake_transport_close(mini_gnb_c_ngap_transport_t* transport) {
+  if (transport != NULL) {
+    transport->socket_fd = -1;
+  }
+}
+
+static const mini_gnb_c_ngap_transport_ops_t k_mini_gnb_c_integration_fake_transport_ops = {
+    mini_gnb_c_integration_fake_transport_connect,
+    mini_gnb_c_integration_fake_transport_send,
+    mini_gnb_c_integration_fake_transport_recv,
+    mini_gnb_c_integration_fake_transport_close,
+};
+
+static void mini_gnb_c_prepare_integration_fake_amf_dialog(mini_gnb_c_integration_fake_ngap_transport_t* fake) {
+  static const uint8_t k_ngsetup_response[] = {0x20u, 0x15u, 0x00u, 0x00u};
+  static const uint8_t k_auth_request_nas[] = {0x7eu, 0x00u, 0x56u, 0x01u, 0x02u, 0x03u};
+  uint8_t message[MINI_GNB_C_CORE_BRIDGE_MAX_MESSAGE];
+  size_t message_length = 0u;
+
+  mini_gnb_c_require(fake != NULL, "expected fake integration transport");
+  memset(fake, 0, sizeof(*fake));
+  memcpy(fake->responses[0], k_ngsetup_response, sizeof(k_ngsetup_response));
+  fake->response_lengths[0] = sizeof(k_ngsetup_response);
+  mini_gnb_c_require(mini_gnb_c_ngap_build_downlink_nas_transport(0x1234u,
+                                                                  1u,
+                                                                  k_auth_request_nas,
+                                                                  sizeof(k_auth_request_nas),
+                                                                  message,
+                                                                  sizeof(message),
+                                                                  &message_length) == 0,
+                     "expected canned integration DownlinkNASTransport");
+  memcpy(fake->responses[1], message, message_length);
+  fake->response_lengths[1] = message_length;
+  fake->response_count = 2u;
 }
 
 void test_integration_run(void) {
@@ -255,6 +351,96 @@ void test_integration_local_exchange_ue_plan(void) {
                      "expected summary counters for local exchange run");
   mini_gnb_c_require(strstr(summary_json, "\"core_session\":{\"c_rnti\":17921") != NULL,
                      "expected local exchange summary core session block");
+  free(summary_json);
+}
+
+void test_integration_core_bridge_prepares_initial_message(void) {
+  char config_path[MINI_GNB_C_MAX_PATH];
+  char output_dir[MINI_GNB_C_MAX_PATH];
+  char exchange_dir[MINI_GNB_C_MAX_PATH];
+  char dl_nas_event_path[MINI_GNB_C_MAX_PATH];
+  char error_message[256];
+  mini_gnb_c_config_t config;
+  mini_gnb_c_simulator_t simulator;
+  mini_gnb_c_run_summary_t summary;
+  mini_gnb_c_integration_fake_ngap_transport_t fake_transport;
+  char* summary_json = NULL;
+  char* dl_nas_event_json = NULL;
+
+  mini_gnb_c_default_config_path(config_path, sizeof(config_path));
+  mini_gnb_c_require(mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) == 0,
+                     "expected config to load");
+  config.core.enabled = true;
+  config.core.timeout_ms = 2500u;
+  config.core.ran_ue_ngap_id_base = 1u;
+  config.core.default_pdu_session_id = 1u;
+
+  mini_gnb_c_make_output_dir("test_integration_core_bridge_c", output_dir, sizeof(output_dir));
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "local_exchange", exchange_dir, sizeof(exchange_dir)) == 0,
+                     "expected local exchange dir for core bridge test");
+  (void)snprintf(config.sim.local_exchange_dir, sizeof(config.sim.local_exchange_dir), "%s", exchange_dir);
+  mini_gnb_c_simulator_init(&simulator, &config, output_dir);
+  mini_gnb_c_prepare_integration_fake_amf_dialog(&fake_transport);
+  mini_gnb_c_ngap_transport_set_ops(&simulator.core_bridge.transport,
+                                    &k_mini_gnb_c_integration_fake_transport_ops,
+                                    &fake_transport);
+  mini_gnb_c_require(mini_gnb_c_simulator_run(&simulator, &summary) == 0, "expected simulator run");
+
+  mini_gnb_c_require(summary.ue_count == 1U, "expected one promoted UE");
+  mini_gnb_c_require(summary.ue_contexts[0].core_session.ran_ue_ngap_id_valid &&
+                         summary.ue_contexts[0].core_session.ran_ue_ngap_id == 1u,
+                     "expected bridge-seeded RAN UE NGAP ID");
+  mini_gnb_c_require(summary.ue_contexts[0].core_session.pdu_session_id_valid &&
+                         summary.ue_contexts[0].core_session.pdu_session_id == 1u,
+                     "expected bridge-seeded requested PDU session ID");
+  mini_gnb_c_require(summary.ue_contexts[0].core_session.amf_ue_ngap_id_valid &&
+                         summary.ue_contexts[0].core_session.amf_ue_ngap_id == 0x1234u,
+                     "expected parsed AMF UE NGAP ID");
+  mini_gnb_c_require(summary.ue_contexts[0].core_session.uplink_nas_count == 1u,
+                     "expected sent InitialUEMessage uplink NAS count");
+  mini_gnb_c_require(summary.ue_contexts[0].core_session.downlink_nas_count == 1u,
+                     "expected received first downlink NAS count");
+  mini_gnb_c_require(simulator.core_bridge.ng_setup_complete, "expected NGSetup to complete");
+  mini_gnb_c_require(simulator.core_bridge.last_initial_ue_message_length > 0u,
+                     "expected stored InitialUEMessage in bridge");
+  mini_gnb_c_require(simulator.core_bridge.last_initial_ue_message[0] == 0x00u &&
+                         simulator.core_bridge.last_initial_ue_message[1] == 0x0fu,
+                     "expected InitialUEMessage header in stored bridge message");
+  mini_gnb_c_require(simulator.core_bridge.last_downlink_nas_length == 6u,
+                     "expected stored downlink NAS in bridge");
+  mini_gnb_c_require(fake_transport.sent_count == 2u, "expected NGSetup and InitialUEMessage sends");
+  mini_gnb_c_require(fake_transport.sent_messages[0][0] == 0x00u &&
+                         fake_transport.sent_messages[0][1] == 0x15u,
+                     "expected NGSetupRequest send before InitialUEMessage");
+
+  summary_json = mini_gnb_c_read_text_file(summary.summary_path);
+  mini_gnb_c_require(summary_json != NULL, "expected core bridge summary");
+  mini_gnb_c_require(strstr(summary_json, "\"ran_ue_ngap_id\":1") != NULL,
+                     "expected summary JSON RAN UE NGAP ID");
+  mini_gnb_c_require(strstr(summary_json, "\"amf_ue_ngap_id\":4660") != NULL,
+                     "expected summary JSON AMF UE NGAP ID");
+  mini_gnb_c_require(strstr(summary_json, "\"uplink_nas_count\":1") != NULL,
+                     "expected summary JSON uplink NAS count");
+  mini_gnb_c_require(strstr(summary_json, "\"downlink_nas_count\":1") != NULL,
+                     "expected summary JSON downlink NAS count");
+
+  mini_gnb_c_require(mini_gnb_c_json_link_build_event_path(exchange_dir,
+                                                           "gnb_to_ue",
+                                                           "gnb",
+                                                           1u,
+                                                           "DL_NAS",
+                                                           dl_nas_event_path,
+                                                           sizeof(dl_nas_event_path)) == 0,
+                     "expected downlink NAS event path");
+  dl_nas_event_json = mini_gnb_c_read_text_file(dl_nas_event_path);
+  mini_gnb_c_require(dl_nas_event_json != NULL, "expected downlink NAS event JSON");
+  mini_gnb_c_require(strstr(dl_nas_event_json, "\"type\": \"DL_NAS\"") != NULL,
+                     "expected downlink NAS event type");
+  mini_gnb_c_require(strstr(dl_nas_event_json, "\"amf_ue_ngap_id\":4660") != NULL,
+                     "expected downlink NAS event payload AMF UE NGAP ID");
+  mini_gnb_c_require(strstr(dl_nas_event_json, "\"nas_hex\":\"7E0056010203\"") != NULL,
+                     "expected downlink NAS event payload NAS hex");
+  free(dl_nas_event_json);
   free(summary_json);
 }
 

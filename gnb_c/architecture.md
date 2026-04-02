@@ -32,6 +32,11 @@ The most important architectural feature is:
 
 There are no threads, no locks, and no asynchronous queues in the current implementation.
 
+For the current implementation status and the concrete validation commands used to
+exercise the UE/gNB/core path, see:
+
+- `feature_test_guide.md`
+
 ## 2. Top-Level Shape
 
 The entrypoint is:
@@ -69,16 +74,18 @@ small external-system validation tool for Open5GS bring-up:
 - default mode
   - one-shot `NGSetupRequest` probe for basic N2 SCTP/NGAP reachability
 - replay mode
-  - follows the same N2 attach/session step order as `gnb_ngap.pcap`
+  - follows the same N2 attach/session step order as `examples/gnb_ngap.pcap`
   - dynamically encodes every gNB-originated uplink NGAP message instead of copying uplink frames
   - generates the runtime-sensitive UE NAS messages from the AMF challenge
   - recomputes protected NAS MACs after `SecurityModeCommand`
-  - treats `gnb_ngap.pcap` as an optional reference capture for alignment and comparison
+  - treats `examples/gnb_ngap.pcap` as an optional reference capture for alignment and comparison
   - parses top-level `NAS-PDU` and session-level transfer data through bounded IE decoding
   - extracts session-level N3 parameters from `PDUSessionResourceSetupRequest`
   - validates N3 reachability with a GTP-U `Echo Request` to the configured or parsed UPF
   - emits one minimal session G-PDU using the parsed UL TEID, QFI, and UE IPv4
   - writes runtime trace pcaps for later NGAP and GTP-U inspection
+  - keeps the checked-in reference captures under `examples/`, including `examples/gnb_ngap.pcap`
+    and `examples/gnb_mac.pcap`
 
 The probe started as a single-file bring-up tool, but the current implementation is
 now being split into reusable support modules so the simulator can later share the
@@ -165,19 +172,28 @@ The first live simulator-side core bridge is now wired on top of that state:
   - parses the first `AMF UE NGAP ID` and `NAS-PDU` returned by the AMF
   - increments the UE-side uplink/downlink NAS counters once that first exchange completes
   - emits the first `DL_NAS` event into `sim.local_exchange_dir/gnb_to_ue/` when the local filesystem workflow is enabled
+  - then polls `sim.local_exchange_dir/ue_to_gnb_nas/` for due `UL_NAS` events and relays them as `UplinkNASTransport`
+  - emits each returned follow-up AMF `NAS-PDU` back into `gnb_to_ue/`
+  - recognizes `InitialContextSetupRequest` and `PDUSessionResourceSetupRequest` from the AMF
+  - sends `InitialContextSetupResponse` and `PDUSessionResourceSetupResponse` without leaving the slot-driven simulator model
+  - parses Open5GS user-plane session state from `PDUSessionResourceSetupRequest` and writes it into the embedded `core_session`
 - `config/default_cell.yml`
   - now includes an optional `core:` section
   - the section now also carries a `timeout_ms` setting for the SCTP bridge
   - the bridge is disabled by default so older local-loop runs do not change behavior
 - `src/common/simulator.c`
   - invokes the bridge immediately after `ue_context_store` promotion
+  - polls the bridge once per slot for due follow-up `UL_NAS` control-plane events
   - keeps the bridge outcome inside the embedded `core_session`, so the summary schema stays aligned with the future live AMF bridge
 
-This is now a minimal live control-plane bridge, but only for the first NAS hop.
-The simulator can bring up SCTP + NGAP to the AMF and surface the first AMF NAS
-downlink into the local UE exchange directory. It still does not yet drive the
-full UE NAS state machine or parse later PDU-session user-plane state inside the
-simulator path.
+This is now a minimal live control-plane bridge covering the first NAS hop plus the
+follow-up session-setup acknowledgements needed by the Open5GS attach flow.
+The simulator can bring up SCTP + NGAP to the AMF, surface the first AMF NAS
+downlink into the local UE exchange directory, and relay later filesystem-backed
+`UL_NAS` events into follow-up `UplinkNASTransport` exchanges. It can also parse
+later PDU-session user-plane state inside the simulator path and send the required
+gNB-side NGAP acknowledgements. It still does not yet drive the full UE NAS state
+machine automatically.
 
 So `ngap_probe` is not part of the radio simulator loop. It is a protocol bring-up
 tool that shares the same repository because it validates the external Open5GS

@@ -1,9 +1,11 @@
 #include "mini_gnb_c/core/gnb_core_bridge.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "mini_gnb_c/common/hex.h"
+#include "mini_gnb_c/common/json_utils.h"
 #include "mini_gnb_c/link/json_link.h"
 #include "mini_gnb_c/ngap/ngap_runtime.h"
 
@@ -15,6 +17,32 @@ static const uint8_t k_mini_gnb_c_initial_registration_request_nas[] = {
     0x64, 0xf0, 0x99, 0x00, 0x00, 0x01, 0x17, 0x07, 0xf0, 0xf0, 0xc0, 0xc0, 0x1d, 0x80,
     0x30, 0x18, 0x01, 0x00, 0x53, 0x01, 0x01,
 };
+static const char* k_mini_gnb_c_ue_to_gnb_nas_channel = "ue_to_gnb_nas";
+
+static int mini_gnb_c_gnb_core_bridge_emit_downlink_nas(mini_gnb_c_gnb_core_bridge_t* bridge,
+                                                        const mini_gnb_c_ue_context_t* ue_context,
+                                                        int abs_slot);
+static int mini_gnb_c_gnb_core_bridge_send_ngap_response(mini_gnb_c_gnb_core_bridge_t* bridge,
+                                                         mini_gnb_c_ue_context_t* ue_context,
+                                                         uint8_t procedure_code,
+                                                         mini_gnb_c_metrics_trace_t* metrics,
+                                                         int abs_slot);
+
+static mini_gnb_c_ue_context_t* mini_gnb_c_gnb_core_bridge_find_ue_context(mini_gnb_c_ue_context_t* ue_contexts,
+                                                                            size_t ue_context_count,
+                                                                            uint16_t c_rnti) {
+  size_t index = 0u;
+
+  if (ue_contexts == NULL) {
+    return NULL;
+  }
+  for (index = 0u; index < ue_context_count; ++index) {
+    if (ue_contexts[index].c_rnti == c_rnti) {
+      return &ue_contexts[index];
+    }
+  }
+  return NULL;
+}
 
 static int mini_gnb_c_gnb_core_bridge_is_expected_ngap(const uint8_t* message,
                                                        size_t message_length,
@@ -24,6 +52,80 @@ static int mini_gnb_c_gnb_core_bridge_is_expected_ngap(const uint8_t* message,
     return 0;
   }
   return message[0] == expected_pdu_type && message[1] == expected_procedure_code;
+}
+
+static int mini_gnb_c_gnb_core_bridge_apply_amf_response(mini_gnb_c_gnb_core_bridge_t* bridge,
+                                                         mini_gnb_c_ue_context_t* ue_context,
+                                                         const uint8_t* response,
+                                                         size_t response_length,
+                                                         mini_gnb_c_metrics_trace_t* metrics,
+                                                         int abs_slot,
+                                                         const char* context_label) {
+  uint16_t amf_ue_ngap_id = 0u;
+  size_t downlink_nas_length = 0u;
+  const uint8_t pdu_type = response_length > 0u ? response[0] : 0xffu;
+  const uint8_t procedure_code = response_length > 1u ? response[1] : 0xffu;
+
+  if (bridge == NULL || ue_context == NULL || response == NULL || response_length == 0u) {
+    return -1;
+  }
+  if (mini_gnb_c_ngap_extract_amf_ue_ngap_id(response, response_length, &amf_ue_ngap_id) == 0) {
+    mini_gnb_c_core_session_set_amf_ue_ngap_id(&ue_context->core_session, amf_ue_ngap_id);
+  }
+  if (mini_gnb_c_ngap_extract_nas_pdu(response,
+                                      response_length,
+                                      bridge->last_downlink_nas,
+                                      sizeof(bridge->last_downlink_nas),
+                                      &downlink_nas_length) == 0) {
+    bridge->last_downlink_nas_length = downlink_nas_length;
+    bridge->last_downlink_nas_abs_slot = abs_slot;
+    mini_gnb_c_core_session_increment_downlink_nas_count(&ue_context->core_session);
+    if (mini_gnb_c_gnb_core_bridge_emit_downlink_nas(bridge, ue_context, abs_slot) != 0) {
+      return -1;
+    }
+    if (metrics != NULL) {
+      mini_gnb_c_metrics_trace_event(metrics,
+                                     "gnb_core_bridge",
+                                     "Forwarded AMF downlink NAS into the local UE exchange.",
+                                     abs_slot,
+                                     "context=%s,amf_ue_ngap_id=%u,dl_nas_length=%zu,pdu_type=0x%02x,proc=0x%02x",
+                                     context_label != NULL ? context_label : "(unknown)",
+                                     (unsigned)ue_context->core_session.amf_ue_ngap_id,
+                                     downlink_nas_length,
+                                     response[0],
+                                     response[1]);
+    }
+  }
+
+  if (pdu_type == 0x00u && procedure_code == 0x1du) {
+    if (mini_gnb_c_ngap_extract_open5gs_user_plane_state(response, response_length, &ue_context->core_session) != 0) {
+      return -1;
+    }
+    if (metrics != NULL) {
+      char ue_ipv4_text[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
+
+      if (mini_gnb_c_core_session_format_ue_ipv4(&ue_context->core_session, ue_ipv4_text, sizeof(ue_ipv4_text)) !=
+          0) {
+        (void)snprintf(ue_ipv4_text, sizeof(ue_ipv4_text), "%s", "(unavailable)");
+      }
+      mini_gnb_c_metrics_trace_event(metrics,
+                                     "gnb_core_bridge",
+                                     "Parsed Open5GS user-plane state from PDUSessionResourceSetupRequest.",
+                                     abs_slot,
+                                     "context=%s,ue_ipv4=%s,upf=%s,teid=0x%08x,qfi=%u",
+                                     context_label != NULL ? context_label : "(unknown)",
+                                     ue_ipv4_text,
+                                     ue_context->core_session.upf_ip,
+                                     ue_context->core_session.upf_teid,
+                                     (unsigned)ue_context->core_session.qfi);
+    }
+  }
+  if (pdu_type == 0x00u && (procedure_code == 0x0eu || procedure_code == 0x1du) &&
+      mini_gnb_c_gnb_core_bridge_send_ngap_response(bridge, ue_context, procedure_code, metrics, abs_slot) != 0) {
+    return -1;
+  }
+
+  return 0;
 }
 
 static int mini_gnb_c_gnb_core_bridge_emit_downlink_nas(mini_gnb_c_gnb_core_bridge_t* bridge,
@@ -65,6 +167,120 @@ static int mini_gnb_c_gnb_core_bridge_emit_downlink_nas(mini_gnb_c_gnb_core_brid
                                          payload_json,
                                          NULL,
                                          0u);
+}
+
+static int mini_gnb_c_gnb_core_bridge_send_uplink_nas(mini_gnb_c_gnb_core_bridge_t* bridge,
+                                                      mini_gnb_c_ue_context_t* ue_context,
+                                                      const uint8_t* nas_pdu,
+                                                      size_t nas_pdu_length,
+                                                      mini_gnb_c_metrics_trace_t* metrics,
+                                                      int abs_slot,
+                                                      const char* context_label) {
+  uint8_t request[MINI_GNB_C_CORE_BRIDGE_MAX_MESSAGE];
+  uint8_t response[MINI_GNB_C_CORE_BRIDGE_MAX_MESSAGE];
+  size_t request_length = 0u;
+  size_t response_length = 0u;
+
+  if (bridge == NULL || ue_context == NULL || nas_pdu == NULL || nas_pdu_length == 0u ||
+      !ue_context->core_session.ran_ue_ngap_id_valid || !ue_context->core_session.amf_ue_ngap_id_valid) {
+    return -1;
+  }
+  if (mini_gnb_c_ngap_build_uplink_nas_transport(ue_context->core_session.amf_ue_ngap_id,
+                                                 ue_context->core_session.ran_ue_ngap_id,
+                                                 nas_pdu,
+                                                 nas_pdu_length,
+                                                 request,
+                                                 sizeof(request),
+                                                 &request_length) != 0) {
+    return -1;
+  }
+  if (mini_gnb_c_ngap_transport_send(&bridge->transport, request, request_length) != 0 ||
+      mini_gnb_c_ngap_transport_recv(&bridge->transport, response, sizeof(response), &response_length) != 0) {
+    return -1;
+  }
+
+  mini_gnb_c_core_session_increment_uplink_nas_count(&ue_context->core_session);
+  if (mini_gnb_c_gnb_core_bridge_apply_amf_response(bridge,
+                                                    ue_context,
+                                                    response,
+                                                    response_length,
+                                                    metrics,
+                                                    abs_slot,
+                                                    context_label) != 0) {
+    return -1;
+  }
+  if (metrics != NULL) {
+    mini_gnb_c_metrics_trace_event(metrics,
+                                   "gnb_core_bridge",
+                                   "Forwarded UE uplink NAS to the AMF.",
+                                   abs_slot,
+                                   "context=%s,c_rnti=%u,ran_ue_ngap_id=%u,amf_ue_ngap_id=%u,ul_nas_length=%zu,"
+                                   "response_pdu=0x%02x,response_proc=0x%02x",
+                                   context_label != NULL ? context_label : "(unknown)",
+                                   (unsigned)ue_context->c_rnti,
+                                   (unsigned)ue_context->core_session.ran_ue_ngap_id,
+                                   (unsigned)ue_context->core_session.amf_ue_ngap_id,
+                                   nas_pdu_length,
+                                   response[0],
+                                   response[1]);
+  }
+
+  return 0;
+}
+
+static int mini_gnb_c_gnb_core_bridge_send_ngap_response(mini_gnb_c_gnb_core_bridge_t* bridge,
+                                                         mini_gnb_c_ue_context_t* ue_context,
+                                                         uint8_t procedure_code,
+                                                         mini_gnb_c_metrics_trace_t* metrics,
+                                                         int abs_slot) {
+  uint8_t response[MINI_GNB_C_CORE_BRIDGE_MAX_MESSAGE];
+  size_t response_length = 0u;
+  const char* label = NULL;
+
+  if (bridge == NULL || ue_context == NULL || !ue_context->core_session.amf_ue_ngap_id_valid ||
+      !ue_context->core_session.ran_ue_ngap_id_valid) {
+    return -1;
+  }
+
+  if (procedure_code == 0x0eu) {
+    if (mini_gnb_c_ngap_build_initial_context_setup_response(ue_context->core_session.amf_ue_ngap_id,
+                                                             ue_context->core_session.ran_ue_ngap_id,
+                                                             response,
+                                                             sizeof(response),
+                                                             &response_length) != 0) {
+      return -1;
+    }
+    label = "InitialContextSetupResponse";
+  } else if (procedure_code == 0x1du) {
+    if (mini_gnb_c_ngap_build_pdu_session_resource_setup_response(ue_context->core_session.amf_ue_ngap_id,
+                                                                  ue_context->core_session.ran_ue_ngap_id,
+                                                                  response,
+                                                                  sizeof(response),
+                                                                  &response_length) != 0) {
+      return -1;
+    }
+    label = "PDUSessionResourceSetupResponse";
+  } else {
+    return 0;
+  }
+
+  if (mini_gnb_c_ngap_transport_send(&bridge->transport, response, response_length) != 0) {
+    return -1;
+  }
+  if (metrics != NULL) {
+    mini_gnb_c_metrics_trace_event(metrics,
+                                   "gnb_core_bridge",
+                                   "Sent follow-up NGAP response back to the AMF.",
+                                   abs_slot,
+                                   "label=%s,c_rnti=%u,ran_ue_ngap_id=%u,amf_ue_ngap_id=%u,length=%zu",
+                                   label,
+                                   (unsigned)ue_context->c_rnti,
+                                   (unsigned)ue_context->core_session.ran_ue_ngap_id,
+                                   (unsigned)ue_context->core_session.amf_ue_ngap_id,
+                                   response_length);
+  }
+
+  return 0;
 }
 
 static int mini_gnb_c_gnb_core_bridge_run_ng_setup(mini_gnb_c_gnb_core_bridge_t* bridge,
@@ -118,7 +334,6 @@ static int mini_gnb_c_gnb_core_bridge_send_initial_ue_message(mini_gnb_c_gnb_cor
                                                               mini_gnb_c_metrics_trace_t* metrics,
                                                               int abs_slot) {
   uint8_t response[MINI_GNB_C_CORE_BRIDGE_MAX_MESSAGE];
-  uint16_t amf_ue_ngap_id = 0u;
   size_t response_length = 0u;
 
   if (bridge == NULL || ue_context == NULL) {
@@ -143,24 +358,20 @@ static int mini_gnb_c_gnb_core_bridge_send_initial_ue_message(mini_gnb_c_gnb_cor
       mini_gnb_c_ngap_transport_recv(&bridge->transport, response, sizeof(response), &response_length) != 0) {
     return -1;
   }
-  if (mini_gnb_c_ngap_extract_amf_ue_ngap_id(response, response_length, &amf_ue_ngap_id) != 0 ||
-      mini_gnb_c_ngap_extract_nas_pdu(response,
-                                      response_length,
-                                      bridge->last_downlink_nas,
-                                      sizeof(bridge->last_downlink_nas),
-                                      &bridge->last_downlink_nas_length) != 0) {
+  if (mini_gnb_c_gnb_core_bridge_apply_amf_response(bridge,
+                                                    ue_context,
+                                                    response,
+                                                    response_length,
+                                                    metrics,
+                                                    abs_slot,
+                                                    "InitialUEMessage") != 0 ||
+      !ue_context->core_session.amf_ue_ngap_id_valid || bridge->last_downlink_nas_length == 0u) {
     return -1;
   }
 
-  mini_gnb_c_core_session_set_amf_ue_ngap_id(&ue_context->core_session, amf_ue_ngap_id);
   mini_gnb_c_core_session_increment_uplink_nas_count(&ue_context->core_session);
-  mini_gnb_c_core_session_increment_downlink_nas_count(&ue_context->core_session);
-  bridge->last_downlink_nas_abs_slot = abs_slot;
   bridge->initial_message_sent = true;
 
-  if (mini_gnb_c_gnb_core_bridge_emit_downlink_nas(bridge, ue_context, abs_slot) != 0) {
-    return -1;
-  }
   if (metrics != NULL) {
     mini_gnb_c_metrics_trace_event(metrics,
                                    "gnb_core_bridge",
@@ -192,6 +403,7 @@ void mini_gnb_c_gnb_core_bridge_init(mini_gnb_c_gnb_core_bridge_t* bridge,
     (void)snprintf(bridge->local_exchange_dir, sizeof(bridge->local_exchange_dir), "%s", local_exchange_dir);
   }
   bridge->next_gnb_to_ue_sequence = 1u;
+  bridge->next_ue_to_gnb_nas_sequence = 1u;
   bridge->last_initial_ue_message_abs_slot = -1;
   bridge->last_downlink_nas_abs_slot = -1;
 }
@@ -227,4 +439,87 @@ int mini_gnb_c_gnb_core_bridge_on_ue_promoted(mini_gnb_c_gnb_core_bridge_t* brid
   }
 
   return 0;
+}
+
+int mini_gnb_c_gnb_core_bridge_poll_ue_nas(mini_gnb_c_gnb_core_bridge_t* bridge,
+                                           mini_gnb_c_ue_context_t* ue_contexts,
+                                           size_t ue_context_count,
+                                           mini_gnb_c_metrics_trace_t* metrics,
+                                           int abs_slot) {
+  if (bridge == NULL) {
+    return -1;
+  }
+  if (ue_contexts == NULL || ue_context_count == 0u) {
+    return 0;
+  }
+  if (!bridge->config.enabled || bridge->local_exchange_dir[0] == '\0' || !bridge->initial_message_sent) {
+    return 0;
+  }
+
+  while (1) {
+    char event_path[MINI_GNB_C_MAX_PATH];
+    char nas_hex[MINI_GNB_C_MAX_PAYLOAD * 2u + 1u];
+    char* event_text = NULL;
+    mini_gnb_c_ue_context_t* ue_context = NULL;
+    uint8_t nas_pdu[MINI_GNB_C_MAX_PAYLOAD];
+    size_t nas_pdu_length = 0u;
+    int event_abs_slot = 0;
+    int event_c_rnti = 0;
+
+    if (mini_gnb_c_json_link_find_event_path(bridge->local_exchange_dir,
+                                             k_mini_gnb_c_ue_to_gnb_nas_channel,
+                                             "ue",
+                                             bridge->next_ue_to_gnb_nas_sequence,
+                                             event_path,
+                                             sizeof(event_path)) != 0) {
+      return 0;
+    }
+
+    event_text = mini_gnb_c_read_text_file(event_path);
+    if (event_text == NULL) {
+      return -1;
+    }
+    if (mini_gnb_c_extract_json_int(event_text, "abs_slot", &event_abs_slot) != 0 ||
+        mini_gnb_c_extract_json_int(event_text, "c_rnti", &event_c_rnti) != 0 ||
+        mini_gnb_c_extract_json_string(event_text, "nas_hex", nas_hex, sizeof(nas_hex)) != 0 ||
+        mini_gnb_c_hex_to_bytes(nas_hex, nas_pdu, sizeof(nas_pdu), &nas_pdu_length) != 0) {
+      free(event_text);
+      return -1;
+    }
+    free(event_text);
+
+    if (event_abs_slot > abs_slot) {
+      return 0;
+    }
+    if (event_abs_slot < abs_slot) {
+      ++bridge->next_ue_to_gnb_nas_sequence;
+      if (metrics != NULL) {
+        mini_gnb_c_metrics_trace_event(metrics,
+                                       "gnb_core_bridge",
+                                       "Skipped stale UE UL_NAS event.",
+                                       abs_slot,
+                                       "path=%s,event_abs_slot=%d,current_abs_slot=%d,c_rnti=%u",
+                                       event_path,
+                                       event_abs_slot,
+                                       abs_slot,
+                                       (unsigned)event_c_rnti);
+      }
+      continue;
+    }
+
+    ue_context = mini_gnb_c_gnb_core_bridge_find_ue_context(ue_contexts, ue_context_count, (uint16_t)event_c_rnti);
+    if (ue_context == NULL) {
+      return -1;
+    }
+    if (mini_gnb_c_gnb_core_bridge_send_uplink_nas(bridge,
+                                                   ue_context,
+                                                   nas_pdu,
+                                                   nas_pdu_length,
+                                                   metrics,
+                                                   abs_slot,
+                                                   "UplinkNASTransport") != 0) {
+      return -1;
+    }
+    ++bridge->next_ue_to_gnb_nas_sequence;
+  }
 }

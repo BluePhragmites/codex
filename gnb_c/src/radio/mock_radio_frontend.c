@@ -117,43 +117,7 @@ static int mini_gnb_c_find_local_exchange_event_path(const char* root_dir,
                                                      const uint32_t sequence,
                                                      char* out,
                                                      size_t out_size) {
-  DIR* dir = NULL;
-  struct dirent* entry = NULL;
-  char channel_dir[MINI_GNB_C_MAX_PATH];
-  char prefix[64];
-
-  if (root_dir == NULL || channel == NULL || source == NULL || out == NULL || out_size == 0U) {
-    return -1;
-  }
-  if (mini_gnb_c_build_local_exchange_channel_dir(root_dir, channel, channel_dir, sizeof(channel_dir)) != 0) {
-    return -1;
-  }
-  if (snprintf(prefix, sizeof(prefix), "seq_%06u_%s_", sequence, source) >= (int)sizeof(prefix)) {
-    return -1;
-  }
-
-  dir = opendir(channel_dir);
-  if (dir == NULL) {
-    return -1;
-  }
-
-  while ((entry = readdir(dir)) != NULL) {
-    size_t name_len = strlen(entry->d_name);
-
-    if (strncmp(entry->d_name, prefix, strlen(prefix)) != 0 || name_len < 6U ||
-        strcmp(entry->d_name + name_len - 5U, ".json") != 0) {
-      continue;
-    }
-    if (mini_gnb_c_join_path(channel_dir, entry->d_name, out, out_size) != 0) {
-      closedir(dir);
-      return -1;
-    }
-    closedir(dir);
-    return 0;
-  }
-
-  closedir(dir);
-  return -1;
+  return mini_gnb_c_json_link_find_event_path(root_dir, channel, source, sequence, out, out_size);
 }
 
 static const char* mini_gnb_c_dl_transport_name(mini_gnb_c_dl_object_type_t type) {
@@ -410,89 +374,6 @@ static int mini_gnb_c_extract_transport_bool(const char* text, const char* key, 
     return 0;
   }
   return -1;
-}
-
-static const char* mini_gnb_c_find_json_value_start(const char* text, const char* key) {
-  char pattern[64];
-  const char* key_position = NULL;
-  const char* colon = NULL;
-
-  if (text == NULL || key == NULL) {
-    return NULL;
-  }
-  if (snprintf(pattern, sizeof(pattern), "\"%s\"", key) >= (int)sizeof(pattern)) {
-    return NULL;
-  }
-
-  key_position = strstr(text, pattern);
-  if (key_position == NULL) {
-    return NULL;
-  }
-  colon = strchr(key_position + strlen(pattern), ':');
-  if (colon == NULL) {
-    return NULL;
-  }
-  ++colon;
-  while (*colon == ' ' || *colon == '\t' || *colon == '\r' || *colon == '\n') {
-    ++colon;
-  }
-  return colon;
-}
-
-static int mini_gnb_c_extract_json_int(const char* text, const char* key, int* out) {
-  const char* value_start = NULL;
-  char* end_ptr = NULL;
-
-  if (out == NULL) {
-    return -1;
-  }
-  value_start = mini_gnb_c_find_json_value_start(text, key);
-  if (value_start == NULL) {
-    return -1;
-  }
-
-  *out = (int)strtol(value_start, &end_ptr, 10);
-  return end_ptr != value_start ? 0 : -1;
-}
-
-static int mini_gnb_c_extract_json_double(const char* text, const char* key, double* out) {
-  const char* value_start = NULL;
-  char* end_ptr = NULL;
-
-  if (out == NULL) {
-    return -1;
-  }
-  value_start = mini_gnb_c_find_json_value_start(text, key);
-  if (value_start == NULL) {
-    return -1;
-  }
-
-  *out = strtod(value_start, &end_ptr);
-  return end_ptr != value_start ? 0 : -1;
-}
-
-static int mini_gnb_c_extract_json_string(const char* text, const char* key, char* out, size_t out_size) {
-  const char* value_start = NULL;
-  size_t index = 0U;
-
-  if (out == NULL || out_size == 0U) {
-    return -1;
-  }
-  value_start = mini_gnb_c_find_json_value_start(text, key);
-  if (value_start == NULL || *value_start != '"') {
-    return -1;
-  }
-  ++value_start;
-
-  while (value_start[index] != '\0' && value_start[index] != '"' && index + 1U < out_size) {
-    out[index] = value_start[index];
-    ++index;
-  }
-  if (value_start[index] != '"' || index + 1U >= out_size) {
-    return -1;
-  }
-  out[index] = '\0';
-  return 0;
 }
 
 static int mini_gnb_c_write_cf32(const char* path, const mini_gnb_c_tx_grid_patch_t* patch) {

@@ -1,5 +1,6 @@
 #include "mini_gnb_c/link/json_link.h"
 
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -69,6 +70,51 @@ int mini_gnb_c_json_link_build_event_path(const char* root_dir,
   }
 
   return mini_gnb_c_join_path(channel_dir, file_name, out, out_size);
+}
+
+int mini_gnb_c_json_link_find_event_path(const char* root_dir,
+                                         const char* channel,
+                                         const char* source,
+                                         const uint32_t sequence,
+                                         char* out,
+                                         const size_t out_size) {
+  DIR* dir = NULL;
+  struct dirent* entry = NULL;
+  char channel_dir[MINI_GNB_C_MAX_PATH];
+  char prefix[64];
+
+  if (root_dir == NULL || channel == NULL || source == NULL || out == NULL || out_size == 0u) {
+    return -1;
+  }
+  if (mini_gnb_c_join_path(root_dir, channel, channel_dir, sizeof(channel_dir)) != 0) {
+    return -1;
+  }
+  if (snprintf(prefix, sizeof(prefix), "seq_%06u_%s_", sequence, source) >= (int)sizeof(prefix)) {
+    return -1;
+  }
+
+  dir = opendir(channel_dir);
+  if (dir == NULL) {
+    return -1;
+  }
+
+  while ((entry = readdir(dir)) != NULL) {
+    size_t name_len = strlen(entry->d_name);
+
+    if (strncmp(entry->d_name, prefix, strlen(prefix)) != 0 || name_len < 6u ||
+        strcmp(entry->d_name + name_len - 5u, ".json") != 0) {
+      continue;
+    }
+    if (mini_gnb_c_join_path(channel_dir, entry->d_name, out, out_size) != 0) {
+      closedir(dir);
+      return -1;
+    }
+    closedir(dir);
+    return 0;
+  }
+
+  closedir(dir);
+  return -1;
 }
 
 int mini_gnb_c_json_link_write_event_file(const char* path,

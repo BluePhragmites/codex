@@ -9,6 +9,8 @@ void test_core_session_tracks_user_plane_state(void);
 void test_core_session_rejects_invalid_values(void);
 void test_ue_context_store_promote_initializes_core_session(void);
 void test_gnb_core_bridge_prepares_initial_ue_message(void);
+void test_gnb_core_bridge_relays_followup_uplink_nas(void);
+void test_gnb_core_bridge_parses_session_setup_state(void);
 void test_gnb_core_bridge_ignores_disabled_config(void);
 void test_ngap_runtime_builders_encode_expected_headers(void);
 void test_ngap_runtime_extracts_open5gs_user_plane_state(void);
@@ -16,6 +18,7 @@ void test_gtpu_builders_encode_expected_headers(void);
 void test_gtpu_builders_reject_missing_state(void);
 void test_json_link_builds_stable_event_path(void);
 void test_json_link_emits_atomic_event_file(void);
+void test_json_link_finds_event_by_sequence(void);
 void test_mini_ue_fsm_generates_default_event_sequence(void);
 void test_mini_ue_fsm_skips_connected_traffic_when_disabled(void);
 void test_ra_manager_flow(void);
@@ -25,6 +28,8 @@ void test_integration_run(void);
 void test_integration_slot_input_prach(void);
 void test_integration_local_exchange_ue_plan(void);
 void test_integration_core_bridge_prepares_initial_message(void);
+void test_integration_core_bridge_relays_followup_ul_nas(void);
+void test_integration_core_bridge_extracts_session_setup_state(void);
 void test_integration_slot_text_transport(void);
 void test_integration_msg3_missing_retries_prach(void);
 void test_integration_msg3_rnti_mismatch_rejected_after_retry(void);
@@ -44,6 +49,8 @@ int main(void) {
       {"test_ue_context_store_promote_initializes_core_session",
        test_ue_context_store_promote_initializes_core_session},
       {"test_gnb_core_bridge_prepares_initial_ue_message", test_gnb_core_bridge_prepares_initial_ue_message},
+      {"test_gnb_core_bridge_relays_followup_uplink_nas", test_gnb_core_bridge_relays_followup_uplink_nas},
+      {"test_gnb_core_bridge_parses_session_setup_state", test_gnb_core_bridge_parses_session_setup_state},
       {"test_gnb_core_bridge_ignores_disabled_config", test_gnb_core_bridge_ignores_disabled_config},
       {"test_ngap_runtime_builders_encode_expected_headers",
        test_ngap_runtime_builders_encode_expected_headers},
@@ -53,6 +60,7 @@ int main(void) {
       {"test_gtpu_builders_reject_missing_state", test_gtpu_builders_reject_missing_state},
       {"test_json_link_builds_stable_event_path", test_json_link_builds_stable_event_path},
       {"test_json_link_emits_atomic_event_file", test_json_link_emits_atomic_event_file},
+      {"test_json_link_finds_event_by_sequence", test_json_link_finds_event_by_sequence},
       {"test_mini_ue_fsm_generates_default_event_sequence", test_mini_ue_fsm_generates_default_event_sequence},
       {"test_mini_ue_fsm_skips_connected_traffic_when_disabled",
        test_mini_ue_fsm_skips_connected_traffic_when_disabled},
@@ -63,6 +71,9 @@ int main(void) {
       {"test_integration_slot_input_prach", test_integration_slot_input_prach},
       {"test_integration_local_exchange_ue_plan", test_integration_local_exchange_ue_plan},
       {"test_integration_core_bridge_prepares_initial_message", test_integration_core_bridge_prepares_initial_message},
+      {"test_integration_core_bridge_relays_followup_ul_nas", test_integration_core_bridge_relays_followup_ul_nas},
+      {"test_integration_core_bridge_extracts_session_setup_state",
+       test_integration_core_bridge_extracts_session_setup_state},
       {"test_integration_slot_text_transport", test_integration_slot_text_transport},
       {"test_integration_msg3_missing_retries_prach", test_integration_msg3_missing_retries_prach},
       {"test_integration_msg3_rnti_mismatch_rejected_after_retry",

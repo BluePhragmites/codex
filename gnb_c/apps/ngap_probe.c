@@ -34,7 +34,7 @@
 #define MINI_GNB_C_DEFAULT_NGAP_TRACE_PCAP MINI_GNB_C_SOURCE_DIR "/out/ngap_probe_ngap_runtime.pcap"
 #define MINI_GNB_C_DEFAULT_GTPU_TRACE_PCAP MINI_GNB_C_SOURCE_DIR "/out/ngap_probe_gtpu_runtime.pcap"
 #define MINI_GNB_C_DEFAULT_TIMEOUT_MS 5000u
-#define MINI_GNB_C_DEFAULT_REPLAY_PCAP MINI_GNB_C_SOURCE_DIR "/gnb_ngap.pcap"
+#define MINI_GNB_C_DEFAULT_REPLAY_PCAP MINI_GNB_C_SOURCE_DIR "/examples/gnb_ngap.pcap"
 #define MINI_GNB_C_MAX_PCAP_FRAMES 64u
 #define MINI_GNB_C_DEFAULT_IMSI "460991234567898"
 #define MINI_GNB_C_DEFAULT_KEY "11111111 11111111 11111111 11111111"
@@ -74,7 +74,7 @@ void ogs_kdf_xres_star(uint8_t *ck, uint8_t *ik,
 int ogs_aes_cmac_calculate(uint8_t *cmac, const uint8_t *key,
                            const uint8_t *msg, const uint32_t len);
 
-/* Derived from frame 1 in gnb_ngap.pcap: NGSetupRequest from the reference srsRAN gNB. */
+/* Derived from frame 1 in examples/gnb_ngap.pcap: NGSetupRequest from the reference srsRAN gNB. */
 static const uint8_t k_ngsetup_request[] = {
     0x00, 0x15, 0x00, 0x33, 0x00, 0x00, 0x04, 0x00, 0x1b, 0x00, 0x08, 0x00, 0x64, 0xf0,
     0x99, 0x00, 0x00, 0x06, 0x6c, 0x00, 0x52, 0x40, 0x0a, 0x03, 0x80, 0x73, 0x72, 0x73,

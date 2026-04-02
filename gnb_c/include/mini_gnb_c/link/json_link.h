@@ -13,6 +13,12 @@ int mini_gnb_c_json_link_build_event_path(const char* root_dir,
                                           const char* type,
                                           char* out,
                                           size_t out_size);
+int mini_gnb_c_json_link_find_event_path(const char* root_dir,
+                                         const char* channel,
+                                         const char* source,
+                                         uint32_t sequence,
+                                         char* out,
+                                         size_t out_size);
 int mini_gnb_c_json_link_write_event_file(const char* path,
                                           const char* channel,
                                           const char* source,

@@ -1279,6 +1279,21 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
       }
     }
 
+    if (simulator->ue_store.count > 0U &&
+        mini_gnb_c_gnb_core_bridge_poll_ue_nas(&simulator->core_bridge,
+                                               simulator->ue_store.contexts,
+                                               simulator->ue_store.count,
+                                               &simulator->metrics,
+                                               slot.abs_slot) != 0) {
+      mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                     "gnb_core_bridge",
+                                     "Failed to relay follow-up UE UL_NAS event.",
+                                     slot.abs_slot,
+                                     "ue_count=%u,next_ul_nas_sequence=%u",
+                                     (unsigned)simulator->ue_store.count,
+                                     simulator->core_bridge.next_ue_to_gnb_nas_sequence);
+    }
+
     {
       mini_gnb_c_slot_perf_t perf;
       memset(&perf, 0, sizeof(perf));

@@ -62,3 +62,29 @@ void test_json_link_emits_atomic_event_file(void) {
 
   free(file_text);
 }
+
+void test_json_link_finds_event_by_sequence(void) {
+  char root_dir[MINI_GNB_C_MAX_PATH];
+  char path[MINI_GNB_C_MAX_PATH];
+  char found_path[MINI_GNB_C_MAX_PATH];
+
+  mini_gnb_c_make_output_dir("test_json_link_find", root_dir, sizeof(root_dir));
+  mini_gnb_c_require(mini_gnb_c_json_link_emit_event(root_dir,
+                                                     "ue_to_gnb_nas",
+                                                     "ue",
+                                                     "UL_NAS",
+                                                     3u,
+                                                     17,
+                                                     "{\"c_rnti\":17921,\"nas_hex\":\"7E005C00\"}",
+                                                     path,
+                                                     sizeof(path)) == 0,
+                     "expected JSON link event emission for find test");
+  mini_gnb_c_require(mini_gnb_c_json_link_find_event_path(root_dir,
+                                                          "ue_to_gnb_nas",
+                                                          "ue",
+                                                          3u,
+                                                          found_path,
+                                                          sizeof(found_path)) == 0,
+                     "expected JSON link event lookup");
+  mini_gnb_c_require(strcmp(path, found_path) == 0, "expected lookup to return emitted event path");
+}

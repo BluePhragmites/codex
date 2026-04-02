@@ -1,6 +1,6 @@
 # gnb_c End-to-End UE/gNB/Core Plan
 
-Last updated: 2026-04-02 (Stage C3 first live control-plane slice complete)
+Last updated: 2026-04-02 (Stage C5 complete; reference captures moved under examples/)
 
 ## Completed Tasks
 
@@ -41,12 +41,19 @@ Last updated: 2026-04-02 (Stage C3 first live control-plane slice complete)
 - [x] 2026-04-02: Emitted the first AMF downlink NAS into `gnb_to_ue/*.json` when `sim.local_exchange_dir` is configured.
 - [x] 2026-04-02: Added fake-transport unit and integration coverage for the live bridge path, and kept `ctest --test-dir build --output-on-failure` passing.
 - [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the first live SCTP/NGAP bridge slice.
+- [x] 2026-04-02: Extracted shared JSON field and event-lookup helpers so the radio path and the core bridge can reuse the same local exchange parsing logic.
+- [x] 2026-04-02: Added follow-up `ue_to_gnb_nas/UL_NAS` polling to `core/gnb_core_bridge` and relayed those events as `UplinkNASTransport` beyond the first `InitialUEMessage`.
+- [x] 2026-04-02: Emitted subsequent AMF downlink NAS messages back into `gnb_to_ue/*.json` for the local control-plane workflow.
+- [x] 2026-04-02: Added unit and integration coverage for the follow-up NAS relay path, and updated `gnb_c/README.md` and `gnb_c/architecture.md` for the Stage C4 control-plane workflow.
+- [x] 2026-04-02: Extended `core/gnb_core_bridge` to recognize `InitialContextSetupRequest` and `PDUSessionResourceSetupRequest`, send the matching gNB NGAP responses, and keep the simulator slot loop synchronous.
+- [x] 2026-04-02: Parsed `ue_ipv4`, `upf_teid`, and `qfi` from later Open5GS session-setup messages into the simulator-side `core_session` path.
+- [x] 2026-04-02: Added unit and integration coverage for session-setup state extraction, summary export, and automatic NGAP acknowledgements.
+- [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the Stage C5 session-state extraction workflow.
+- [x] 2026-04-02: Moved the checked-in `gnb_ngap.pcap` and `gnb_mac.pcap` reference captures into `gnb_c/examples/` and updated runtime/documentation references.
 
 ## Pending Tasks
 
-- [ ] Stage C4: Bridge UE-generated follow-up NAS uplinks and AMF NAS downlinks through the gNB process beyond the first `InitialUEMessage` exchange.
-- [ ] Stage C5: Parse later Open5GS session state such as `ue_ipv4`, `upf_teid`, and `qfi` into the simulator-side `core_session` path.
-- [ ] Stage C6: Add the next control-plane milestone tests and docs for the follow-up NAS/session bridge steps.
+- [ ] Stage C6: Add the next control-plane milestone tests and docs for session-setup state extraction and later AMF procedures beyond simple NAS relay.
 - [ ] Stage C7: Create a local milestone commit after the control plane is stable.
 - [ ] Stage D1: Add a persistent N3 user-plane helper that maintains a live GTP-U socket instead of one-shot probe traffic.
 - [ ] Stage D2: Add minimal UE-side IPv4/ICMP user-plane handling.

@@ -17,7 +17,9 @@ The C version intentionally uses fixed-size buffers and plain C interfaces so it
 - `include/mini_gnb_c/`: public C headers by subsystem
 - `src/`: implementation modules
 - `tests/`: unit and integration tests
+- `examples/`: scripted slot inputs plus reference capture assets such as `examples/gnb_ngap.pcap` and `examples/gnb_mac.pcap`
 - `implementation_plan.md`: tracked end-to-end UE/gNB/core delivery plan with completed and pending tasks
+- `feature_test_guide.md`: current implemented capabilities and runnable test commands for the UE/gNB/core path
 
 ## Build In WSL Ubuntu
 
@@ -45,7 +47,7 @@ For a deeper Open5GS validation against the local AMF and UPF, use replay mode:
 ```
 
 In replay mode, `ngap_probe` follows the same N2 attach/session step order as
-`gnb_ngap.pcap`, but the gNB-originated uplink NGAP messages are built locally
+`examples/gnb_ngap.pcap`, but the gNB-originated uplink NGAP messages are built locally
 instead of copied from the capture:
 
 - `InitialUEMessage`, all `UplinkNASTransport` messages, `InitialContextSetupResponse`,
@@ -53,7 +55,7 @@ instead of copied from the capture:
 - `AuthenticationResponse` is generated from the runtime `RAND/AUTN`
 - `SecurityModeComplete`, `RegistrationComplete`, and the PDU session NAS uplinks
   have their NAS MAC recomputed from the runtime `KAMF/KNAS`
-- `gnb_ngap.pcap` is now only a reference capture for step alignment and later
+- `examples/gnb_ngap.pcap` is now only a reference capture for step alignment and later
   Wireshark comparison; replay still runs if that reference file is absent
 - top-level `NAS-PDU` and `PDUSessionResourceSetupRequest` session data are parsed
   through bounded IE decoding instead of whole-frame byte-pattern scans
@@ -67,6 +69,8 @@ instead of copied from the capture:
 - by default, the probe also writes runtime exchange traces to
   `out/ngap_probe_ngap_runtime.pcap` and `out/ngap_probe_gtpu_runtime.pcap`
 - `--ngap-trace-pcap <path>` and `--gtpu-trace-pcap <path>` can override those outputs
+- the checked-in reference captures now live under `examples/`, with `examples/gnb_ngap.pcap`
+  for N2 replay alignment and `examples/gnb_mac.pcap` for later MAC/Wireshark inspection
 
 The replay code is also now starting to split into reusable library modules for the
 later UE/gNB/core integration work:
@@ -157,29 +161,47 @@ The first simulator-side core bridge now exists as well:
 - `include/mini_gnb_c/core/gnb_core_bridge.h`
   - owns the single-UE gNB-to-AMF bridge runtime for the simulator
   - opens the reusable SCTP/NGAP transport, runs `NGSetup`, sends one `InitialUEMessage`, and captures the first AMF downlink NAS
+  - after that first exchange, polls follow-up UE control-plane NAS events from `ue_to_gnb_nas/` and forwards them as `UplinkNASTransport`
+  - recognizes later `InitialContextSetup` and `PDUSessionResourceSetup` AMF messages, sends the matching gNB responses, and updates `core_session`
 - `config/default_cell.yml`
   - now includes an optional `core:` section with `enabled`, `amf_ip`, `amf_port`, `timeout_ms`, `ran_ue_ngap_id_base`, and `default_pdu_session_id`
 - `src/common/simulator.c`
   - calls the core bridge as soon as the UE context is promoted after Msg3
   - seeds `core_session.ran_ue_ngap_id` and the requested `pdu_session_id`
   - when `core.enabled=true`, performs `NGSetup + InitialUEMessage`, stores `amf_ue_ngap_id`, and increments the first uplink/downlink NAS counters
-  - if `sim.local_exchange_dir` is configured, writes the first downlink NAS to `gnb_to_ue/seq_000001_gnb_DL_NAS.json`
+  - if `sim.local_exchange_dir` is configured, writes downlink NAS messages to `gnb_to_ue/seq_<nnnnnn>_gnb_DL_NAS.json`
+  - polls `ue_to_gnb_nas/seq_<nnnnnn>_ue_UL_NAS.json` each slot after the first exchange and forwards due events to the AMF
+  - parses later session-setup state such as `UE IPv4`, `UPF TEID`, and `QFI` into the promoted UE `core_session`
 - `tests/test_gnb_core_bridge.c`
   - verifies the standalone bridge path against an injected fake SCTP/NGAP transport
+  - verifies one follow-up `UL_NAS -> UplinkNASTransport -> DL_NAS` exchange after the initial attach message
+  - verifies `InitialContextSetupRequest` and `PDUSessionResourceSetupRequest` handling, including automatic NGAP acknowledgements and `core_session` user-plane state extraction
 - `tests/test_integration.c`
   - `test_integration_core_bridge_prepares_initial_message`
   - verifies the simulator-side bridge wiring, summary export, and emitted `gnb_to_ue` downlink NAS event
+  - `test_integration_core_bridge_relays_followup_ul_nas`
+  - verifies that a due `ue_to_gnb_nas/UL_NAS` event is relayed through the simulator bridge and produces a second `gnb_to_ue/DL_NAS` event
+  - `test_integration_core_bridge_extracts_session_setup_state`
+  - verifies summary export of `upf_ip`, `upf_teid`, `qfi`, and `ue_ipv4` after a fake `PDUSessionResourceSetupRequest`
 
 This is now the first live-control-plane bridge slice. The simulator can open the
 configured SCTP association to the AMF, complete `NGSetup`, send one canned
 `InitialUEMessage`, parse the first returned `AMF UE NGAP ID` and `NAS-PDU`, and
-surface that NAS downlink into the local UE exchange directory.
+surface that NAS downlink into the local UE exchange directory. It can also relay
+subsequent UE-originated `UL_NAS` event files through `UplinkNASTransport` and
+emit the returned follow-up `DL_NAS` events back to the local exchange directory.
+
+The current follow-up control-plane event format is:
+
+- `out/local_exchange/ue_to_gnb_nas/seq_000001_ue_UL_NAS.json`
+  - envelope fields: `sequence`, `abs_slot`, `channel`, `source`, `type`
+  - payload fields: `c_rnti`, `nas_hex`
 
 The current bridge still stops after that first NAS exchange. It does not yet:
 
-- send follow-up `UplinkNASTransport` messages from the UE process
-- parse later session setup state such as `UE IPv4`, `UPF TEID`, or `QFI` into the simulator path
 - maintain the full UE NAS procedure sequence that `ngap_probe --replay` already exercises
+- auto-generate those follow-up `UL_NAS` events from `apps/mini_ue_c.c`; today they are still test-driven or manually emitted
+- drive real `InitialContextSetup` or `PDUSessionResourceSetup` semantics on the UE side; today it only captures the resulting session state and sends the required gNB acknowledgements
 
 This means the current `--replay` mode validates:
 
@@ -209,7 +231,7 @@ single inner IPv4/UDP probe payload emitted through the parsed GTP-U session tun
 The generated trace pcaps are intended for later Wireshark inspection:
 
 - `out/ngap_probe_ngap_runtime.pcap`
-  - same payload-only format as `gnb_ngap.pcap`
+  - same payload-only format as `examples/gnb_ngap.pcap`
   - contains the dynamically encoded uplink NGAP messages plus the AMF responses
   - link type is `Private use 5`
 - `out/ngap_probe_gtpu_runtime.pcap`

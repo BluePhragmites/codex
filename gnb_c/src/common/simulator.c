@@ -4,8 +4,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <poll.h>
+
 #include "mini_gnb_c/common/hex.h"
 #include "mini_gnb_c/common/json_utils.h"
+#include "mini_gnb_c/n3/gtpu_tunnel.h"
+#include "mini_gnb_c/ue/ue_ip_stack_min.h"
 
 static const char* mini_gnb_c_bool_string(bool value) {
   return value ? "true" : "false";
@@ -34,6 +38,37 @@ typedef struct {
   uint8_t harq_id;
   bool ndi;
 } mini_gnb_c_simulator_ul_harq_state_t;
+
+static void mini_gnb_c_queue_connected_dl_data(mini_gnb_c_simulator_t* simulator,
+                                               mini_gnb_c_ue_context_t* ue_context,
+                                               mini_gnb_c_simulator_dl_harq_state_t* dl_harq_states,
+                                               int trigger_abs_slot,
+                                               const mini_gnb_c_buffer_t* payload);
+static void mini_gnb_c_queue_connected_ul_grant(mini_gnb_c_simulator_t* simulator,
+                                                mini_gnb_c_ue_context_t* ue_context,
+                                                mini_gnb_c_simulator_ul_harq_state_t* ul_harq_states,
+                                                int trigger_abs_slot,
+                                                mini_gnb_c_ul_data_purpose_t purpose,
+                                                uint16_t prb_start,
+                                                uint16_t prb_len,
+                                                uint8_t mcs);
+
+static void mini_gnb_c_stage_shared_slot_user_plane(mini_gnb_c_simulator_t* simulator) {
+  const mini_gnb_c_ue_context_t* ue_context = NULL;
+  const uint8_t* ue_ipv4 = NULL;
+  bool ue_ipv4_valid = false;
+
+  if (simulator == NULL) {
+    return;
+  }
+
+  if (simulator->ue_store.count > 0u) {
+    ue_context = &simulator->ue_store.contexts[0];
+    ue_ipv4_valid = ue_context->core_session.ue_ipv4_valid;
+    ue_ipv4 = ue_ipv4_valid ? ue_context->core_session.ue_ipv4 : NULL;
+  }
+  mini_gnb_c_mock_radio_frontend_stage_ue_ipv4(&simulator->radio, ue_ipv4, ue_ipv4_valid);
+}
 
 static void mini_gnb_c_join_lcid_sequence(const mini_gnb_c_mac_ul_parse_result_t* mac_result,
                                           char* out,
@@ -155,15 +190,23 @@ static int mini_gnb_c_find_free_ul_harq_process(mini_gnb_c_simulator_ul_harq_sta
   return -1;
 }
 
-static void mini_gnb_c_sync_n3_user_plane(mini_gnb_c_simulator_t* simulator, const int abs_slot) {
+static void mini_gnb_c_sync_n3_user_plane(mini_gnb_c_simulator_t* simulator,
+                                          mini_gnb_c_simulator_dl_harq_state_t* dl_harq_states,
+                                          mini_gnb_c_simulator_ul_harq_state_t* ul_harq_states,
+                                          const int abs_slot) {
   mini_gnb_c_ue_context_t* ue_context = NULL;
   uint8_t packet[MINI_GNB_C_N3_MAX_GTPU_PACKET];
+  uint8_t inner_packet[MINI_GNB_C_MAX_PAYLOAD];
   size_t packet_length = 0u;
+  size_t inner_packet_length = 0u;
   char local_ip[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
   uint16_t local_port = 0u;
   bool needs_activation = false;
+  mini_gnb_c_buffer_t payload;
+  uint32_t teid = 0u;
+  uint8_t qfi = 0u;
 
-  if (simulator == NULL || simulator->ue_store.count == 0u) {
+  if (simulator == NULL || dl_harq_states == NULL || ul_harq_states == NULL || simulator->ue_store.count == 0u) {
     return;
   }
 
@@ -214,14 +257,62 @@ static void mini_gnb_c_sync_n3_user_plane(mini_gnb_c_simulator_t* simulator, con
   }
 
   if (mini_gnb_c_n3_user_plane_poll_downlink(&simulator->n3_user_plane, packet, sizeof(packet), &packet_length) > 0) {
+    if (mini_gnb_c_gtpu_extract_gpdu(packet,
+                                     packet_length,
+                                     &teid,
+                                     &qfi,
+                                     inner_packet,
+                                     sizeof(inner_packet),
+                                     &inner_packet_length) != 0) {
+      mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                     "n3_user_plane",
+                                     "Ignored malformed downlink GTP-U packet on the persistent N3 socket.",
+                                     abs_slot,
+                                     "c_rnti=%u,packet_length=%zu",
+                                     ue_context->c_rnti,
+                                     packet_length);
+      return;
+    }
     mini_gnb_c_metrics_trace_event(&simulator->metrics,
                                    "n3_user_plane",
                                    "Polled one downlink GTP-U packet on the persistent N3 socket.",
                                    abs_slot,
-                                   "c_rnti=%u,packet_length=%zu,downlink_gpdu_count=%llu",
+                                   "c_rnti=%u,packet_length=%zu,teid=0x%08x,qfi=%u,downlink_gpdu_count=%llu",
                                    ue_context->c_rnti,
                                    packet_length,
+                                   teid,
+                                   qfi,
                                    (unsigned long long)simulator->n3_user_plane.downlink_gpdu_count);
+    if (!mini_gnb_c_ue_ip_stack_min_is_ipv4_packet(inner_packet, inner_packet_length) ||
+        mini_gnb_c_buffer_set_bytes(&payload, inner_packet, inner_packet_length) != 0) {
+      mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                     "n3_user_plane",
+                                     "Ignored downlink GTP-U packet because the inner payload is not a supported IPv4 packet.",
+                                     abs_slot,
+                                     "c_rnti=%u,inner_packet_length=%zu",
+                                     ue_context->c_rnti,
+                                     inner_packet_length);
+      return;
+    }
+    mini_gnb_c_queue_connected_dl_data(simulator, ue_context, dl_harq_states, abs_slot, &payload);
+    if (simulator->config.sim.scripted_schedule_dir[0] == '\0' &&
+        simulator->config.sim.scripted_pdcch_dir[0] == '\0') {
+      mini_gnb_c_queue_connected_ul_grant(simulator,
+                                          ue_context,
+                                          ul_harq_states,
+                                          abs_slot,
+                                          MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD,
+                                          48U,
+                                          24U,
+                                          8U);
+    }
+    mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                   "n3_user_plane",
+                                   "Queued downlink IPv4 payload from N3 onto the radio scheduler.",
+                                   abs_slot,
+                                   "c_rnti=%u,inner_packet_length=%zu",
+                                   ue_context->c_rnti,
+                                   inner_packet_length);
   }
 }
 
@@ -1249,6 +1340,7 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
     size_t i = 0;
 
     mini_gnb_c_slot_engine_make_slot(&simulator->slot_engine, abs_slot, &slot);
+    mini_gnb_c_stage_shared_slot_user_plane(simulator);
     mini_gnb_c_mock_radio_frontend_receive(&simulator->radio, &slot, &burst);
     if (burst.ul_type != MINI_GNB_C_UL_BURST_NONE) {
       mini_gnb_c_metrics_trace_event(&simulator->metrics,
@@ -1612,6 +1704,28 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
             ue_context->ul_data_received = true;
             ue_context->ul_data_abs_slot = slot.abs_slot;
           }
+          if (mini_gnb_c_n3_user_plane_is_ready(&simulator->n3_user_plane) &&
+              mini_gnb_c_ue_ip_stack_min_is_ipv4_packet(burst.mac_pdu.bytes, burst.mac_pdu.len)) {
+            if (mini_gnb_c_n3_user_plane_send_uplink(&simulator->n3_user_plane, burst.mac_pdu.bytes, burst.mac_pdu.len) ==
+                0) {
+              mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                             "n3_user_plane",
+                                             "Forwarded one uplink IPv4 payload onto the persistent N3 socket.",
+                                             slot.abs_slot,
+                                             "c_rnti=%u,payload_length=%zu,uplink_gpdu_count=%llu",
+                                             ul_data_rx_grants[i].c_rnti,
+                                             burst.mac_pdu.len,
+                                             (unsigned long long)simulator->n3_user_plane.uplink_gpdu_count);
+            } else {
+              mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                             "n3_user_plane",
+                                             "Failed to forward uplink IPv4 payload onto the persistent N3 socket.",
+                                             slot.abs_slot,
+                                             "c_rnti=%u,payload_length=%zu",
+                                             ul_data_rx_grants[i].c_rnti,
+                                             burst.mac_pdu.len);
+            }
+          }
         }
       }
     }
@@ -1710,7 +1824,7 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                      (unsigned)simulator->ue_store.count,
                                      simulator->core_bridge.next_ue_to_gnb_nas_sequence);
     }
-    mini_gnb_c_sync_n3_user_plane(simulator, slot.abs_slot);
+    mini_gnb_c_sync_n3_user_plane(simulator, dl_harq_states, ul_harq_states, slot.abs_slot);
 
     {
       mini_gnb_c_slot_perf_t perf;
@@ -1723,6 +1837,9 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
     }
 
     mini_gnb_c_mock_radio_frontend_finalize_slot(&simulator->radio, &slot, &simulator->metrics);
+    if (simulator->config.sim.slot_sleep_ms > 0u) {
+      (void)poll(NULL, 0, (int)simulator->config.sim.slot_sleep_ms);
+    }
   }
 
   mini_gnb_c_mock_radio_frontend_shutdown(&simulator->radio);

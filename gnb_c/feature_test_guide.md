@@ -116,9 +116,61 @@
   - 复用 `gtpu_tunnel` 构造上行 G-PDU
   - 查询本地绑定的 UDP endpoint
   - 在 slot loop 中非阻塞轮询下行 GTP-U
-- 当前 simulator 还不会把 mock `UL DATA` 直接送去 UPF，因为 UE 侧最小 IPv4/ICMP 还没完成；这部分属于 Stage D2
+- 当前 simulator 已经会把合法的上行 IPv4 `UL DATA` 送进持久化 N3 socket，并把下行 GTP-U 解包后的 inner IPv4 负载重新排成 `DL_OBJ_DATA`
 
-### 1.7 已有的 Open5GS 外部验证工具
+### 1.7 最小 UE 侧 IPv4/ICMP 用户面
+
+当前已经完成 Stage D2 的最小用户面行为：
+
+- 新增了 `ue_ip_stack_min`
+- 当 UE 在 shared-slot runtime 中收到 `DL_OBJ_DATA` 时：
+  - 如果载荷不是 IPv4，就忽略
+  - 如果载荷是发给 UE 的 `ICMP Echo Request`，就构造并缓存一个 `ICMP Echo Reply`
+- 当 UE 后续收到 `DCI0_1` 给出的 `UL DATA` grant 时：
+  - 如果有 pending `ICMP Echo Reply`，优先把这个 reply 作为上行 PUSCH 载荷
+  - 否则回退到原有的 `sim.ul_data_hex`
+- simulator 在收到合法 IPv4 上行 `UL DATA` 后，会通过持久化 N3 socket 把它封成 GTP-U 发给 UPF
+- simulator 在轮询到下行 GTP-U 后，会解封 inner IPv4 载荷并排成新的 `DL_OBJ_DATA`
+
+这意味着当前最小用户面闭环已经变成：
+
+- `downlink GTP-U -> gNB -> DL DATA -> UE echo reply -> UL DATA -> gNB -> uplink GTP-U`
+
+### 1.8 可选 TUN UE 用户面
+
+当前已经完成 Stage E1 的可选 TUN 接入：
+
+- `mini_ue_c` 在 `sim.ue_tun_enabled=true` 时会优先启用 `ue_tun`
+- gNB 会在 session setup 成功后，把解析得到的 `ue_ipv4` 放进 shared-slot 下行摘要
+- UE runtime 看到这个 `ue_ipv4` 后，会配置自己的 TUN 设备
+- 后续下行 `DL DATA` 会优先写入 TUN
+- UE 会从 TUN 里读出内核返回的 IPv4 包，并在下一次上行 payload grant 上发回 gNB
+- 如果没有启用 TUN，或者还没有拿到 `ue_ipv4`，则继续回退到 `ue_ip_stack_min`
+
+默认配置下：
+
+- `sim.ue_tun_isolate_netns=true`
+- UE 会在隔离的 user+network namespace 中创建 `miniue0`
+- 这样不会污染宿主机默认网络命名空间
+
+### 1.9 当前可执行的端到端 ping 路径
+
+当前已经具备手工端到端验证所需的代码路径：
+
+- `server/host -> UPF -> gNB -> UE TUN -> UE kernel stack -> gNB -> UPF -> server/host`
+
+但注意这里的“已具备”指的是：
+
+- gNB/UE 代码路径已经实现
+- 仓库里已经提供示例 YAML，UE 也会自动跟随后续 `DL_NAS` 生成 happy-path `UL_NAS`
+- 端到端 `ping` 仍然属于手工验证，不属于当前自动化 `ctest`
+
+原因是：
+
+- `mini_ue_c` 只有最小 happy-path UE NAS 逻辑，不是通用完整 NAS 栈
+- TUN 依赖宿主机 `/dev/net/tun`、`ip` 命令和真实 Open5GS 环境
+
+### 1.10 已有的 Open5GS 外部验证工具
 
 仓库里另外还有一个独立工具：
 
@@ -136,15 +188,13 @@
 - `examples/gnb_ngap.pcap`
 - `examples/gnb_mac.pcap`
 
-## 2. 当前还没有完成的功能
+## 2. 当前限制
 
-以下能力尚未完成，因此目前不能认为系统已经具备完整端到端 UE 仿真：
+当前 staged A-E 功能已经全部落地，但仍有这些实际限制：
 
-- `mini_ue_c` 的 live runtime 还不会读取 `gnb_to_ue/*.json` 后自动生成后续 UE NAS 响应
-- 还没有在 UE 侧实现完整的 NAS 状态机
-- 还没有完成最小 UE 侧 IPv4/ICMP 用户面处理
-- 还没有完成 TUN 接口接入
-- 还没有完成 `server -> UPF -> gNB -> UE` 的真实 `ping` 闭环
+- `mini_ue_c` 只实现了面向 Open5GS happy-path 的最小 UE NAS 响应链路，不是通用完整 NAS 状态机
+- 当前的真实 `ping` 路径仍依赖手工 Open5GS 环境验证，而不是自动化测试
+- TUN 端到端演示依赖宿主机权限、`/dev/net/tun`、`ip` 命令和真实的 AMF/UPF
 
 ## 3. 基础构建与回归测试
 
@@ -166,9 +216,13 @@ cd /home/hzy/codex/test2/codex/gnb_c
 
 当前与 UE/gNB/core bridge 关系最直接的测试包括：
 
+- `test_config_loads`
+- `test_nas_5gs_min_builds_followup_uplinks`
+- `test_nas_5gs_min_polls_downlink_exchange`
 - `test_shared_slot_link_round_trip`
 - `test_shared_slot_link_handles_slot_zero_and_shutdown_boundaries`
 - `test_integration_shared_slot_ue_runtime`
+- `test_integration_shared_slot_ue_runtime_auto_nas_session_setup`
 - `test_integration_core_bridge_prepares_initial_message`
 - `test_integration_core_bridge_relays_followup_ul_nas`
 - `test_integration_core_bridge_extracts_session_setup_state`
@@ -180,6 +234,24 @@ cd /home/hzy/codex/test2/codex/gnb_c
 - `test_gnb_core_bridge_relays_post_session_downlink_nas`
 - `test_n3_user_plane_activates_and_sends_uplink_gpdu`
 - `test_n3_user_plane_polls_downlink_packet`
+- `test_ue_ip_stack_min_generates_echo_reply`
+- `test_ue_ip_stack_min_ignores_non_ipv4_payload`
+- `test_integration_shared_slot_ue_runtime_generates_icmp_reply_payload`
+- `test_integration_core_bridge_forwards_ul_ipv4_to_n3`
+
+其中新增的 Stage E 相关自动覆盖主要是：
+
+- `test_config_loads`
+  - 校验 `slot_sleep_ms` 和 `ue_tun_*` 默认配置
+- `test_shared_slot_link_round_trip`
+  - 校验 shared-slot 下行摘要中的 `ue_ipv4` 字段可以稳定往返
+
+当前没有放进 `ctest` 的内容是：
+
+- 真实 TUN 建立和 namespace 交互
+- 真实 Open5GS 端到端 `ping`
+
+这些仍然保留为手工验证，因为它们依赖运行环境。
 
 ## 4. 测试本地 UE <-> gNB shared-slot 闭环
 
@@ -327,19 +399,37 @@ sed -n '1,240p' out/local_exchange/gnb_to_ue/seq_000001_gnb_DL_NAS.json
 sed -n '1,240p' out/summary.json
 ```
 
-注意：当前这一步只验证第一跳控制面闭环，不代表完整 attach 已自动完成。
+注意：当前这一步主要验证第一跳控制面闭环；完整 happy-path attach 会在后面的自动 NAS 测试和 Open5GS 手工验证里覆盖。
 
 ## 7. 测试 follow-up UL_NAS / DL_NAS 桥接
 
 ### 7.1 测试目标
 
-验证 gNB bridge 是否会继续轮询 `ue_to_gnb_nas/` 并将后续 UE NAS 转发给 AMF。
+验证两件事：
 
-### 7.2 当前限制
+- gNB bridge 会继续轮询 `ue_to_gnb_nas/` 并将后续 UE NAS 转发给 AMF
+- live `mini_ue_c` 会根据 `gnb_to_ue/*.json` 中的 `DL_NAS` 自动生成后续 `UL_NAS`
 
-当前 `mini_ue_c` 还不会自动根据 `DL_NAS` 生成后续 `UL_NAS`。因此这一步目前主要依赖测试代码，或者你手工写入事件文件。
+### 7.2 自动回归方式
 
-### 7.3 手工事件格式
+这一阶段最稳的回归方式是直接执行已有测试：
+
+```bash
+cd /home/hzy/codex/test2/codex/gnb_c
+./build/mini_gnb_c_tests
+```
+
+重点看：
+
+- `test_nas_5gs_min_builds_followup_uplinks`
+- `test_nas_5gs_min_polls_downlink_exchange`
+- `test_integration_shared_slot_ue_runtime_auto_nas_session_setup`
+- `test_integration_core_bridge_relays_followup_ul_nas`
+- `test_integration_core_bridge_relays_post_session_nas`
+
+### 7.3 可选的手工事件格式
+
+如果你想单独调 bridge，也仍然可以手工写 `UL_NAS` 事件文件。
 
 当前支持的 `UL_NAS` 事件格式示例：
 
@@ -364,19 +454,6 @@ out/local_exchange/ue_to_gnb_nas/seq_000001_ue_UL_NAS.json
 ```
 
 你手工补入这样的事件后，simulator 会在对应 slot 到达时转发。
-
-### 7.4 推荐验证方式
-
-这一阶段最稳的回归方式仍然是执行已有测试：
-
-```bash
-cd /home/hzy/codex/test2/codex/gnb_c
-./build/mini_gnb_c_tests
-```
-
-重点看：
-
-- `test_integration_core_bridge_relays_followup_ul_nas`
 - `test_gnb_core_bridge_relays_followup_uplink_nas`
 
 ## 7. 测试 session setup 状态解析
@@ -454,15 +531,16 @@ ip -s link show dev ogstun
 - `out/ngap_probe_ngap_runtime.pcap`
 - `out/ngap_probe_gtpu_runtime.pcap`
 
-## 9. 测试持久化 N3 用户面基础层
+## 9. 测试最小 IPv4/ICMP 用户面
 
 ### 9.1 测试目标
 
-验证当前 Stage D1 已经具备：
+验证当前 Stage D1 + D2 已经具备：
 
 - 基于 session state 激活长期存在的 N3 socket
-- 向 UPF 发送最小 G-PDU
-- 非阻塞轮询下行 GTP-U
+- 下行 GTP-U 解包为 `DL DATA`
+- UE 侧最小 `ICMP Echo Request -> Echo Reply`
+- 上行 IPv4 重新封成 GTP-U 发回 fake UPF
 
 ### 9.2 推荐测试命令
 
@@ -477,6 +555,9 @@ cd /home/hzy/codex/test2/codex/gnb_c
 
 - `test_n3_user_plane_activates_and_sends_uplink_gpdu`
 - `test_n3_user_plane_polls_downlink_packet`
+- `test_ue_ip_stack_min_generates_echo_reply`
+- `test_integration_shared_slot_ue_runtime_generates_icmp_reply_payload`
+- `test_integration_core_bridge_forwards_ul_ipv4_to_n3`
 - `test_integration_core_bridge_extracts_session_setup_state`
 
 ### 9.3 预期结果
@@ -487,20 +568,132 @@ cd /home/hzy/codex/test2/codex/gnb_c
 - helper 已能向 loopback UDP peer 发出正确的 GTP-U G-PDU
 - simulator 在 session setup 完成后会自动激活一次 N3 helper
 - 当前 integration 覆盖中，`simulator.n3_user_plane.activation_count == 1`
+- UE 侧已经能把一个下行 ICMP request 变成下一次上行 data grant 上的 ICMP reply
+- simulator 已经能把一个合法 IPv4 上行 payload 再封回 GTP-U 发给 fake UPF
 
 但这还不代表：
 
-- UE 已经能发送真实 IP 包
-- gNB 已经把 live `UL DATA` 接进 N3
-- 下行 GTP-U 已经能回灌到 UE 用户面
+- UE 已经有完整 IP 栈
+- UE 已经通过真实 NAS 流程学到自己的 session/IP 上下文
+- 仅靠这些自动化测试就能断言真实 Open5GS/TUN 环境中的 `ping UE IP` 已通过
 
-## 10. 当前测试结论应该怎么理解
+## 10. 测试 TUN + Open5GS 端到端 ping
+
+### 10.1 测试目标
+
+验证当前 Stage E1 + E2 已经具备：
+
+- gNB 在 session setup 后将 `ue_ipv4` 送入 shared-slot
+- UE 在拿到 `ue_ipv4` 后配置 TUN
+- 下行 GTP-U inner IPv4 被注入 UE TUN
+- UE 内核协议栈返回 `ICMP Echo Reply`
+- UE 从 TUN 读回上行 IPv4 负载并经 gNB/N3 发回 UPF
+
+### 10.2 环境前提
+
+需要：
+
+- 已运行的 Open5GS AMF/UPF
+- 可用的 `ogstun`
+- 宿主机存在 `/dev/net/tun`
+- 宿主机存在 `ip` 命令
+
+当前仓库提供的示例默认按这些地址准备：
+
+- `AMF=127.0.0.5:38412`
+- `UPF UDP port=2152`
+
+### 10.3 准备运行目录
+
+现在 live `mini_ue_c` 会自己根据 `DL_NAS` 生成后续 `UL_NAS`，不再需要预置 seed 文件：
+
+```bash
+cd /home/hzy/codex/test2/codex/gnb_c
+rm -rf out/local_exchange out/shared_slot_link.bin out/summary.json
+mkdir -p out/local_exchange
+```
+
+### 10.4 启动命令
+
+```bash
+cd /home/hzy/codex/test2/codex/gnb_c
+./build/mini_ue_c config/example_open5gs_end_to_end_ue.yml &
+UE_PID=$!
+./build/mini_gnb_c_sim config/example_open5gs_end_to_end_gnb.yml &
+GNB_PID=$!
+```
+
+说明：
+
+- gNB 示例配置开启了 `core.enabled=true`
+- gNB 示例配置开启了 `slot_sleep_ms=10`，便于你在运行中观察和注入流量
+- UE 示例配置开启了 `ue_tun_enabled=true`
+- UE 示例配置默认开启 `ue_tun_isolate_netns=true`
+
+### 10.5 运行中检查
+
+先看 session 和 UE IP 是否建立：
+
+```bash
+sed -n '1,240p' out/summary.json
+```
+
+关注这些字段：
+
+- `core_session.amf_ue_ngap_id`
+- `core_session.ue_ipv4`
+- `core_session.upf_ip`
+- `core_session.upf_teid`
+- `core_session.qfi`
+
+如果 UE TUN 路径已经接上，UE 日志里通常会出现类似：
+
+- `UE configured TUN ...`
+- `UE injected DL DATA into TUN ...`
+- `UE captured TUN uplink packet ...`
+
+### 10.6 发送 ping
+
+拿到 `summary.json` 里的 `ue_ipv4` 之后，从宿主机或服务器侧发包：
+
+```bash
+ping -c 4 <ue_ipv4_from_summary>
+```
+
+在默认 Open5GS 数据面下，开发时常见的 UE IP 是：
+
+- `10.45.0.7`
+
+但实际测试时仍应以 `summary.json` 为准。
+
+### 10.7 辅助观测命令
+
+```bash
+ip -s link show dev ogstun
+tcpdump -ni ogstun icmp
+```
+
+期望现象：
+
+- `ogstun` 收发计数增加
+- `tcpdump` 能看到 `Echo Request / Echo Reply`
+- `summary.json` 中保留有效的 session state
+
+### 10.8 结束进程
+
+```bash
+wait $GNB_PID
+wait $UE_PID
+```
+
+## 11. 当前测试结论应该怎么理解
 
 如果以下三类测试都通过：
 
 - `ctest --test-dir build --output-on-failure`
 - 本地 `mini_ue_c -> mini_gnb_c_sim` 闭环
 - `ngap_probe --replay`
+- 手工 `TUN + Open5GS` 端到端验证
 
 那么当前可以认为：
 
@@ -508,9 +701,11 @@ cd /home/hzy/codex/test2/codex/gnb_c
 - gNB 到 AMF 的最小控制面桥接已经成立
 - simulator 侧已经能提取会话建立得到的关键 session state
 - 持久化 N3 socket 基础层已经成立
+- UE 侧可选 TUN 路径已经成立
+- `server -> UPF -> gNB -> UE -> gNB -> UPF` 的手工 `ping` 路径已经具备
 
 但还不能认为：
 
 - `mini_ue_c` 已具备完整 UE NAS 行为
-- gNB 与 UE 已具备真实用户面收发
-- 已经实现 `server -> UPF -> gNB -> UE` 的最终 `ping` 闭环
+- 当前仓库已经有完整自动化 UE attach/NAS 流程
+- 当前仓库已经有自动化 CI 级别的真实 TUN/Open5GS `ping` 回归

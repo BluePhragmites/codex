@@ -29,6 +29,11 @@ void test_shared_slot_link_round_trip(void) {
   dl_summary.flags = MINI_GNB_C_SHARED_SLOT_FLAG_SIB1 | MINI_GNB_C_SHARED_SLOT_FLAG_RAR |
                      MINI_GNB_C_SHARED_SLOT_FLAG_PDCCH;
   dl_summary.dl_rnti = 0x4601u;
+  dl_summary.ue_ipv4_valid = true;
+  dl_summary.ue_ipv4[0] = 10u;
+  dl_summary.ue_ipv4[1] = 45u;
+  dl_summary.ue_ipv4[2] = 0u;
+  dl_summary.ue_ipv4[3] = 7u;
   dl_summary.has_pdcch = true;
   dl_summary.pdcch.rnti = 0x4601u;
   dl_summary.pdcch.scheduled_abs_slot = 6;
@@ -50,6 +55,10 @@ void test_shared_slot_link_round_trip(void) {
                      "expected UE to observe published slot");
   mini_gnb_c_require(read_summary.abs_slot == 3, "expected published abs_slot");
   mini_gnb_c_require((read_summary.flags & MINI_GNB_C_SHARED_SLOT_FLAG_RAR) != 0u, "expected RAR flag");
+  mini_gnb_c_require(read_summary.ue_ipv4_valid, "expected shared UE IPv4 state");
+  mini_gnb_c_require(read_summary.ue_ipv4[0] == 10u && read_summary.ue_ipv4[1] == 45u &&
+                         read_summary.ue_ipv4[2] == 0u && read_summary.ue_ipv4[3] == 7u,
+                     "expected shared UE IPv4 bytes");
   mini_gnb_c_require(read_summary.pdcch.scheduled_abs_slot == 6, "expected scheduled UL abs slot");
   mini_gnb_c_require(read_summary.sib1_payload.len > 0u, "expected shared SIB1 payload");
   mini_gnb_c_require(read_summary.rar_payload.len == strlen("RAR"), "expected shared RAR payload");

@@ -38,6 +38,7 @@ add_library(mini_gnb_c_lib
   src/link/shared_slot_link.c
   src/ngap/ngap_runtime.c
   src/ngap/ngap_transport.c
+  src/nas/nas_5gs_min.c
   src/timing/slot_engine.c
   src/n3/gtpu_tunnel.c
   src/n3/n3_user_plane.c
@@ -52,6 +53,8 @@ add_library(mini_gnb_c_lib
   src/phy_ul/mock_msg3_receiver.c
   src/ue/mini_ue_fsm.c
   src/ue/mini_ue_runtime.c
+  src/ue/ue_ip_stack_min.c
+  src/ue/ue_tun.c
   src/mac/mac_ul_demux.c
   src/rrc/rrc_ccch_stub.c
   src/ue/ue_context_store.c
@@ -61,7 +64,7 @@ add_library(mini_gnb_c_lib
 target_include_directories(mini_gnb_c_lib PUBLIC include)
 
 if(NOT MSVC)
-  target_link_libraries(mini_gnb_c_lib PUBLIC m)
+  target_link_libraries(mini_gnb_c_lib PUBLIC m ogscrypt)
 endif()
 
 target_compile_definitions(mini_gnb_c_lib
@@ -78,7 +81,7 @@ target_link_libraries(mini_ue_c PRIVATE mini_gnb_c_lib)
 if(NOT WIN32)
   add_executable(ngap_probe apps/ngap_probe.c)
   target_compile_definitions(ngap_probe PRIVATE MINI_GNB_C_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
-  target_link_libraries(ngap_probe PRIVATE mini_gnb_c_lib ogscrypt)
+  target_link_libraries(ngap_probe PRIVATE mini_gnb_c_lib)
 endif()
 
 add_executable(mini_gnb_c_tests
@@ -90,6 +93,8 @@ add_executable(mini_gnb_c_tests
   tests/test_gtpu_tunnel.c
   tests/test_n3_user_plane.c
   tests/test_ngap_runtime.c
+  tests/test_nas_5gs_min.c
+  tests/test_ue_ip_stack_min.c
   tests/test_json_link.c
   tests/test_shared_slot_link.c
   tests/test_mini_ue_fsm.c

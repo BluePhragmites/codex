@@ -1,6 +1,6 @@
 # gnb_c End-to-End UE/gNB/Core Plan
 
-Last updated: 2026-04-06 (persistent N3 user-plane helper added and plan status refreshed)
+Last updated: 2026-04-06 (all staged A-E implementation items complete)
 
 ## Completed Tasks
 
@@ -68,12 +68,26 @@ Last updated: 2026-04-06 (persistent N3 user-plane helper added and plan status 
 - [x] 2026-04-06: Extended `core:` config with `upf_port` and wired `src/common/simulator.c` to activate the N3 helper once session setup populates `core_session` with valid user-plane state.
 - [x] 2026-04-06: Added unit and integration coverage for the persistent N3 socket activation, runtime G-PDU encapsulation, and non-blocking downlink polling, and kept `ctest --test-dir build --output-on-failure` passing.
 - [x] 2026-04-06: Updated `gnb_c/README.md`, `gnb_c/architecture.md`, and `gnb_c/feature_test_guide.md` to document the Stage D1 persistent N3 transport layer and its current limits.
+- [x] 2026-04-06: Added the minimal UE-side IPv4/ICMP helper in `include/mini_gnb_c/ue/ue_ip_stack_min.h` and `src/ue/ue_ip_stack_min.c`.
+- [x] 2026-04-06: Extended `ue/mini_ue_runtime` so downlink `DL_OBJ_DATA` can generate a pending `ICMP Echo Reply` payload for the next granted uplink data transmission.
+- [x] 2026-04-06: Extended `n3/gtpu_tunnel` and `src/common/simulator.c` so downlink GTP-U packets can be decapsulated into `DL_OBJ_DATA` and valid uplink IPv4 payloads can be forwarded back to the UPF over the persistent N3 socket.
+- [x] 2026-04-06: Added unit and integration coverage for the minimal user-plane path, including the shared-slot UE ICMP reply flow and simulator-side uplink IPv4 forwarding to a fake UPF.
+- [x] 2026-04-06: Updated `gnb_c/README.md`, `gnb_c/architecture.md`, and `gnb_c/feature_test_guide.md` to document the Stage D2 minimal IPv4/ICMP user-plane flow.
+- [x] 2026-04-06: Added the Stage D3 tests and docs needed for the current minimal user-plane path.
+- [x] 2026-04-06: Created the local Stage D milestone commit after stabilizing the minimal IPv4/ICMP user-plane path.
+- [x] 2026-04-06: Extended the shared-slot downlink summary so the simulator can publish the parsed `UE IPv4` from `core_session` into the live UE process.
+- [x] 2026-04-06: Added the optional UE-side TUN helper in `include/mini_gnb_c/ue/ue_tun.h` and `src/ue/ue_tun.c`, including isolated user+network namespace support for local end-to-end demos.
+- [x] 2026-04-06: Extended `ue/mini_ue_runtime` so the live UE can configure its TUN interface from the learned `UE IPv4`, inject downlink IP payloads into that TUN device, and source later uplink payloads from the TUN read path when enabled.
+- [x] 2026-04-06: Added `sim.slot_sleep_ms` plus the `sim.ue_tun_*` config keys, and wired `src/common/simulator.c` to pace live slots for manual demos and to auto-queue a follow-up UL payload grant after one downlink N3 packet in the unscripted path.
+- [x] 2026-04-06: Added `config/example_open5gs_end_to_end_gnb.yml`, `config/example_open5gs_end_to_end_ue.yml`, and `examples/open5gs_ul_nas_seed/` so the current Open5GS manual end-to-end path can be reproduced without reconstructing the control-plane seed inputs.
+- [x] 2026-04-06: Updated `gnb_c/README.md`, `gnb_c/architecture.md`, and `gnb_c/feature_test_guide.md` to document the optional TUN path, the new end-to-end example configs, and the manual `server -> UPF -> gNB -> UE` validation flow.
+- [x] 2026-04-06: Created the local Stage E milestone commit `Add TUN-based UE ping demo path` after stabilizing the optional TUN path, end-to-end example configs, and manual validation guide.
+- [x] 2026-04-06: Added the minimal live UE NAS helper in `include/mini_gnb_c/nas/nas_5gs_min.h` and `src/nas/nas_5gs_min.c` so `mini_ue_c` can consume `gnb_to_ue/DL_NAS` and auto-generate the follow-up `UL_NAS` happy-path sequence for Open5GS.
+- [x] 2026-04-06: Wired `ue/mini_ue_runtime` to poll the local exchange directory for later `DL_NAS` messages and emit `IdentityResponse`, `AuthenticationResponse`, `SecurityModeComplete`, `RegistrationComplete`, and `PDUSessionEstablishmentRequest` as due `ue_to_gnb_nas/*.json` events.
+- [x] 2026-04-06: Added unit and integration coverage for the live UE NAS follow-up flow in `tests/test_nas_5gs_min.c` and `tests/test_integration.c`, and kept `ctest --test-dir build --output-on-failure` passing.
+- [x] 2026-04-06: Updated `gnb_c/README.md`, `gnb_c/architecture.md`, and `gnb_c/feature_test_guide.md` so the end-to-end Open5GS demo is documented as self-contained without pre-seeding later `UL_NAS` files.
 
 ## Pending Tasks
 
-- [ ] Stage D2: Add minimal UE-side IPv4/ICMP user-plane handling.
-- [ ] Stage D3: Add tests and docs for the minimal user-plane path.
-- [ ] Stage D4: Create a local milestone commit after the user-plane path is stable.
-- [ ] Stage E1: Add optional TUN-based UE integration for end-to-end `ping` validation.
-- [ ] Stage E2: Add end-to-end validation docs and artifact expectations for the full `server -> UPF -> gNB -> UE` path.
-- [ ] Stage E3: Create a local milestone commit after the full end-to-end path is stable and only push to GitHub when explicitly approved.
+- None. All staged Stage A-E implementation tasks are complete.
+- Push the current branch state to GitHub only when the user explicitly approves.

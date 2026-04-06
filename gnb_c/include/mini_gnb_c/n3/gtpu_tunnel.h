@@ -22,5 +22,12 @@ int mini_gnb_c_gtpu_build_gpdu(const mini_gnb_c_core_session_t* session,
                                uint8_t* packet,
                                size_t packet_capacity,
                                size_t* packet_length);
+int mini_gnb_c_gtpu_extract_gpdu(const uint8_t* packet,
+                                 size_t packet_length,
+                                 uint32_t* teid,
+                                 uint8_t* qfi,
+                                 uint8_t* inner_packet,
+                                 size_t inner_packet_capacity,
+                                 size_t* inner_packet_length);
 
 #endif

@@ -1,6 +1,4 @@
-# UE-side live shared-slot configuration.
-# The UE learns PRACH timing plus post-Msg4 PDCCH/HARQ timing from gNB downlink
-# signaling, so this file only needs local UE/runtime settings and shared-slot paths.
+# UE-side shared-slot + TUN end-to-end demo config.
 
 cell:
   dl_arfcn: 627334
@@ -45,7 +43,7 @@ broadcast:
   prach_offset_slot: 1
 
 sim:
-  total_slots: 20
+  total_slots: 4000
   slots_per_frame: 10
   slot_sleep_ms: 0
   msg3_delay_slots: 9
@@ -57,8 +55,15 @@ sim:
   peak_metric: 18.5
   msg3_present: true
   post_msg4_traffic_enabled: true
-  post_msg4_sr_period_slots: 4
-  post_msg4_sr_offset_slot: 1
+  post_msg4_dl_pdcch_delay_slots: 1
+  post_msg4_dl_time_indicator: 1
+  post_msg4_dl_data_to_ul_ack_slots: 1
+  post_msg4_sr_period_slots: 10
+  post_msg4_sr_offset_slot: 2
+  post_msg4_ul_grant_delay_slots: 1
+  post_msg4_ul_time_indicator: 2
+  post_msg4_dl_harq_process_count: 2
+  post_msg4_ul_harq_process_count: 2
   ul_data_present: true
   ul_data_crc_ok: true
   ul_data_snr_db: 16.0
@@ -69,8 +74,8 @@ sim:
   ul_input_dir: ""
   local_exchange_dir: "out/local_exchange"
   shared_slot_path: "out/shared_slot_link.bin"
-  shared_slot_timeout_ms: 100
-  ue_tun_enabled: false
+  shared_slot_timeout_ms: 500
+  ue_tun_enabled: true
   ue_tun_name: "miniue0"
   ue_tun_mtu: 1400
   ue_tun_prefix_len: 16

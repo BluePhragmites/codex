@@ -24,6 +24,10 @@ void test_gtpu_builders_encode_expected_headers(void) {
   size_t inner_packet_length = 0u;
   uint8_t gtpu_packet[256];
   size_t gtpu_packet_length = 0u;
+  uint8_t extracted_inner_packet[128];
+  size_t extracted_inner_packet_length = 0u;
+  uint32_t extracted_teid = 0u;
+  uint8_t extracted_qfi = 0u;
 
   mini_gnb_c_fill_test_session(&session);
 
@@ -69,6 +73,19 @@ void test_gtpu_builders_encode_expected_headers(void) {
                      "expected PDU Session Container header");
   mini_gnb_c_require(memcmp(gtpu_packet + 16u, inner_packet, inner_packet_length) == 0,
                      "expected inner packet inside G-PDU");
+  mini_gnb_c_require(mini_gnb_c_gtpu_extract_gpdu(gtpu_packet,
+                                                  gtpu_packet_length,
+                                                  &extracted_teid,
+                                                  &extracted_qfi,
+                                                  extracted_inner_packet,
+                                                  sizeof(extracted_inner_packet),
+                                                  &extracted_inner_packet_length) == 0,
+                     "expected G-PDU extraction");
+  mini_gnb_c_require(extracted_teid == session.upf_teid, "expected extracted TEID");
+  mini_gnb_c_require(extracted_qfi == session.qfi, "expected extracted QFI");
+  mini_gnb_c_require(extracted_inner_packet_length == inner_packet_length, "expected extracted inner length");
+  mini_gnb_c_require(memcmp(extracted_inner_packet, inner_packet, inner_packet_length) == 0,
+                     "expected extracted inner packet bytes");
 }
 
 void test_gtpu_builders_reject_missing_state(void) {
@@ -98,4 +115,12 @@ void test_gtpu_builders_reject_missing_state(void) {
                                                 sizeof(packet),
                                                 &packet_length) != 0,
                      "expected G-PDU rejection without complete session state");
+  mini_gnb_c_require(mini_gnb_c_gtpu_extract_gpdu(packet,
+                                                  sizeof(packet),
+                                                  NULL,
+                                                  NULL,
+                                                  packet,
+                                                  sizeof(packet),
+                                                  &packet_length) != 0,
+                     "expected G-PDU extraction rejection on garbage input");
 }

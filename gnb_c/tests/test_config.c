@@ -25,6 +25,7 @@ void test_config_loads(void) {
   mini_gnb_c_require(config.core.ran_ue_ngap_id_base == 1u, "expected default RAN UE NGAP ID base");
   mini_gnb_c_require(config.core.default_pdu_session_id == 1u, "expected default requested PDU session ID");
   mini_gnb_c_require(config.sim.total_slots == 20, "expected total slot count");
+  mini_gnb_c_require(config.sim.slot_sleep_ms == 0u, "expected default slot pacing disabled");
   mini_gnb_c_require(config.sim.prach_retry_delay_slots == 4, "expected PRACH retry delay");
   mini_gnb_c_require(config.sim.msg3_present, "expected Msg3 burst enabled");
   mini_gnb_c_require(strcmp(config.sim.ul_input_dir, "input") == 0, "expected default slot input directory");
@@ -32,6 +33,11 @@ void test_config_loads(void) {
                      "expected default local exchange directory");
   mini_gnb_c_require(config.sim.shared_slot_path[0] == '\0', "expected shared slot path disabled by default");
   mini_gnb_c_require(config.sim.shared_slot_timeout_ms == 100u, "expected default shared slot timeout");
+  mini_gnb_c_require(!config.sim.ue_tun_enabled, "expected UE TUN disabled by default");
+  mini_gnb_c_require(strcmp(config.sim.ue_tun_name, "miniue0") == 0, "expected default UE TUN name");
+  mini_gnb_c_require(config.sim.ue_tun_mtu == 1400u, "expected default UE TUN mtu");
+  mini_gnb_c_require(config.sim.ue_tun_prefix_len == 16u, "expected default UE TUN prefix length");
+  mini_gnb_c_require(config.sim.ue_tun_isolate_netns, "expected UE TUN netns isolation enabled by default");
   mini_gnb_c_require(config.sim.post_msg4_traffic_enabled, "expected post-Msg4 traffic enabled");
   mini_gnb_c_require(config.sim.post_msg4_dl_pdcch_delay_slots == 1, "expected DL PDCCH delay");
   mini_gnb_c_require(config.sim.post_msg4_dl_time_indicator == 1, "expected DL time indicator");

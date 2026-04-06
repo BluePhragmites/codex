@@ -57,6 +57,8 @@ typedef struct {
   mini_gnb_c_complexf_t ul_data_samples[MINI_GNB_C_MAX_IQ_SAMPLES];
   mini_gnb_c_shared_slot_link_t shared_slot_link;
   mini_gnb_c_shared_slot_dl_summary_t shared_slot_summary;
+  bool staged_ue_ipv4_valid;
+  uint8_t staged_ue_ipv4[4];
 } mini_gnb_c_mock_radio_frontend_t;
 
 void mini_gnb_c_mock_radio_frontend_init(mini_gnb_c_mock_radio_frontend_t* radio,
@@ -81,6 +83,10 @@ void mini_gnb_c_mock_radio_frontend_arm_dl_ack(mini_gnb_c_mock_radio_frontend_t*
 
 void mini_gnb_c_mock_radio_frontend_arm_ul_data(mini_gnb_c_mock_radio_frontend_t* radio,
                                                 const mini_gnb_c_ul_data_grant_t* ul_grant);
+
+void mini_gnb_c_mock_radio_frontend_stage_ue_ipv4(mini_gnb_c_mock_radio_frontend_t* radio,
+                                                  const uint8_t ue_ipv4[4],
+                                                  bool ue_ipv4_valid);
 
 void mini_gnb_c_mock_radio_frontend_submit_tx(mini_gnb_c_mock_radio_frontend_t* radio,
                                               const mini_gnb_c_slot_indication_t* slot,

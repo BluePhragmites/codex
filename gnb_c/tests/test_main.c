@@ -17,10 +17,14 @@ void test_gnb_core_bridge_relays_post_session_downlink_nas(void);
 void test_gnb_core_bridge_ignores_disabled_config(void);
 void test_ngap_runtime_builders_encode_expected_headers(void);
 void test_ngap_runtime_extracts_open5gs_user_plane_state(void);
+void test_nas_5gs_min_builds_followup_uplinks(void);
+void test_nas_5gs_min_polls_downlink_exchange(void);
 void test_gtpu_builders_encode_expected_headers(void);
 void test_gtpu_builders_reject_missing_state(void);
 void test_n3_user_plane_activates_and_sends_uplink_gpdu(void);
 void test_n3_user_plane_polls_downlink_packet(void);
+void test_ue_ip_stack_min_generates_echo_reply(void);
+void test_ue_ip_stack_min_ignores_non_ipv4_payload(void);
 void test_json_link_builds_stable_event_path(void);
 void test_json_link_emits_atomic_event_file(void);
 void test_json_link_finds_event_by_sequence(void);
@@ -35,10 +39,13 @@ void test_integration_run(void);
 void test_integration_slot_input_prach(void);
 void test_integration_local_exchange_ue_plan(void);
 void test_integration_shared_slot_ue_runtime(void);
+void test_integration_shared_slot_ue_runtime_auto_nas_session_setup(void);
+void test_integration_shared_slot_ue_runtime_generates_icmp_reply_payload(void);
 void test_integration_core_bridge_prepares_initial_message(void);
 void test_integration_core_bridge_relays_followup_ul_nas(void);
 void test_integration_core_bridge_extracts_session_setup_state(void);
 void test_integration_core_bridge_relays_post_session_nas(void);
+void test_integration_core_bridge_forwards_ul_ipv4_to_n3(void);
 void test_integration_slot_text_transport(void);
 void test_integration_msg3_missing_retries_prach(void);
 void test_integration_msg3_rnti_mismatch_rejected_after_retry(void);
@@ -70,11 +77,15 @@ int main(void) {
        test_ngap_runtime_builders_encode_expected_headers},
       {"test_ngap_runtime_extracts_open5gs_user_plane_state",
        test_ngap_runtime_extracts_open5gs_user_plane_state},
+      {"test_nas_5gs_min_builds_followup_uplinks", test_nas_5gs_min_builds_followup_uplinks},
+      {"test_nas_5gs_min_polls_downlink_exchange", test_nas_5gs_min_polls_downlink_exchange},
       {"test_gtpu_builders_encode_expected_headers", test_gtpu_builders_encode_expected_headers},
       {"test_gtpu_builders_reject_missing_state", test_gtpu_builders_reject_missing_state},
       {"test_n3_user_plane_activates_and_sends_uplink_gpdu",
        test_n3_user_plane_activates_and_sends_uplink_gpdu},
       {"test_n3_user_plane_polls_downlink_packet", test_n3_user_plane_polls_downlink_packet},
+      {"test_ue_ip_stack_min_generates_echo_reply", test_ue_ip_stack_min_generates_echo_reply},
+      {"test_ue_ip_stack_min_ignores_non_ipv4_payload", test_ue_ip_stack_min_ignores_non_ipv4_payload},
       {"test_json_link_builds_stable_event_path", test_json_link_builds_stable_event_path},
       {"test_json_link_emits_atomic_event_file", test_json_link_emits_atomic_event_file},
       {"test_json_link_finds_event_by_sequence", test_json_link_finds_event_by_sequence},
@@ -91,12 +102,18 @@ int main(void) {
       {"test_integration_slot_input_prach", test_integration_slot_input_prach},
       {"test_integration_local_exchange_ue_plan", test_integration_local_exchange_ue_plan},
       {"test_integration_shared_slot_ue_runtime", test_integration_shared_slot_ue_runtime},
+      {"test_integration_shared_slot_ue_runtime_auto_nas_session_setup",
+       test_integration_shared_slot_ue_runtime_auto_nas_session_setup},
+      {"test_integration_shared_slot_ue_runtime_generates_icmp_reply_payload",
+       test_integration_shared_slot_ue_runtime_generates_icmp_reply_payload},
       {"test_integration_core_bridge_prepares_initial_message", test_integration_core_bridge_prepares_initial_message},
       {"test_integration_core_bridge_relays_followup_ul_nas", test_integration_core_bridge_relays_followup_ul_nas},
       {"test_integration_core_bridge_extracts_session_setup_state",
        test_integration_core_bridge_extracts_session_setup_state},
       {"test_integration_core_bridge_relays_post_session_nas",
        test_integration_core_bridge_relays_post_session_nas},
+      {"test_integration_core_bridge_forwards_ul_ipv4_to_n3",
+       test_integration_core_bridge_forwards_ul_ipv4_to_n3},
       {"test_integration_slot_text_transport", test_integration_slot_text_transport},
       {"test_integration_msg3_missing_retries_prach", test_integration_msg3_missing_retries_prach},
       {"test_integration_msg3_rnti_mismatch_rejected_after_retry",

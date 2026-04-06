@@ -45,6 +45,7 @@ broadcast:
 sim:
   total_slots: 20
   slots_per_frame: 10
+  slot_sleep_ms: 0
   msg3_delay_slots: 4
   msg4_delay_slots: 1
   prach_trigger_abs_slot: 2
@@ -74,6 +75,11 @@ sim:
   local_exchange_dir: "out/local_exchange"
   shared_slot_path: "out/shared_slot_link.bin"
   shared_slot_timeout_ms: 100
+  ue_tun_enabled: false
+  ue_tun_name: "miniue0"
+  ue_tun_mtu: 1400
+  ue_tun_prefix_len: 16
+  ue_tun_isolate_netns: true
   ul_data_hex: "554C5F44415441"
   msg3_crc_ok: true
   msg3_snr_db: 18.2

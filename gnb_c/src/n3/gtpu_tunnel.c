@@ -151,3 +151,53 @@ int mini_gnb_c_gtpu_build_gpdu(const mini_gnb_c_core_session_t* session,
   *packet_length = 16u + inner_packet_length;
   return 0;
 }
+
+int mini_gnb_c_gtpu_extract_gpdu(const uint8_t* packet,
+                                 const size_t packet_length,
+                                 uint32_t* teid,
+                                 uint8_t* qfi,
+                                 uint8_t* inner_packet,
+                                 const size_t inner_packet_capacity,
+                                 size_t* inner_packet_length) {
+  size_t header_length = 8u;
+  size_t total_length = 0u;
+
+  if (packet == NULL || inner_packet == NULL || inner_packet_length == NULL || packet_length < 8u) {
+    return -1;
+  }
+  if (packet[1] != 0xffu) {
+    return -1;
+  }
+
+  total_length = 8u + ((((size_t)packet[2]) << 8u) | (size_t)packet[3]);
+  if (total_length > packet_length || total_length < 8u) {
+    return -1;
+  }
+
+  if ((packet[0] & 0x04u) != 0u) {
+    if (packet_length < 16u || total_length < 16u) {
+      return -1;
+    }
+    if (packet[11] != 0x85u || packet[12] != 0x01u) {
+      return -1;
+    }
+    header_length = 16u;
+    if (qfi != NULL) {
+      *qfi = (uint8_t)(packet[14] & 0x3fu);
+    }
+  } else if (qfi != NULL) {
+    *qfi = 0u;
+  }
+
+  if (total_length <= header_length || (total_length - header_length) > inner_packet_capacity) {
+    return -1;
+  }
+  if (teid != NULL) {
+    *teid = ((uint32_t)packet[4] << 24u) | ((uint32_t)packet[5] << 16u) | ((uint32_t)packet[6] << 8u) |
+            (uint32_t)packet[7];
+  }
+
+  memcpy(inner_packet, packet + header_length, total_length - header_length);
+  *inner_packet_length = total_length - header_length;
+  return 0;
+}

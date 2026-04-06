@@ -140,6 +140,10 @@ static void mini_gnb_c_prepare_shared_slot_summary(mini_gnb_c_mock_radio_fronten
 
   memset(&radio->shared_slot_summary, 0, sizeof(radio->shared_slot_summary));
   radio->shared_slot_summary.abs_slot = slot->abs_slot;
+  radio->shared_slot_summary.ue_ipv4_valid = radio->staged_ue_ipv4_valid;
+  if (radio->staged_ue_ipv4_valid) {
+    memcpy(radio->shared_slot_summary.ue_ipv4, radio->staged_ue_ipv4, sizeof(radio->shared_slot_summary.ue_ipv4));
+  }
   radio->shared_slot_summary_abs_slot = slot->abs_slot;
 }
 
@@ -1757,6 +1761,29 @@ void mini_gnb_c_mock_radio_frontend_arm_ul_data(mini_gnb_c_mock_radio_frontend_t
     radio->harq_ul_data_is_new_data[ul_grant->harq_id] = ul_grant->is_new_data;
   }
   mini_gnb_c_build_ul_data_mac_pdu(&radio->sim, radio->ul_data_purpose, &radio->ul_data_mac_pdu);
+}
+
+void mini_gnb_c_mock_radio_frontend_stage_ue_ipv4(mini_gnb_c_mock_radio_frontend_t* radio,
+                                                  const uint8_t ue_ipv4[4],
+                                                  const bool ue_ipv4_valid) {
+  if (radio == NULL) {
+    return;
+  }
+
+  radio->staged_ue_ipv4_valid = ue_ipv4_valid && ue_ipv4 != NULL;
+  memset(radio->staged_ue_ipv4, 0, sizeof(radio->staged_ue_ipv4));
+  if (radio->staged_ue_ipv4_valid) {
+    memcpy(radio->staged_ue_ipv4, ue_ipv4, sizeof(radio->staged_ue_ipv4));
+  }
+  if (radio->shared_slot_summary_abs_slot >= 0) {
+    radio->shared_slot_summary.ue_ipv4_valid = radio->staged_ue_ipv4_valid;
+    memset(radio->shared_slot_summary.ue_ipv4, 0, sizeof(radio->shared_slot_summary.ue_ipv4));
+    if (radio->staged_ue_ipv4_valid) {
+      memcpy(radio->shared_slot_summary.ue_ipv4,
+             radio->staged_ue_ipv4,
+             sizeof(radio->shared_slot_summary.ue_ipv4));
+    }
+  }
 }
 
 void mini_gnb_c_mock_radio_frontend_submit_tx(mini_gnb_c_mock_radio_frontend_t* radio,

@@ -19,6 +19,8 @@ typedef struct {
   int abs_slot;
   uint32_t flags;
   uint16_t dl_rnti;
+  bool ue_ipv4_valid;
+  uint8_t ue_ipv4[4];
   bool has_pdcch;
   mini_gnb_c_pdcch_dci_t pdcch;
   mini_gnb_c_buffer_t sib1_payload;

@@ -120,6 +120,7 @@ The local UE/gNB path now uses two distinct transports for different jobs:
   - owns the shared-memory-backed slot register window between the gNB process and the UE process
   - exports one gNB-written `txSlot` progress register plus one UE-written `rxSlot` progress register
   - stores one current DL slot summary and one pending future UL burst descriptor
+  - the DL slot summary now also carries the learned `UE IPv4` once session setup has completed
   - keeps the radio loop synchronous without pre-generating a directory of UE slot inputs
 
 On top of those transports, the UE side now has two layers:
@@ -139,7 +140,23 @@ On top of those transports, the UE side now has two layers:
   - learns post-Msg4 DL/UL `time_indicator`, DL ACK timing, and HARQ pool sizes from `SIB1`
   - learns the exact Msg3 absolute slot from `RAR`
   - learns SR periodicity and offset from `Msg4` / `RRCSetup`
+  - polls the local `gnb_to_ue/` exchange directory for later `DL_NAS` messages and feeds them into the minimal UE NAS helper
+  - now feeds `DL_OBJ_DATA` payloads into a minimal UE-side IPv4/ICMP helper so one downlink `ICMP Echo Request` can become the next granted uplink data payload
+  - can also configure an optional TUN interface from the learned `UE IPv4`, inject downlink IP packets into that TUN device, and source later uplink payloads from the TUN read path
   - explicitly handles the slot-0 boundary and the shutdown boundary, so the gNB and UE stay aligned even when one side only reads in a given phase
+- `nas/nas_5gs_min`
+  - owns the minimal UE-side 5GS NAS happy-path state machine used by the live shared-slot runtime
+  - parses later `DL_NAS` payloads for `IdentityRequest`, `AuthenticationRequest`, `SecurityModeCommand`, and later post-registration NAS messages
+  - emits the matching follow-up `UL_NAS` events into `ue_to_gnb_nas/`
+  - keeps a minimal security context so `AuthenticationResponse`, `SecurityModeComplete`, `RegistrationComplete`, and `PDUSessionEstablishmentRequest` can be protected well enough for the Open5GS demo flow
+- `ue/ue_ip_stack_min`
+  - owns the minimal UE-side IPv4 and ICMP echo responder behavior
+  - validates IPv4 payload shape
+  - stores one pending uplink reply payload for the next granted `UL_BURST_DATA`
+- `ue/ue_tun`
+  - owns the optional live UE TUN device
+  - can create and configure that device inside an isolated user+network namespace
+  - lets the kernel stack generate the reply traffic instead of relying only on the synthetic `ue_ip_stack_min` path
 - `apps/mini_ue_c.c`
   - loads the YAML config
   - prefers the shared-slot runtime when `sim.shared_slot_path` is configured
@@ -152,6 +169,7 @@ That live shared-slot path is now connected end-to-end inside the simulator:
   - consumes one due UL burst from `link/shared_slot_link` before checking any fallback transport
   - accumulates the DL work produced in the current slot into one compact slot summary
   - publishes that summary at the end of the slot and waits for the UE to acknowledge the same slot through the UE-written progress register
+  - now stages the learned `UE IPv4` into later slot summaries so the UE runtime can configure its TUN path from downlink-visible state
   - keeps the existing slot-input text transport and JSON event transport as lower-priority fallbacks for tests and manual bring-up
 
 So the current primary local bring-up path is:
@@ -206,7 +224,10 @@ The first live simulator-side core bridge is now wired on top of that state:
   - invokes the bridge immediately after `ue_context_store` promotion
   - polls the bridge once per slot for due follow-up `UL_NAS` control-plane events
   - activates `n3/n3_user_plane` once the promoted UE context gains valid `UPF IP`, `TEID`, `QFI`, and `UE IPv4`
-  - keeps polling that persistent N3 socket once per slot so later Stage D2/E work can consume downlink user-plane packets without changing the top-level slot loop
+  - stages that same `UE IPv4` into the live shared-slot summary path
+  - now decapsulates one polled downlink GTP-U packet and reuses the existing DL scheduler to surface that inner IPv4 payload as `DL_OBJ_DATA`
+  - now forwards one valid uplink IPv4 `UL DATA` payload through the persistent N3 socket without changing the top-level slot loop
+  - can optionally slow the live slot loop with `sim.slot_sleep_ms` so manual host-side traffic has time to interact with the running UE process
   - keeps the bridge outcome inside the embedded `core_session`, so the summary schema stays aligned with the future live AMF bridge
 
 This is now a minimal live control-plane bridge covering the first NAS hop plus the
@@ -215,22 +236,42 @@ The simulator can bring up SCTP + NGAP to the AMF, surface the first AMF NAS
 downlink into the local UE exchange directory, and relay later filesystem-backed
 `UL_NAS` events into follow-up `UplinkNASTransport` exchanges. It can also parse
 later PDU-session user-plane state inside the simulator path, keep relaying later
-top-level `DL_NAS`, and send the required gNB-side NGAP acknowledgements. It still
-does not yet drive the full UE NAS state machine automatically.
+top-level `DL_NAS`, and send the required gNB-side NGAP acknowledgements. The live
+UE runtime now consumes those later `DL_NAS` events and auto-generates the matching
+happy-path follow-up `UL_NAS` messages, but this is still a narrow demo-oriented
+NAS implementation rather than a full generic UE NAS stack.
 
-The first Stage D user-plane slice is now present as well, but it is intentionally
-limited:
+The Stage D and Stage E user-plane slices are now present:
 
 - once `core_session` contains the parsed UPF tunnel state, the simulator activates one persistent UDP socket through `n3/n3_user_plane`
-- that socket stays connected to `core.upf_port` and can already:
+- that socket stays connected to `core.upf_port` and can:
   - encapsulate one inner packet into a session G-PDU
   - expose the local UDP endpoint for tests and diagnostics
   - poll one downlink GTP-U packet without blocking the slot loop
-- the simulator currently only activates and polls that socket; it does not yet
-  transform live UE payloads into IP packets or inject downlink IP packets into
-  the UE runtime
-- that separation is deliberate so Stage D1 finishes the transport/runtime layer
-  before Stage D2 adds minimal UE-side IPv4 and ICMP behavior
+- `n3/gtpu_tunnel` extracts the inner IPv4 payload from one downlink G-PDU
+- `ue/mini_ue_runtime` now has two ways to turn that downlink IP packet into later uplink traffic:
+  - fallback synthetic mode through `ue/ue_ip_stack_min`
+    - accepts one downlink `ICMP Echo Request`
+    - synthesizes one pending `ICMP Echo Reply`
+    - waits for the next granted `UL_BURST_DATA`
+  - live kernel-stack mode through `ue/ue_tun`
+    - configures a TUN interface once the gNB has learned and staged the `UE IPv4`
+    - injects the downlink IP packet into that TUN device
+    - reads the later kernel-generated reply back from the same TUN interface
+- in the unscripted live path, `src/common/simulator.c` auto-queues one follow-up UL payload grant after a downlink N3 packet so the UE can return either synthetic or TUN-sourced data without a handcrafted schedule file
+- `sim.slot_sleep_ms` exists purely as a pragmatic pacing knob for the live manual demo; it does not change the logical slot ordering, only the wall-clock delay between slot iterations
+
+This gives the current prototype two concrete user-plane topologies:
+
+- hermetic test path
+  - `UPF/GTP-U downlink -> gNB decap -> shared-slot DL DATA -> UE synthetic echo reply -> shared-slot UL DATA -> gNB GTP-U uplink`
+- manual live TUN path
+  - `UPF/GTP-U downlink -> gNB decap -> shared-slot DL DATA + UE IPv4 -> UE TUN inject -> kernel ICMP echo reply -> UE TUN read -> shared-slot UL DATA -> gNB GTP-U uplink`
+
+The architecture still does not yet include:
+
+- a full generic UE NAS/session state machine beyond the current Open5GS happy path
+- an automated CI-style end-to-end `ping` test; the full TUN path is still a manual validation workflow
 
 So `ngap_probe` is not part of the radio simulator loop. It is a protocol bring-up
 tool that shares the same repository because it validates the external Open5GS
@@ -274,7 +315,7 @@ Subsystem mapping:
 - `n3`
   - reusable GTP-U packet builders, validators, and the persistent simulator-side N3 socket helper
 - `ue`
-  - minimal UE-side FSM, live runtime, and context helpers for the local-loop bring-up path
+  - minimal UE-side FSM, live runtime, IPv4/ICMP responder, and context helpers for the local-loop bring-up path
 - `phy_dl`
   - toy DL waveform mapping
 - `radio`

@@ -122,6 +122,7 @@ typedef struct {
 typedef struct {
   int total_slots;
   int slots_per_frame;
+  uint32_t slot_sleep_ms;
   int msg3_delay_slots;
   int msg4_delay_slots;
   int prach_trigger_abs_slot;
@@ -154,6 +155,11 @@ typedef struct {
   char local_exchange_dir[MINI_GNB_C_MAX_PATH];
   char shared_slot_path[MINI_GNB_C_MAX_PATH];
   uint32_t shared_slot_timeout_ms;
+  bool ue_tun_enabled;
+  char ue_tun_name[MINI_GNB_C_MAX_TEXT];
+  uint16_t ue_tun_mtu;
+  uint8_t ue_tun_prefix_len;
+  bool ue_tun_isolate_netns;
   char scripted_schedule_dir[MINI_GNB_C_MAX_PATH];
   char scripted_pdcch_dir[MINI_GNB_C_MAX_PATH];
   char ul_data_hex[MINI_GNB_C_MAX_PAYLOAD * 2 + 1];

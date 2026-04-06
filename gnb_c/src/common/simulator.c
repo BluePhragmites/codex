@@ -11,6 +11,30 @@ static const char* mini_gnb_c_bool_string(bool value) {
   return value ? "true" : "false";
 }
 
+typedef struct {
+  bool waiting_ack;
+  uint16_t rnti;
+  int pdcch_abs_slot;
+  int pdsch_abs_slot;
+  int ack_abs_slot;
+  uint8_t harq_id;
+  bool ndi;
+  mini_gnb_c_buffer_t payload;
+} mini_gnb_c_simulator_dl_harq_state_t;
+
+typedef struct {
+  bool waiting_pusch;
+  uint16_t rnti;
+  int pdcch_abs_slot;
+  int pusch_abs_slot;
+  uint16_t prb_start;
+  uint16_t prb_len;
+  uint8_t mcs;
+  mini_gnb_c_ul_data_purpose_t purpose;
+  uint8_t harq_id;
+  bool ndi;
+} mini_gnb_c_simulator_ul_harq_state_t;
+
 static void mini_gnb_c_join_lcid_sequence(const mini_gnb_c_mac_ul_parse_result_t* mac_result,
                                           char* out,
                                           size_t out_size) {
@@ -87,6 +111,48 @@ static uint16_t mini_gnb_c_select_large_ul_prb_len(const int buffer_size_bytes) 
     prb_len = 40;
   }
   return (uint16_t)prb_len;
+}
+
+static int mini_gnb_c_clamp_configured_harq_count(const int configured_count) {
+  if (configured_count <= 0) {
+    return 1;
+  }
+  if (configured_count > MINI_GNB_C_MAX_HARQ_PROCESSES) {
+    return MINI_GNB_C_MAX_HARQ_PROCESSES;
+  }
+  return configured_count;
+}
+
+static int mini_gnb_c_find_free_dl_harq_process(mini_gnb_c_simulator_dl_harq_state_t* states,
+                                                const int configured_count) {
+  const int harq_count = mini_gnb_c_clamp_configured_harq_count(configured_count);
+  int i = 0;
+
+  if (states == NULL) {
+    return -1;
+  }
+  for (i = 0; i < harq_count; ++i) {
+    if (!states[i].waiting_ack) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+static int mini_gnb_c_find_free_ul_harq_process(mini_gnb_c_simulator_ul_harq_state_t* states,
+                                                const int configured_count) {
+  const int harq_count = mini_gnb_c_clamp_configured_harq_count(configured_count);
+  int i = 0;
+
+  if (states == NULL) {
+    return -1;
+  }
+  for (i = 0; i < harq_count; ++i) {
+    if (!states[i].waiting_pusch) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 static bool mini_gnb_c_path_is_absolute(const char* path) {
@@ -390,6 +456,9 @@ static void mini_gnb_c_arm_scripted_ul_data(mini_gnb_c_simulator_t* simulator,
   armed_ul_grant.mcs = request->mcs;
   armed_ul_grant.k2 = request->k2;
   armed_ul_grant.purpose = request->purpose;
+  armed_ul_grant.harq_id = request->harq_id;
+  armed_ul_grant.ndi = request->ndi;
+  armed_ul_grant.is_new_data = request->is_new_data;
   mini_gnb_c_mock_radio_frontend_arm_ul_data(&simulator->radio, &armed_ul_grant);
 }
 
@@ -432,13 +501,20 @@ static void mini_gnb_c_process_scripted_dl_schedule(mini_gnb_c_simulator_t* simu
 
   request.c_rnti = rnti;
   request.abs_slot = slot->abs_slot;
+  request.pdcch_abs_slot = request.abs_slot;
   request.prb_start = 52U;
   request.prb_len = 24U;
   request.mcs = 9U;
   request.dci_format = MINI_GNB_C_DCI_FORMAT_1_1;
+  request.time_indicator = 0;
+  request.dl_data_to_ul_ack = 1;
+  request.harq_id = 0u;
+  request.ndi = true;
+  request.is_new_data = true;
 
   if (mini_gnb_c_extract_transport_int(text, "abs_slot", &int_value) == 0) {
     request.abs_slot = int_value;
+    request.pdcch_abs_slot = request.abs_slot;
   }
   if (mini_gnb_c_extract_transport_int(text, "prb_start", &int_value) == 0 && int_value >= 0) {
     request.prb_start = (uint16_t)int_value;
@@ -515,6 +591,9 @@ static void mini_gnb_c_process_scripted_ul_schedule(mini_gnb_c_simulator_t* simu
   request.pdcch_abs_slot = slot->abs_slot;
   request.k2 = 2U;
   request.purpose = mini_gnb_c_parse_ul_purpose(text, MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD);
+  request.harq_id = 0u;
+  request.ndi = true;
+  request.is_new_data = true;
   request.prb_start = request.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? 60U : 48U;
   request.prb_len = request.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? 8U : 24U;
   request.mcs = request.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? 4U : 8U;
@@ -598,14 +677,28 @@ static void mini_gnb_c_process_scripted_pdcch_dl(mini_gnb_c_simulator_t* simulat
   }
 
   request.c_rnti = rnti;
+  request.pdcch_abs_slot = slot->abs_slot;
   request.abs_slot = slot->abs_slot;
   request.prb_start = 52U;
   request.prb_len = 24U;
   request.mcs = 9U;
   request.dci_format = mini_gnb_c_parse_dci_format(text, "dci_format", MINI_GNB_C_DCI_FORMAT_1_1);
+  request.time_indicator = 0;
+  request.dl_data_to_ul_ack = 1;
+  request.harq_id = 0u;
+  request.ndi = true;
+  request.is_new_data = true;
 
   if (mini_gnb_c_extract_transport_int(text, "scheduled_abs_slot", &int_value) == 0) {
     request.abs_slot = int_value;
+    request.time_indicator = request.abs_slot - request.pdcch_abs_slot;
+  }
+  if (mini_gnb_c_extract_transport_int(text, "time_indicator", &int_value) == 0) {
+    request.time_indicator = int_value;
+    request.abs_slot = request.pdcch_abs_slot + request.time_indicator;
+  }
+  if (mini_gnb_c_extract_transport_int(text, "dl_data_to_ul_ack", &int_value) == 0 && int_value >= 0) {
+    request.dl_data_to_ul_ack = int_value;
   }
   if (mini_gnb_c_extract_transport_int(text, "scheduled_prb_start", &int_value) == 0 && int_value >= 0) {
     request.prb_start = (uint16_t)int_value;
@@ -681,6 +774,9 @@ static void mini_gnb_c_process_scripted_pdcch_ul(mini_gnb_c_simulator_t* simulat
   request.pdcch_abs_slot = slot->abs_slot;
   request.k2 = 2U;
   request.purpose = mini_gnb_c_parse_ul_purpose(text, MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD);
+  request.harq_id = 0u;
+  request.ndi = true;
+  request.is_new_data = true;
   request.prb_start = request.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? 60U : 48U;
   request.prb_len = request.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? 8U : 24U;
   request.mcs = request.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? 4U : 8U;
@@ -734,6 +830,7 @@ static void mini_gnb_c_process_scripted_slot_controls(mini_gnb_c_simulator_t* si
 
 static void mini_gnb_c_queue_connected_ul_grant(mini_gnb_c_simulator_t* simulator,
                                                 mini_gnb_c_ue_context_t* ue_context,
+                                                mini_gnb_c_simulator_ul_harq_state_t* ul_harq_states,
                                                 int trigger_abs_slot,
                                                 mini_gnb_c_ul_data_purpose_t purpose,
                                                 uint16_t prb_start,
@@ -741,27 +838,57 @@ static void mini_gnb_c_queue_connected_ul_grant(mini_gnb_c_simulator_t* simulato
                                                 uint8_t mcs) {
   mini_gnb_c_ul_data_schedule_request_t request;
   mini_gnb_c_ul_data_grant_t armed_ul_grant;
+  int harq_id = -1;
 
-  if (simulator == NULL || ue_context == NULL) {
+  if (simulator == NULL || ue_context == NULL || ul_harq_states == NULL) {
+    return;
+  }
+  harq_id = mini_gnb_c_find_free_ul_harq_process(ul_harq_states, simulator->config.sim.post_msg4_ul_harq_process_count);
+  if (harq_id < 0) {
+    mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                   "connected_scheduler",
+                                   "No free UL HARQ process for new UL grant.",
+                                   trigger_abs_slot,
+                                   "c_rnti=%u,purpose=%s",
+                                   ue_context->c_rnti,
+                                   mini_gnb_c_ul_data_purpose_string(purpose));
     return;
   }
 
   memset(&request, 0, sizeof(request));
   request.c_rnti = ue_context->c_rnti;
-  request.pdcch_abs_slot = trigger_abs_slot + 1;
-  request.k2 = (uint8_t)simulator->config.sim.post_msg4_ul_data_k2;
-  request.abs_slot = request.pdcch_abs_slot + simulator->config.sim.post_msg4_ul_data_k2;
+  request.pdcch_abs_slot = trigger_abs_slot + simulator->config.sim.post_msg4_ul_grant_delay_slots;
+  request.k2 = (uint8_t)simulator->config.sim.post_msg4_ul_time_indicator;
+  request.abs_slot = request.pdcch_abs_slot + simulator->config.sim.post_msg4_ul_time_indicator;
   request.prb_start = prb_start;
   request.prb_len = prb_len;
   request.mcs = mcs;
   request.purpose = purpose;
+  request.harq_id = (uint8_t)harq_id;
+  request.ndi = ul_harq_states[harq_id].ndi;
+  request.is_new_data = true;
   mini_gnb_c_initial_access_scheduler_queue_ul_data_grant(&simulator->scheduler, &request, &simulator->metrics);
 
   memset(&armed_ul_grant, 0, sizeof(armed_ul_grant));
   armed_ul_grant.c_rnti = request.c_rnti;
   armed_ul_grant.abs_slot = request.abs_slot;
+  armed_ul_grant.prb_start = request.prb_start;
+  armed_ul_grant.prb_len = request.prb_len;
+  armed_ul_grant.mcs = request.mcs;
   armed_ul_grant.purpose = request.purpose;
+  armed_ul_grant.harq_id = request.harq_id;
+  armed_ul_grant.ndi = request.ndi;
+  armed_ul_grant.is_new_data = request.is_new_data;
   mini_gnb_c_mock_radio_frontend_arm_ul_data(&simulator->radio, &armed_ul_grant);
+  ul_harq_states[harq_id].waiting_pusch = true;
+  ul_harq_states[harq_id].rnti = request.c_rnti;
+  ul_harq_states[harq_id].pdcch_abs_slot = request.pdcch_abs_slot;
+  ul_harq_states[harq_id].pusch_abs_slot = request.abs_slot;
+  ul_harq_states[harq_id].prb_start = request.prb_start;
+  ul_harq_states[harq_id].prb_len = request.prb_len;
+  ul_harq_states[harq_id].mcs = request.mcs;
+  ul_harq_states[harq_id].purpose = request.purpose;
+  ul_harq_states[harq_id].harq_id = request.harq_id;
 
   if (purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR) {
     ue_context->small_ul_grant_abs_slot = request.abs_slot;
@@ -770,46 +897,210 @@ static void mini_gnb_c_queue_connected_ul_grant(mini_gnb_c_simulator_t* simulato
   }
 }
 
-static void mini_gnb_c_schedule_post_msg4_traffic(mini_gnb_c_simulator_t* simulator,
-                                                  mini_gnb_c_ue_context_t* ue_context,
-                                                  int msg4_abs_slot) {
+static void mini_gnb_c_queue_connected_dl_data(mini_gnb_c_simulator_t* simulator,
+                                               mini_gnb_c_ue_context_t* ue_context,
+                                               mini_gnb_c_simulator_dl_harq_state_t* dl_harq_states,
+                                               int trigger_abs_slot,
+                                               const mini_gnb_c_buffer_t* payload) {
   mini_gnb_c_dl_data_schedule_request_t dl_request;
-  char payload_text[MINI_GNB_C_MAX_TEXT];
-  int sr_abs_slot = 0;
+  int harq_id = -1;
 
-  if (simulator == NULL || ue_context == NULL || ue_context->traffic_plan_scheduled ||
-      !simulator->config.sim.post_msg4_traffic_enabled || simulator->config.sim.scripted_schedule_dir[0] != '\0' ||
-      simulator->config.sim.scripted_pdcch_dir[0] != '\0') {
+  if (simulator == NULL || ue_context == NULL || dl_harq_states == NULL || payload == NULL) {
+    return;
+  }
+  harq_id = mini_gnb_c_find_free_dl_harq_process(dl_harq_states, simulator->config.sim.post_msg4_dl_harq_process_count);
+  if (harq_id < 0) {
+    mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                   "connected_scheduler",
+                                   "No free DL HARQ process for new DL data.",
+                                   trigger_abs_slot,
+                                   "c_rnti=%u",
+                                   ue_context->c_rnti);
     return;
   }
 
   memset(&dl_request, 0, sizeof(dl_request));
   dl_request.c_rnti = ue_context->c_rnti;
-  dl_request.abs_slot = msg4_abs_slot + simulator->config.sim.post_msg4_dl_data_delay_slots;
+  dl_request.pdcch_abs_slot = trigger_abs_slot + simulator->config.sim.post_msg4_dl_pdcch_delay_slots;
+  dl_request.time_indicator = simulator->config.sim.post_msg4_dl_time_indicator;
+  dl_request.abs_slot = dl_request.pdcch_abs_slot + dl_request.time_indicator;
   dl_request.prb_start = 52U;
   dl_request.prb_len = 24U;
   dl_request.mcs = 9U;
   dl_request.dci_format = MINI_GNB_C_DCI_FORMAT_1_1;
-  sr_abs_slot = dl_request.abs_slot + simulator->config.sim.post_msg4_ul_grant_delay_slots;
+  dl_request.dl_data_to_ul_ack = simulator->config.sim.post_msg4_dl_data_to_ul_ack_slots;
+  dl_request.harq_id = (uint8_t)harq_id;
+  dl_request.ndi = dl_harq_states[harq_id].ndi;
+  dl_request.is_new_data = true;
+  dl_request.payload = *payload;
+  mini_gnb_c_initial_access_scheduler_queue_dl_data(&simulator->scheduler, &dl_request, &simulator->metrics);
+  mini_gnb_c_mock_radio_frontend_arm_dl_ack(&simulator->radio,
+                                            ue_context->c_rnti,
+                                            dl_request.harq_id,
+                                            dl_request.abs_slot + dl_request.dl_data_to_ul_ack);
+
+  dl_harq_states[harq_id].waiting_ack = true;
+  dl_harq_states[harq_id].rnti = ue_context->c_rnti;
+  dl_harq_states[harq_id].pdcch_abs_slot = dl_request.pdcch_abs_slot;
+  dl_harq_states[harq_id].pdsch_abs_slot = dl_request.abs_slot;
+  dl_harq_states[harq_id].ack_abs_slot = dl_request.abs_slot + dl_request.dl_data_to_ul_ack;
+  dl_harq_states[harq_id].harq_id = dl_request.harq_id;
+  dl_harq_states[harq_id].payload = dl_request.payload;
+
+  ue_context->dl_data_abs_slot = dl_request.abs_slot;
+}
+
+static void mini_gnb_c_requeue_dl_harq_retx(mini_gnb_c_simulator_t* simulator,
+                                            mini_gnb_c_simulator_dl_harq_state_t* dl_harq_state,
+                                            const int current_abs_slot) {
+  mini_gnb_c_dl_data_schedule_request_t dl_request;
+
+  if (simulator == NULL || dl_harq_state == NULL || !dl_harq_state->waiting_ack) {
+    return;
+  }
+
+  memset(&dl_request, 0, sizeof(dl_request));
+  dl_request.c_rnti = dl_harq_state->rnti;
+  dl_request.pdcch_abs_slot = current_abs_slot;
+  dl_request.time_indicator = simulator->config.sim.post_msg4_dl_time_indicator;
+  dl_request.abs_slot = dl_request.pdcch_abs_slot + dl_request.time_indicator;
+  dl_request.prb_start = 52U;
+  dl_request.prb_len = 24U;
+  dl_request.mcs = 9U;
+  dl_request.dci_format = MINI_GNB_C_DCI_FORMAT_1_1;
+  dl_request.dl_data_to_ul_ack = simulator->config.sim.post_msg4_dl_data_to_ul_ack_slots;
+  dl_request.harq_id = dl_harq_state->harq_id;
+  dl_request.ndi = dl_harq_state->ndi;
+  dl_request.is_new_data = false;
+  dl_request.payload = dl_harq_state->payload;
+  mini_gnb_c_initial_access_scheduler_queue_dl_data(&simulator->scheduler, &dl_request, &simulator->metrics);
+  mini_gnb_c_mock_radio_frontend_arm_dl_ack(&simulator->radio,
+                                            dl_request.c_rnti,
+                                            dl_request.harq_id,
+                                            dl_request.abs_slot + dl_request.dl_data_to_ul_ack);
+
+  dl_harq_state->pdcch_abs_slot = dl_request.pdcch_abs_slot;
+  dl_harq_state->pdsch_abs_slot = dl_request.abs_slot;
+  dl_harq_state->ack_abs_slot = dl_request.abs_slot + dl_request.dl_data_to_ul_ack;
+  mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                 "harq_dl",
+                                 "Queued DL HARQ retransmission.",
+                                 current_abs_slot,
+                                 "c_rnti=%u,harq_id=%u,ndi=%s,pdsch_abs_slot=%d",
+                                 dl_request.c_rnti,
+                                 dl_request.harq_id,
+                                 dl_request.ndi ? "true" : "false",
+                                 dl_request.abs_slot);
+}
+
+static void mini_gnb_c_requeue_ul_harq_retx(mini_gnb_c_simulator_t* simulator,
+                                            mini_gnb_c_simulator_ul_harq_state_t* ul_harq_state,
+                                            const int current_abs_slot) {
+  mini_gnb_c_ul_data_schedule_request_t request;
+  mini_gnb_c_ul_data_grant_t armed_ul_grant;
+
+  if (simulator == NULL || ul_harq_state == NULL || !ul_harq_state->waiting_pusch) {
+    return;
+  }
+
+  memset(&request, 0, sizeof(request));
+  request.c_rnti = ul_harq_state->rnti;
+  request.pdcch_abs_slot = current_abs_slot;
+  request.k2 = (uint8_t)simulator->config.sim.post_msg4_ul_time_indicator;
+  request.abs_slot = request.pdcch_abs_slot + request.k2;
+  request.prb_start = ul_harq_state->prb_start;
+  request.prb_len = ul_harq_state->prb_len;
+  request.mcs = ul_harq_state->mcs;
+  request.purpose = ul_harq_state->purpose;
+  request.harq_id = ul_harq_state->harq_id;
+  request.ndi = ul_harq_state->ndi;
+  request.is_new_data = false;
+  mini_gnb_c_initial_access_scheduler_queue_ul_data_grant(&simulator->scheduler, &request, &simulator->metrics);
+
+  memset(&armed_ul_grant, 0, sizeof(armed_ul_grant));
+  armed_ul_grant.c_rnti = request.c_rnti;
+  armed_ul_grant.abs_slot = request.abs_slot;
+  armed_ul_grant.prb_start = request.prb_start;
+  armed_ul_grant.prb_len = request.prb_len;
+  armed_ul_grant.mcs = request.mcs;
+  armed_ul_grant.purpose = request.purpose;
+  armed_ul_grant.harq_id = request.harq_id;
+  armed_ul_grant.ndi = request.ndi;
+  armed_ul_grant.is_new_data = request.is_new_data;
+  mini_gnb_c_mock_radio_frontend_arm_ul_data(&simulator->radio, &armed_ul_grant);
+
+  ul_harq_state->pdcch_abs_slot = request.pdcch_abs_slot;
+  ul_harq_state->pusch_abs_slot = request.abs_slot;
+  mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                 "harq_ul",
+                                 "Queued UL HARQ retransmission.",
+                                 current_abs_slot,
+                                 "c_rnti=%u,harq_id=%u,ndi=%s,purpose=%s,pusch_abs_slot=%d",
+                                 request.c_rnti,
+                                 request.harq_id,
+                                 request.ndi ? "true" : "false",
+                                 mini_gnb_c_ul_data_purpose_string(request.purpose),
+                                 request.abs_slot);
+}
+
+static int mini_gnb_c_next_periodic_slot_at_or_after(const int min_abs_slot,
+                                                     const int period_slots,
+                                                     const int offset_slot) {
+  int candidate = 0;
+
+  if (period_slots <= 0 || offset_slot < 0) {
+    return -1;
+  }
+  if (min_abs_slot <= offset_slot) {
+    return offset_slot;
+  }
+
+  candidate = min_abs_slot;
+  while (((candidate - offset_slot) % period_slots) != 0) {
+    ++candidate;
+  }
+  return candidate;
+}
+
+static void mini_gnb_c_schedule_post_msg4_traffic(mini_gnb_c_simulator_t* simulator,
+                                                  mini_gnb_c_ue_context_t* ue_context,
+                                                  mini_gnb_c_simulator_dl_harq_state_t* dl_harq_states,
+                                                  int msg4_abs_slot) {
+  mini_gnb_c_buffer_t payload;
+  char payload_text[MINI_GNB_C_MAX_TEXT];
+  int sr_abs_slot = 0;
+
+  if (simulator == NULL || ue_context == NULL || dl_harq_states == NULL || ue_context->traffic_plan_scheduled ||
+      !simulator->config.sim.post_msg4_traffic_enabled || simulator->config.sim.scripted_schedule_dir[0] != '\0' ||
+      simulator->config.sim.scripted_pdcch_dir[0] != '\0') {
+    return;
+  }
+
+  sr_abs_slot = mini_gnb_c_next_periodic_slot_at_or_after(msg4_abs_slot + 1,
+                                                          simulator->config.sim.post_msg4_sr_period_slots,
+                                                          simulator->config.sim.post_msg4_sr_offset_slot);
+  if (sr_abs_slot < 0) {
+    return;
+  }
   if (snprintf(payload_text,
                sizeof(payload_text),
                "PUCCH_CFG|sr_abs_slot=%d",
                sr_abs_slot) < (int)sizeof(payload_text)) {
-    (void)mini_gnb_c_buffer_set_text(&dl_request.payload, payload_text);
+    (void)mini_gnb_c_buffer_set_text(&payload, payload_text);
   }
-  mini_gnb_c_initial_access_scheduler_queue_dl_data(&simulator->scheduler, &dl_request, &simulator->metrics);
+  mini_gnb_c_queue_connected_dl_data(simulator, ue_context, dl_harq_states, msg4_abs_slot, &payload);
   mini_gnb_c_mock_radio_frontend_arm_pucch_sr(&simulator->radio, ue_context->c_rnti, sr_abs_slot);
 
   ue_context->traffic_plan_scheduled = true;
-  ue_context->dl_data_abs_slot = dl_request.abs_slot;
   mini_gnb_c_metrics_trace_event(&simulator->metrics,
                                  "connected_scheduler",
-                                 "Queued post-Msg4 PUCCH config and SR occasion.",
+                                 "Queued post-Msg4 DL HARQ PDSCH config and SR occasion.",
                                  msg4_abs_slot,
-                                 "c_rnti=%u,dl_cfg_abs_slot=%d,sr_abs_slot=%d",
+                                 "c_rnti=%u,dl_cfg_abs_slot=%d,sr_abs_slot=%d,dl_harq=%d",
                                  ue_context->c_rnti,
                                  ue_context->dl_data_abs_slot,
-                                 sr_abs_slot);
+                                 sr_abs_slot,
+                                 simulator->config.sim.post_msg4_dl_harq_process_count);
 }
 
 void mini_gnb_c_simulator_init(mini_gnb_c_simulator_t* simulator,
@@ -823,6 +1114,8 @@ void mini_gnb_c_simulator_init(mini_gnb_c_simulator_t* simulator,
   simulator->config = *config;
   mini_gnb_c_resolve_optional_dir_in_place(simulator->config.sim.local_exchange_dir,
                                            sizeof(simulator->config.sim.local_exchange_dir));
+  mini_gnb_c_resolve_optional_dir_in_place(simulator->config.sim.shared_slot_path,
+                                           sizeof(simulator->config.sim.shared_slot_path));
   mini_gnb_c_resolve_optional_dir_in_place(simulator->config.sim.scripted_schedule_dir,
                                            sizeof(simulator->config.sim.scripted_schedule_dir));
   mini_gnb_c_resolve_optional_dir_in_place(simulator->config.sim.scripted_pdcch_dir,
@@ -833,7 +1126,8 @@ void mini_gnb_c_simulator_init(mini_gnb_c_simulator_t* simulator,
   mini_gnb_c_broadcast_engine_init(&simulator->broadcast,
                                    &simulator->config.cell,
                                    &simulator->config.prach,
-                                   &simulator->config.broadcast);
+                                   &simulator->config.broadcast,
+                                   &simulator->config.sim);
   mini_gnb_c_mock_prach_detector_init(&simulator->prach_detector, &simulator->config.sim);
   mini_gnb_c_ra_manager_init(&simulator->ra_manager, &simulator->config.prach, &simulator->config.sim);
   mini_gnb_c_initial_access_scheduler_init(&simulator->scheduler);
@@ -848,10 +1142,14 @@ void mini_gnb_c_simulator_init(mini_gnb_c_simulator_t* simulator,
 int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                              mini_gnb_c_run_summary_t* out_summary) {
   int abs_slot = 0;
+  mini_gnb_c_simulator_dl_harq_state_t dl_harq_states[MINI_GNB_C_MAX_HARQ_PROCESSES];
+  mini_gnb_c_simulator_ul_harq_state_t ul_harq_states[MINI_GNB_C_MAX_HARQ_PROCESSES];
 
   if (simulator == NULL || out_summary == NULL) {
     return -1;
   }
+  memset(dl_harq_states, 0, sizeof(dl_harq_states));
+  memset(ul_harq_states, 0, sizeof(ul_harq_states));
 
   mini_gnb_c_metrics_trace_event(&simulator->metrics,
                                  "main",
@@ -866,11 +1164,13 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
     mini_gnb_c_radio_burst_t burst;
     mini_gnb_c_prach_indication_t prach;
     mini_gnb_c_ul_grant_for_msg3_t msg3_grants[MINI_GNB_C_MAX_MSG3_GRANTS];
+    mini_gnb_c_pdcch_dci_t dl_pdcch_grants[MINI_GNB_C_MAX_GRANTS];
     mini_gnb_c_ul_data_grant_t ul_data_pdcch_grants[MINI_GNB_C_MAX_UL_DATA_GRANTS];
     mini_gnb_c_ul_data_grant_t ul_data_rx_grants[MINI_GNB_C_MAX_UL_DATA_GRANTS];
     mini_gnb_c_dl_grant_t dl_grants[MINI_GNB_C_MAX_GRANTS + 2U];
     mini_gnb_c_tx_grid_patch_t patches[MINI_GNB_C_MAX_GRANTS + 2U];
     size_t msg3_grant_count = 0;
+    size_t dl_pdcch_count = 0;
     size_t ul_data_pdcch_count = 0;
     size_t ul_data_rx_count = 0;
     size_t dl_grant_count = 0;
@@ -890,6 +1190,28 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                      burst.rnti,
                                      burst.preamble_id,
                                      burst.tbsize);
+    }
+    if (burst.ul_type == MINI_GNB_C_UL_BURST_PUCCH_ACK && burst.harq_id < MINI_GNB_C_MAX_HARQ_PROCESSES &&
+        dl_harq_states[burst.harq_id].waiting_ack && dl_harq_states[burst.harq_id].rnti == burst.rnti &&
+        slot.abs_slot == dl_harq_states[burst.harq_id].ack_abs_slot) {
+      dl_harq_states[burst.harq_id].waiting_ack = false;
+      dl_harq_states[burst.harq_id].ndi = !dl_harq_states[burst.harq_id].ndi;
+      mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                     "harq_dl",
+                                     "Received DL HARQ ACK and released process.",
+                                     slot.abs_slot,
+                                     "c_rnti=%u,harq_id=%u,next_ndi=%s",
+                                     burst.rnti,
+                                     burst.harq_id,
+                                     dl_harq_states[burst.harq_id].ndi ? "true" : "false");
+    }
+    for (i = 0; i < MINI_GNB_C_MAX_HARQ_PROCESSES; ++i) {
+      if (dl_harq_states[i].waiting_ack && slot.abs_slot > dl_harq_states[i].ack_abs_slot) {
+        mini_gnb_c_requeue_dl_harq_retx(simulator, &dl_harq_states[i], slot.abs_slot);
+      }
+      if (ul_harq_states[i].waiting_pusch && slot.abs_slot > ul_harq_states[i].pusch_abs_slot) {
+        mini_gnb_c_requeue_ul_harq_retx(simulator, &ul_harq_states[i], slot.abs_slot);
+      }
     }
     mini_gnb_c_ra_manager_expire(&simulator->ra_manager, &slot, &simulator->metrics);
 
@@ -1015,7 +1337,7 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
             continue;
           }
 
-          mini_gnb_c_build_rrc_setup(&request_info, &rrc_setup);
+          mini_gnb_c_build_rrc_setup(&request_info, &simulator->config.sim, &rrc_setup);
           if (simulator->ra_manager.has_active_context) {
             mini_gnb_c_ue_context_t* ue_context =
                 mini_gnb_c_ue_context_store_promote(&simulator->ue_store,
@@ -1086,6 +1408,7 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
         ue_context->pucch_sr_abs_slot = slot.abs_slot;
         mini_gnb_c_queue_connected_ul_grant(simulator,
                                             ue_context,
+                                            ul_harq_states,
                                             slot.abs_slot,
                                             MINI_GNB_C_UL_DATA_PURPOSE_BSR,
                                             60U,
@@ -1157,6 +1480,10 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                        payload_hex);
 
         if (crc_ok && buffer_size_bytes >= 0) {
+          if (ul_data_rx_grants[i].harq_id < MINI_GNB_C_MAX_HARQ_PROCESSES) {
+            ul_harq_states[ul_data_rx_grants[i].harq_id].waiting_pusch = false;
+            ul_harq_states[ul_data_rx_grants[i].harq_id].ndi = !ul_harq_states[ul_data_rx_grants[i].harq_id].ndi;
+          }
           mini_gnb_c_ue_context_t* ue_context =
               mini_gnb_c_find_ue_context(&simulator->ue_store, ul_data_rx_grants[i].c_rnti);
           if (ue_context != NULL) {
@@ -1167,6 +1494,7 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                 simulator->config.sim.scripted_pdcch_dir[0] == '\0') {
               mini_gnb_c_queue_connected_ul_grant(simulator,
                                                   ue_context,
+                                                  ul_harq_states,
                                                   slot.abs_slot,
                                                   MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD,
                                                   48U,
@@ -1203,6 +1531,10 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                        payload_hex);
 
         if (crc_ok) {
+          if (ul_data_rx_grants[i].harq_id < MINI_GNB_C_MAX_HARQ_PROCESSES) {
+            ul_harq_states[ul_data_rx_grants[i].harq_id].waiting_pusch = false;
+            ul_harq_states[ul_data_rx_grants[i].harq_id].ndi = !ul_harq_states[ul_data_rx_grants[i].harq_id].ndi;
+          }
           mini_gnb_c_ue_context_t* ue_context =
               mini_gnb_c_find_ue_context(&simulator->ue_store, ul_data_rx_grants[i].c_rnti);
           if (ue_context != NULL) {
@@ -1214,6 +1546,17 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
     }
 
     mini_gnb_c_process_scripted_slot_controls(simulator, &slot);
+
+    dl_pdcch_count = mini_gnb_c_initial_access_scheduler_pop_due_dl_pdcch(&simulator->scheduler,
+                                                                           slot.abs_slot,
+                                                                           dl_pdcch_grants,
+                                                                           MINI_GNB_C_MAX_GRANTS);
+    for (i = 0; i < dl_pdcch_count; ++i) {
+      mini_gnb_c_mock_radio_frontend_submit_pdcch(&simulator->radio,
+                                                  &slot,
+                                                  &dl_pdcch_grants[i],
+                                                  &simulator->metrics);
+    }
 
     ul_data_pdcch_count = mini_gnb_c_initial_access_scheduler_pop_due_ul_data_pdcch(&simulator->scheduler,
                                                                                      slot.abs_slot,
@@ -1266,14 +1609,17 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                                           slot.abs_slot);
           mini_gnb_c_schedule_post_msg4_traffic(simulator,
                                                 mini_gnb_c_find_ue_context(&simulator->ue_store, dl_grants[i].rnti),
+                                                dl_harq_states,
                                                 slot.abs_slot);
         } else if (dl_grants[i].type == MINI_GNB_C_DL_OBJ_DATA) {
           mini_gnb_c_ue_context_t* ue_context =
               mini_gnb_c_find_ue_context(&simulator->ue_store, dl_grants[i].rnti);
           mini_gnb_c_metrics_trace_increment_named(&simulator->metrics, "dl_data_sent", 1U);
           if (ue_context != NULL) {
+            if (!ue_context->dl_data_sent) {
+              ue_context->dl_data_abs_slot = slot.abs_slot;
+            }
             ue_context->dl_data_sent = true;
-            ue_context->dl_data_abs_slot = slot.abs_slot;
           }
         }
       }
@@ -1303,8 +1649,11 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
       perf.ul_decode_latency_us = 60 + (int)((msg3_grant_count + ul_data_rx_count) * 10U);
       mini_gnb_c_metrics_trace_add_slot_perf(&simulator->metrics, &perf);
     }
+
+    mini_gnb_c_mock_radio_frontend_finalize_slot(&simulator->radio, &slot, &simulator->metrics);
   }
 
+  mini_gnb_c_mock_radio_frontend_shutdown(&simulator->radio);
   return mini_gnb_c_metrics_trace_flush(&simulator->metrics,
                                         simulator->ra_manager.has_active_context,
                                         simulator->ra_manager.has_active_context

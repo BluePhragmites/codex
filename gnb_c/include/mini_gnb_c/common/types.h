@@ -18,6 +18,7 @@
 #define MINI_GNB_C_MAX_UL_DATA_GRANTS 4
 #define MINI_GNB_C_MAX_UES 1
 #define MINI_GNB_C_MAX_IQ_SAMPLES 2048
+#define MINI_GNB_C_MAX_HARQ_PROCESSES 8
 
 typedef enum {
   MINI_GNB_C_DL_OBJ_SSB = 0,
@@ -33,7 +34,8 @@ typedef enum {
   MINI_GNB_C_UL_BURST_PRACH = 1,
   MINI_GNB_C_UL_BURST_MSG3 = 2,
   MINI_GNB_C_UL_BURST_PUCCH_SR = 3,
-  MINI_GNB_C_UL_BURST_DATA = 4
+  MINI_GNB_C_UL_BURST_DATA = 4,
+  MINI_GNB_C_UL_BURST_PUCCH_ACK = 5
 } mini_gnb_c_ul_burst_type_t;
 
 typedef enum {
@@ -112,6 +114,8 @@ typedef struct {
   int ssb_period_slots;
   int sib1_period_slots;
   int sib1_offset_slot;
+  int prach_period_slots;
+  int prach_offset_slot;
 } mini_gnb_c_broadcast_config_t;
 
 typedef struct {
@@ -129,9 +133,15 @@ typedef struct {
   double msg3_snr_db;
   double msg3_evm;
   bool post_msg4_traffic_enabled;
-  int post_msg4_dl_data_delay_slots;
+  int post_msg4_dl_pdcch_delay_slots;
+  int post_msg4_dl_time_indicator;
+  int post_msg4_dl_data_to_ul_ack_slots;
+  int post_msg4_sr_period_slots;
+  int post_msg4_sr_offset_slot;
   int post_msg4_ul_grant_delay_slots;
-  int post_msg4_ul_data_k2;
+  int post_msg4_ul_time_indicator;
+  int post_msg4_dl_harq_process_count;
+  int post_msg4_ul_harq_process_count;
   bool ul_data_present;
   bool ul_data_crc_ok;
   double ul_data_snr_db;
@@ -141,6 +151,8 @@ typedef struct {
   char ul_msg3_cf32_path[MINI_GNB_C_MAX_PATH];
   char ul_input_dir[MINI_GNB_C_MAX_PATH];
   char local_exchange_dir[MINI_GNB_C_MAX_PATH];
+  char shared_slot_path[MINI_GNB_C_MAX_PATH];
+  uint32_t shared_slot_timeout_ms;
   char scripted_schedule_dir[MINI_GNB_C_MAX_PATH];
   char scripted_pdcch_dir[MINI_GNB_C_MAX_PATH];
   char ul_data_hex[MINI_GNB_C_MAX_PAYLOAD * 2 + 1];
@@ -180,6 +192,9 @@ typedef struct {
   double snr_db;
   double evm;
   uint16_t tbsize;
+  uint8_t harq_id;
+  bool ndi;
+  bool is_new_data;
   bool crc_ok_override_valid;
   bool crc_ok_override;
   mini_gnb_c_buffer_t mac_pdu;
@@ -230,10 +245,15 @@ typedef struct {
   uint16_t scheduled_prb_len;
   uint8_t mcs;
   int k2;
+  int time_indicator;
+  int dl_data_to_ul_ack;
   int scheduled_abs_slot;
   mini_gnb_c_dl_object_type_t scheduled_dl_type;
   mini_gnb_c_ul_burst_type_t scheduled_ul_type;
   mini_gnb_c_ul_data_purpose_t scheduled_ul_purpose;
+  uint8_t harq_id;
+  bool ndi;
+  bool is_new_data;
 } mini_gnb_c_pdcch_dci_t;
 
 typedef struct {
@@ -371,11 +391,17 @@ typedef struct {
 
 typedef struct {
   uint16_t c_rnti;
+  int pdcch_abs_slot;
   int abs_slot;
   uint16_t prb_start;
   uint16_t prb_len;
   uint8_t mcs;
   mini_gnb_c_dci_format_t dci_format;
+  int time_indicator;
+  int dl_data_to_ul_ack;
+  uint8_t harq_id;
+  bool ndi;
+  bool is_new_data;
   mini_gnb_c_buffer_t payload;
 } mini_gnb_c_dl_data_schedule_request_t;
 
@@ -388,6 +414,9 @@ typedef struct {
   uint8_t mcs;
   uint8_t k2;
   mini_gnb_c_ul_data_purpose_t purpose;
+  uint8_t harq_id;
+  bool ndi;
+  bool is_new_data;
 } mini_gnb_c_ul_data_schedule_request_t;
 
 typedef struct {
@@ -399,6 +428,9 @@ typedef struct {
   uint8_t mcs;
   uint8_t k2;
   mini_gnb_c_ul_data_purpose_t purpose;
+  uint8_t harq_id;
+  bool ndi;
+  bool is_new_data;
   mini_gnb_c_pdcch_dci_t pdcch;
 } mini_gnb_c_ul_data_grant_t;
 

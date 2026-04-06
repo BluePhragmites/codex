@@ -75,7 +75,11 @@ void test_mac_rrc_and_msg4_contention_identity(void) {
   mini_gnb_c_require(strcmp(contention_id_hex, config.sim.contention_id_hex) == 0,
                      "expected contention identity copied from simulated Msg3");
 
-  mini_gnb_c_build_rrc_setup(&request_info, &rrc_setup);
+  mini_gnb_c_build_rrc_setup(&request_info, &config.sim, &rrc_setup);
+  mini_gnb_c_require(strstr((const char*)rrc_setup.asn1_buf.bytes, "sr_period_slots=") != NULL,
+                     "expected RRCSetup to carry SR period");
+  mini_gnb_c_require(strstr((const char*)rrc_setup.asn1_buf.bytes, "sr_offset_slot=") != NULL,
+                     "expected RRCSetup to carry SR offset");
   memset(&msg4_request, 0, sizeof(msg4_request));
   msg4_request.tc_rnti = msg3_grant.tc_rnti;
   msg4_request.msg4_abs_slot = msg3_slot.abs_slot + config.sim.msg4_delay_slots;

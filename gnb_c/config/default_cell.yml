@@ -51,6 +51,9 @@ broadcast:
   # SIB1 is sent at abs_slot = sib1_offset_slot + k * sib1_period_slots.
   sib1_period_slots: 8
   sib1_offset_slot: 4
+  # PRACH is only checked on these periodic occasions, and SIB1 advertises the same rule to the UE.
+  prach_period_slots: 10
+  prach_offset_slot: 2
 
 sim:
   # Total simulated slots and frame geometry.
@@ -60,6 +63,7 @@ sim:
   msg3_delay_slots: 4
   msg4_delay_slots: 1
   # Inject the first PRACH burst into the mock radio at this absolute slot.
+  # This remains for legacy fallback tests; the live shared-slot UE now learns PRACH occasions from SIB1.
   prach_trigger_abs_slot: 2
   # If Msg3 is not seen, inject a retry PRACH burst after this many slots. Set -1 to disable.
   prach_retry_delay_slots: 4
@@ -69,9 +73,16 @@ sim:
   # Whether the mock radio provides a Msg3 burst at the UL grant slot.
   msg3_present: true
   post_msg4_traffic_enabled: true
-  post_msg4_dl_data_delay_slots: 2
-  post_msg4_ul_grant_delay_slots: 3
-  post_msg4_ul_data_k2: 2
+  post_msg4_dl_pdcch_delay_slots: 1
+  post_msg4_dl_time_indicator: 1
+  post_msg4_dl_data_to_ul_ack_slots: 1
+  # Msg4/RRCSetup advertises the SR periodicity, and both UE and gNB use the same occasion rule.
+  post_msg4_sr_period_slots: 10
+  post_msg4_sr_offset_slot: 2
+  post_msg4_ul_grant_delay_slots: 1
+  post_msg4_ul_time_indicator: 2
+  post_msg4_dl_harq_process_count: 2
+  post_msg4_ul_harq_process_count: 2
   ul_data_present: true
   ul_data_crc_ok: true
   ul_data_snr_db: 16.0
@@ -85,6 +96,9 @@ sim:
   ul_input_dir: "input"
   # Optional local UE<->gNB exchange directory for the upcoming JSON event-based workflow.
   local_exchange_dir: "out/local_exchange"
+  # Optional shared-memory-backed UE<->gNB slot link for live lock-step interaction.
+  shared_slot_path: ""
+  shared_slot_timeout_ms: 100
   ul_data_hex: "554C5F44415441"
   # Mock Msg3 quality indicators.
   msg3_crc_ok: true

@@ -106,45 +106,60 @@ same core/session and N3 code paths:
 of owning those builders and Open5GS session parsers inline. That keeps the replay
 tool usable while moving the future gNB core-bridge entrypoints into `mini_gnb_c_lib`.
 
-The next local-loop milestone also needs a filesystem-backed exchange between the
-future UE helper process and the simulator. The first version of that transport now
-exists as:
+The local UE/gNB path now uses two distinct transports for different jobs:
 
 - `link/json_link`
   - builds stable JSON event filenames
   - writes event envelopes with `tmp + rename` atomicity
-  - is intended for low-rate local control/data event exchange, not high-throughput user-plane traffic
+  - is intended for low-rate local control-plane NAS exchange, not the main radio loop
+- `link/shared_slot_link`
+  - owns the shared-memory-backed slot register window between the gNB process and the UE process
+  - exports one gNB-written `txSlot` progress register plus one UE-written `rxSlot` progress register
+  - stores one current DL slot summary and one pending future UL burst descriptor
+  - keeps the radio loop synchronous without pre-generating a directory of UE slot inputs
 
-On top of that transport, the first UE-side process now exists:
+On top of those transports, the UE side now has two layers:
 
 - `ue/mini_ue_fsm`
-  - generates the deterministic single-UE event plan used for the local filesystem workflow
+  - generates the deterministic single-UE event templates used by both the legacy JSON workflow and the live shared-slot runtime
   - currently assumes the same fixed timing as the mock gNB:
     - `PRACH`
     - `MSG3`
     - post-Msg4 `PUCCH_SR`
     - scheduled `BSR`
     - scheduled UL `DATA`
+- `ue/mini_ue_runtime`
+  - runs the live shared-slot UE process
+  - waits for each published gNB slot, updates its local view of `SIB1`, `RAR`, `Msg4`, and UL grants, and writes back one future UL burst when needed
+  - learns PRACH occasions and retry policy from `SIB1`
+  - learns post-Msg4 DL/UL `time_indicator`, DL ACK timing, and HARQ pool sizes from `SIB1`
+  - learns the exact Msg3 absolute slot from `RAR`
+  - learns SR periodicity and offset from `Msg4` / `RRCSetup`
+  - explicitly handles the slot-0 boundary and the shutdown boundary, so the gNB and UE stay aligned even when one side only reads in a given phase
 - `apps/mini_ue_c.c`
   - loads the YAML config
-  - resolves `sim.local_exchange_dir`
-  - emits the UE event sequence into `ue_to_gnb/`
+  - prefers the shared-slot runtime when `sim.shared_slot_path` is configured
+  - supports running with a separate UE-side YAML file that no longer has to match the gNB timing fields because the gNB publishes those defaults in `SIB1` / `Msg4`
+  - falls back to emitting the older JSON event plan into `sim.local_exchange_dir/ue_to_gnb/` only when shared-slot mode is disabled
 
-That filesystem-backed path is now connected end-to-end inside the simulator:
+That live shared-slot path is now connected end-to-end inside the simulator:
 
 - `radio/mock_radio_frontend`
-  - resolves `sim.local_exchange_dir/ue_to_gnb`
-  - consumes ordered `seq_<nnnnnn>_ue_*.json` envelopes
-  - maps `PRACH`, `MSG3`, `PUCCH_SR`, `BSR`, and `DATA` into the existing uplink burst representation
-  - keeps the existing slot-input text transport as a lower-priority fallback for tests and manual bring-up
-  - suppresses the synthetic single-UE injection when local exchange mode is active so the UE process drives the slot loop
+  - consumes one due UL burst from `link/shared_slot_link` before checking any fallback transport
+  - accumulates the DL work produced in the current slot into one compact slot summary
+  - publishes that summary at the end of the slot and waits for the UE to acknowledge the same slot through the UE-written progress register
+  - keeps the existing slot-input text transport and JSON event transport as lower-priority fallbacks for tests and manual bring-up
 
-So the current local bring-up path is:
+So the current primary local bring-up path is:
 
-1. `apps/mini_ue_c.c` writes the deterministic single-UE event plan into `ue_to_gnb/`
-2. `radio/mock_radio_frontend` consumes those events slot by slot
-3. `src/common/simulator.c` runs the unchanged RA, MAC, scheduler, and metrics flow on top of the consumed bursts
-4. `tests/test_integration.c:test_integration_local_exchange_ue_plan()` verifies the full PRACH, Msg3, SR, BSR, and UL DATA path without handcrafted slot input files
+1. `apps/mini_ue_c.c` attaches to `sim.shared_slot_path`
+2. `src/common/simulator.c` runs the normal slot loop and asks `radio/mock_radio_frontend` for any due UE UL burst at the start of each slot
+3. the simulator runs unchanged RA, MAC, scheduler, and metrics code on that consumed burst
+4. `radio/mock_radio_frontend` publishes the gNB's DL slot summary at the end of the slot and waits for the UE acknowledgement
+5. `ue/mini_ue_runtime` observes the published slot, schedules the next future UL burst when the DL state allows it, then advances the UE progress register
+6. `tests/test_integration.c:test_integration_shared_slot_ue_runtime()` verifies the full PRACH, Msg3, SR, BSR, and UL DATA path with both processes running against the same shared slot register file
+
+The old filesystem-backed `ue_to_gnb/*.json` loop still exists as a fallback regression path, but it is no longer the preferred architecture for the radio interaction.
 
 To prepare the next AMF/session integration stage, the promoted UE state now also
 owns an embedded core-session object:
@@ -233,11 +248,11 @@ Subsystem mapping:
 - `core`
   - reusable single-UE session state for AMF/N3 integration
 - `link`
-  - reusable local JSON exchange helpers for the future UE/gNB filesystem bridge
+  - reusable local JSON exchange helpers plus the shared-slot register transport
 - `n3`
   - reusable GTP-U packet builders and validators
 - `ue`
-  - minimal UE-side FSM and context helpers for the local-loop bring-up path
+  - minimal UE-side FSM, live runtime, and context helpers for the local-loop bring-up path
 - `phy_dl`
   - toy DL waveform mapping
 - `radio`
@@ -530,10 +545,20 @@ Current SIB1 timing model:
 
 - `sib1_period_slots`
 - `sib1_offset_slot`
+- `prach_period_slots`
+- `prach_offset_slot`
+- `ra_resp_window`
+- `prach_retry_delay_slots`
 
 The resulting send slots are:
 
 - `abs_slot = sib1_offset_slot + k * sib1_period_slots`
+
+The SIB1 payload now also acts as the gNB-authored PRACH timing contract for the live UE:
+
+- the UE only schedules `Msg1/PRACH` on `prach_offset_slot + k * prach_period_slots`
+- if a matching `RAR` is not seen before `ra_resp_window` expires, the UE waits
+  `prach_retry_delay_slots` and then retries on the next valid PRACH occasion
 
 ### 8.4 PRACH Detection Layer
 
@@ -940,6 +965,7 @@ Access path:
 - Msg3 miss can re-arm a future PRACH attempt
 - Msg3 success creates Msg4
 - Msg4 is exported as PDSCH with companion mock `DCI1_0`
+- Msg4 / `RRCSetup` now carries the mock SR period and offset used by the live UE runtime
 - after Msg4, the prototype enters a tiny connected mode:
   - one DL data PDSCH with `DCI1_1` that carries a `PUCCH` config string
   - one UE `PUCCH_SR` burst

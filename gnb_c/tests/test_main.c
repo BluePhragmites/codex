@@ -4,6 +4,7 @@ typedef void (*mini_gnb_c_test_fn)(void);
 
 void test_config_loads(void);
 void test_sib1_schedule_uses_period_and_offset(void);
+void test_prach_schedule_uses_period_and_offset(void);
 void test_tbsize_lookup_table(void);
 void test_core_session_tracks_user_plane_state(void);
 void test_core_session_rejects_invalid_values(void);
@@ -19,6 +20,8 @@ void test_gtpu_builders_reject_missing_state(void);
 void test_json_link_builds_stable_event_path(void);
 void test_json_link_emits_atomic_event_file(void);
 void test_json_link_finds_event_by_sequence(void);
+void test_shared_slot_link_round_trip(void);
+void test_shared_slot_link_handles_slot_zero_and_shutdown_boundaries(void);
 void test_mini_ue_fsm_generates_default_event_sequence(void);
 void test_mini_ue_fsm_skips_connected_traffic_when_disabled(void);
 void test_ra_manager_flow(void);
@@ -27,6 +30,7 @@ void test_mac_rrc_and_msg4_contention_identity(void);
 void test_integration_run(void);
 void test_integration_slot_input_prach(void);
 void test_integration_local_exchange_ue_plan(void);
+void test_integration_shared_slot_ue_runtime(void);
 void test_integration_core_bridge_prepares_initial_message(void);
 void test_integration_core_bridge_relays_followup_ul_nas(void);
 void test_integration_core_bridge_extracts_session_setup_state(void);
@@ -43,6 +47,7 @@ int main(void) {
   } tests[] = {
       {"test_config_loads", test_config_loads},
       {"test_sib1_schedule_uses_period_and_offset", test_sib1_schedule_uses_period_and_offset},
+      {"test_prach_schedule_uses_period_and_offset", test_prach_schedule_uses_period_and_offset},
       {"test_tbsize_lookup_table", test_tbsize_lookup_table},
       {"test_core_session_tracks_user_plane_state", test_core_session_tracks_user_plane_state},
       {"test_core_session_rejects_invalid_values", test_core_session_rejects_invalid_values},
@@ -61,6 +66,9 @@ int main(void) {
       {"test_json_link_builds_stable_event_path", test_json_link_builds_stable_event_path},
       {"test_json_link_emits_atomic_event_file", test_json_link_emits_atomic_event_file},
       {"test_json_link_finds_event_by_sequence", test_json_link_finds_event_by_sequence},
+      {"test_shared_slot_link_round_trip", test_shared_slot_link_round_trip},
+      {"test_shared_slot_link_handles_slot_zero_and_shutdown_boundaries",
+       test_shared_slot_link_handles_slot_zero_and_shutdown_boundaries},
       {"test_mini_ue_fsm_generates_default_event_sequence", test_mini_ue_fsm_generates_default_event_sequence},
       {"test_mini_ue_fsm_skips_connected_traffic_when_disabled",
        test_mini_ue_fsm_skips_connected_traffic_when_disabled},
@@ -70,6 +78,7 @@ int main(void) {
       {"test_integration_run", test_integration_run},
       {"test_integration_slot_input_prach", test_integration_slot_input_prach},
       {"test_integration_local_exchange_ue_plan", test_integration_local_exchange_ue_plan},
+      {"test_integration_shared_slot_ue_runtime", test_integration_shared_slot_ue_runtime},
       {"test_integration_core_bridge_prepares_initial_message", test_integration_core_bridge_prepares_initial_message},
       {"test_integration_core_bridge_relays_followup_ul_nas", test_integration_core_bridge_relays_followup_ul_nas},
       {"test_integration_core_bridge_extracts_session_setup_state",

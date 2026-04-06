@@ -294,15 +294,23 @@ int mini_gnb_c_load_config(const char* path,
   out_config->core.timeout_ms = 5000u;
   out_config->core.ran_ue_ngap_id_base = 1u;
   out_config->core.default_pdu_session_id = 1u;
-  out_config->sim.post_msg4_dl_data_delay_slots = 2;
-  out_config->sim.post_msg4_ul_grant_delay_slots = 3;
-  out_config->sim.post_msg4_ul_data_k2 = 2;
+  out_config->sim.post_msg4_dl_pdcch_delay_slots = 1;
+  out_config->sim.post_msg4_dl_time_indicator = 1;
+  out_config->sim.post_msg4_dl_data_to_ul_ack_slots = 1;
+  out_config->sim.post_msg4_sr_period_slots = 10;
+  out_config->sim.post_msg4_sr_offset_slot = 2;
+  out_config->sim.post_msg4_ul_grant_delay_slots = 1;
+  out_config->sim.post_msg4_ul_time_indicator = 2;
+  out_config->sim.post_msg4_dl_harq_process_count = 2;
+  out_config->sim.post_msg4_ul_harq_process_count = 2;
   out_config->sim.ul_data_present = false;
   out_config->sim.ul_data_crc_ok = true;
   out_config->sim.ul_data_snr_db = 16.0;
   out_config->sim.ul_data_evm = 2.5;
   out_config->sim.ul_bsr_buffer_size_bytes = 384;
   out_config->sim.local_exchange_dir[0] = '\0';
+  out_config->sim.shared_slot_path[0] = '\0';
+  out_config->sim.shared_slot_timeout_ms = 100u;
   out_config->sim.scripted_schedule_dir[0] = '\0';
   out_config->sim.scripted_pdcch_dir[0] = '\0';
   (void)snprintf(out_config->sim.ul_data_hex,
@@ -360,6 +368,8 @@ int mini_gnb_c_load_config(const char* path,
   MINI_GNB_C_LOAD_INT("broadcast", "ssb_period_slots", out_config->broadcast.ssb_period_slots, int);
   MINI_GNB_C_LOAD_INT("broadcast", "sib1_period_slots", out_config->broadcast.sib1_period_slots, int);
   MINI_GNB_C_LOAD_INT("broadcast", "sib1_offset_slot", out_config->broadcast.sib1_offset_slot, int);
+  MINI_GNB_C_LOAD_INT("broadcast", "prach_period_slots", out_config->broadcast.prach_period_slots, int);
+  MINI_GNB_C_LOAD_INT("broadcast", "prach_offset_slot", out_config->broadcast.prach_offset_slot, int);
 
   MINI_GNB_C_LOAD_INT("sim", "total_slots", out_config->sim.total_slots, int);
   MINI_GNB_C_LOAD_INT("sim", "slots_per_frame", out_config->sim.slots_per_frame, int);
@@ -377,14 +387,36 @@ int mini_gnb_c_load_config(const char* path,
   if (mini_gnb_c_extract_bool(text, "sim", "post_msg4_traffic_enabled", &bool_value) == 0) {
     out_config->sim.post_msg4_traffic_enabled = bool_value;
   }
-  if (mini_gnb_c_extract_int(text, "sim", "post_msg4_dl_data_delay_slots", &value) == 0) {
-    out_config->sim.post_msg4_dl_data_delay_slots = value;
+  if (mini_gnb_c_extract_int(text, "sim", "post_msg4_dl_pdcch_delay_slots", &value) == 0) {
+    out_config->sim.post_msg4_dl_pdcch_delay_slots = value;
+  } else if (mini_gnb_c_extract_int(text, "sim", "post_msg4_dl_data_delay_slots", &value) == 0) {
+    out_config->sim.post_msg4_dl_pdcch_delay_slots = value;
+  }
+  if (mini_gnb_c_extract_int(text, "sim", "post_msg4_dl_time_indicator", &value) == 0) {
+    out_config->sim.post_msg4_dl_time_indicator = value;
+  }
+  if (mini_gnb_c_extract_int(text, "sim", "post_msg4_dl_data_to_ul_ack_slots", &value) == 0) {
+    out_config->sim.post_msg4_dl_data_to_ul_ack_slots = value;
+  }
+  if (mini_gnb_c_extract_int(text, "sim", "post_msg4_sr_period_slots", &value) == 0) {
+    out_config->sim.post_msg4_sr_period_slots = value;
+  }
+  if (mini_gnb_c_extract_int(text, "sim", "post_msg4_sr_offset_slot", &value) == 0) {
+    out_config->sim.post_msg4_sr_offset_slot = value;
   }
   if (mini_gnb_c_extract_int(text, "sim", "post_msg4_ul_grant_delay_slots", &value) == 0) {
     out_config->sim.post_msg4_ul_grant_delay_slots = value;
   }
-  if (mini_gnb_c_extract_int(text, "sim", "post_msg4_ul_data_k2", &value) == 0) {
-    out_config->sim.post_msg4_ul_data_k2 = value;
+  if (mini_gnb_c_extract_int(text, "sim", "post_msg4_ul_time_indicator", &value) == 0) {
+    out_config->sim.post_msg4_ul_time_indicator = value;
+  } else if (mini_gnb_c_extract_int(text, "sim", "post_msg4_ul_data_k2", &value) == 0) {
+    out_config->sim.post_msg4_ul_time_indicator = value;
+  }
+  if (mini_gnb_c_extract_int(text, "sim", "post_msg4_dl_harq_process_count", &value) == 0) {
+    out_config->sim.post_msg4_dl_harq_process_count = value;
+  }
+  if (mini_gnb_c_extract_int(text, "sim", "post_msg4_ul_harq_process_count", &value) == 0) {
+    out_config->sim.post_msg4_ul_harq_process_count = value;
   }
   if (mini_gnb_c_extract_bool(text, "sim", "ul_data_present", &bool_value) == 0) {
     out_config->sim.ul_data_present = bool_value;
@@ -416,6 +448,16 @@ int mini_gnb_c_load_config(const char* path,
                                 out_config->sim.local_exchange_dir,
                                 sizeof(out_config->sim.local_exchange_dir)) != 0) {
     out_config->sim.local_exchange_dir[0] = '\0';
+  }
+  if (mini_gnb_c_extract_string(text,
+                                "sim",
+                                "shared_slot_path",
+                                out_config->sim.shared_slot_path,
+                                sizeof(out_config->sim.shared_slot_path)) != 0) {
+    out_config->sim.shared_slot_path[0] = '\0';
+  }
+  if (mini_gnb_c_extract_int(text, "sim", "shared_slot_timeout_ms", &value) == 0) {
+    out_config->sim.shared_slot_timeout_ms = (uint32_t)value;
   }
   if (mini_gnb_c_extract_string(text,
                                 "sim",
@@ -463,13 +505,13 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                out_size,
                "Broadcast config summary:\n"
                "  cell pci=%u band=n%u arfcn=%u scs=%ukHz bw=%uMHz plmn=%s tac=%u\n"
-               "  ss0_index=%u coreset0_index=%u ssb_period_slots=%d sib1_period_slots=%d sib1_offset_slot=%d\n"
+               "  ss0_index=%u coreset0_index=%u ssb_period_slots=%d sib1_period_slots=%d sib1_offset_slot=%d prach_period_slots=%d prach_offset_slot=%d\n"
                 "RA config summary:\n"
                 "  prach_config_index=%u root_seq=%u zero_corr=%u ra_resp_window=%u msg3_delta_preamble=%d\n"
                 "UL input summary:\n"
-                "  prach_trigger_abs_slot=%d prach_retry_delay_slots=%d msg3_delay_slots=%d msg3_present=%s input_dir=%s local_exchange_dir=%s scripted_schedule_dir=%s scripted_pdcch_dir=%s\n"
+                "  prach_trigger_abs_slot=%d prach_retry_delay_slots=%d msg3_delay_slots=%d msg3_present=%s input_dir=%s local_exchange_dir=%s shared_slot_path=%s shared_slot_timeout_ms=%u scripted_schedule_dir=%s scripted_pdcch_dir=%s\n"
                 "Connected traffic summary:\n"
-                "  post_msg4=%s dl_delay=%d ul_grant_delay=%d ul_k2=%d ul_present=%s\n"
+                "  post_msg4=%s dl_pdcch_delay=%d dl_time_indicator=%d dl_ack=%d sr_period=%d sr_offset=%d ul_grant_delay=%d ul_time_indicator=%d dl_harq=%d ul_harq=%d ul_present=%s\n"
                 "Core bridge summary:\n"
                 "  enabled=%s amf=%s:%u timeout_ms=%u ran_ue_ngap_id_base=%u default_pdu_session_id=%u\n"
                 "RF config summary:\n"
@@ -486,6 +528,8 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                config->broadcast.ssb_period_slots,
                config->broadcast.sib1_period_slots,
                config->broadcast.sib1_offset_slot,
+               config->broadcast.prach_period_slots,
+               config->broadcast.prach_offset_slot,
                config->prach.prach_config_index,
                config->prach.prach_root_seq_index,
                config->prach.zero_correlation_zone,
@@ -497,12 +541,20 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                 config->sim.msg3_present ? "true" : "false",
                 config->sim.ul_input_dir[0] != '\0' ? config->sim.ul_input_dir : "(disabled)",
                 config->sim.local_exchange_dir[0] != '\0' ? config->sim.local_exchange_dir : "(disabled)",
+                config->sim.shared_slot_path[0] != '\0' ? config->sim.shared_slot_path : "(disabled)",
+                config->sim.shared_slot_timeout_ms,
                 config->sim.scripted_schedule_dir[0] != '\0' ? config->sim.scripted_schedule_dir : "(disabled)",
                 config->sim.scripted_pdcch_dir[0] != '\0' ? config->sim.scripted_pdcch_dir : "(disabled)",
                 config->sim.post_msg4_traffic_enabled ? "true" : "false",
-                config->sim.post_msg4_dl_data_delay_slots,
+                config->sim.post_msg4_dl_pdcch_delay_slots,
+                config->sim.post_msg4_dl_time_indicator,
+                config->sim.post_msg4_dl_data_to_ul_ack_slots,
+                config->sim.post_msg4_sr_period_slots,
+                config->sim.post_msg4_sr_offset_slot,
                 config->sim.post_msg4_ul_grant_delay_slots,
-                config->sim.post_msg4_ul_data_k2,
+                config->sim.post_msg4_ul_time_indicator,
+                config->sim.post_msg4_dl_harq_process_count,
+                config->sim.post_msg4_ul_harq_process_count,
                 config->sim.ul_data_present ? "true" : "false",
                 config->core.enabled ? "true" : "false",
                 config->core.amf_ip,

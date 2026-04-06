@@ -5,6 +5,7 @@
 #include "mini_gnb_c/config/config_loader.h"
 #include "mini_gnb_c/link/json_link.h"
 #include "mini_gnb_c/ue/mini_ue_fsm.h"
+#include "mini_gnb_c/ue/mini_ue_runtime.h"
 
 #ifndef MINI_GNB_C_SOURCE_DIR
 #define MINI_GNB_C_SOURCE_DIR "."
@@ -42,6 +43,21 @@ int main(int argc, char** argv) {
   if (mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) != 0) {
     fprintf(stderr, "failed to load config %s: %s\n", config_path, error_message);
     return 1;
+  }
+  if (config.sim.shared_slot_path[0] != '\0') {
+    char shared_slot_path[MINI_GNB_C_MAX_PATH];
+
+    if (mini_gnb_c_resolve_exchange_dir(config.sim.shared_slot_path, shared_slot_path, sizeof(shared_slot_path)) != 0) {
+      fprintf(stderr, "missing or invalid sim.shared_slot_path in %s\n", config_path);
+      return 1;
+    }
+    (void)snprintf(config.sim.shared_slot_path, sizeof(config.sim.shared_slot_path), "%s", shared_slot_path);
+    if (mini_gnb_c_run_shared_ue_runtime(&config) != 0) {
+      fprintf(stderr, "shared-slot UE runtime failed for %s\n", config_path);
+      return 1;
+    }
+    printf("UE shared-slot runtime finished. shared_slot_path=%s\n", config.sim.shared_slot_path);
+    return 0;
   }
   if (mini_gnb_c_resolve_exchange_dir(config.sim.local_exchange_dir, exchange_dir, sizeof(exchange_dir)) != 0) {
     fprintf(stderr, "missing or invalid sim.local_exchange_dir in %s\n", config_path);

@@ -45,6 +45,8 @@ const char* mini_gnb_c_ul_burst_type_to_string(const mini_gnb_c_ul_burst_type_t 
       return "UL_BURST_PUCCH_SR";
     case MINI_GNB_C_UL_BURST_DATA:
       return "UL_BURST_DATA";
+    case MINI_GNB_C_UL_BURST_PUCCH_ACK:
+      return "UL_BURST_PUCCH_ACK";
   }
   return "UL_BURST_UNKNOWN";
 }

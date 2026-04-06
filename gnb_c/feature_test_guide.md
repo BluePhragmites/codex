@@ -4,17 +4,22 @@
 
 ## 1. 当前已经完成的功能
 
-### 1.1 本地 UE <-> gNB 文件系统闭环
+### 1.1 本地 UE <-> gNB 共享寄存器闭环
 
-当前已经实现了一个基于本地 JSON 事件目录的单 UE 闭环：
+当前默认推荐的本地 UE/gNB 联动方式已经切换成共享寄存器式的 shared-slot 闭环：
 
 - `apps/mini_ue_c.c`
-  - 根据 `config/default_cell.yml` 中的时序配置，生成单 UE 事件序列
-  - 将事件写入 `sim.local_exchange_dir/ue_to_gnb/`
+  - 在配置了 `sim.shared_slot_path` 时，不再预生成一整批 JSON 事件
+  - 而是进入 live runtime，逐 slot 读取 gNB 发布的 `txSlot` 状态，并写回 UE 自己的 `rxSlot` 进度和未来上行事件
+  - UE 可以使用和 gNB 不同的配置文件；接入和连接态时机不再要求两边事先写死一致
 - `apps/mini_gnb_c_sim.c`
-  - 从 `sim.local_exchange_dir/ue_to_gnb/` 读取 UE 事件
-  - 将这些事件映射到现有 mock PHY/MAC 上行输入
-  - 在 slot 驱动模型中完成随机接入和后续简化调度
+  - 每个 slot 开始时先读 UE 是否为该 slot 留下了上行事件
+  - 每个 slot 结束时将本 slot 的下行摘要写入 shared-slot 寄存器，然后等待 UE 确认读取
+- `include/mini_gnb_c/link/shared_slot_link.h`
+  - 封装了这组共享内存寄存器
+  - gNB 侧只推进 `txSlot`
+  - UE 侧只推进 `rxSlot`
+  - 双方通过一个 DL 槽摘要和一个待消费 UL 事件完成联动
 
 当前已经覆盖的本地流程为：
 
@@ -23,9 +28,33 @@
 - `BSR`
 - `UL DATA`
 
+当前 live UE runtime 的时机来源已经改成“由下行消息学习”：
+
+- `SIB1` 的 `PDSCH` 负载里带 `prach_period_slots / prach_offset_slot / ra_resp_window / prach_retry_delay_slots`
+- UE 只会在这些 `SIB1` 宣告的 PRACH 时机上发 `Msg1`
+- `SIB1` 还带 gNB 配置出来的 `dl_time_indicator / dl_data_to_ul_ack_slots / ul_time_indicator / dl_harq_process_count / ul_harq_process_count`
+- 如果这些字段没有在 gNB YAML 中显式配置，配置加载器会补默认值，再由 gNB 继续通过 `SIB1` 广播给 UE
+- `RAR` 里带 mock `Msg3` 的绝对 slot
+- `Msg4` 的 `RRCSetup` 里带 `sr_period_slots / sr_offset_slot`
+- UE 只会在这些 `Msg4` 宣告的 SR 时机上发 `PUCCH_SR`
+
 运行结束后，可以在 `out/summary.json` 中看到提升后的 UE 上下文，以及内嵌的 `core_session` 基础状态。
 
-### 1.2 gNB -> AMF 的最小控制面桥接
+### 1.2 本地 JSON 目录现在只保留给控制面和回归
+
+原先的 `sim.local_exchange_dir/ue_to_gnb/*.json` 方案没有完全删除，但它已经不再是主路径：
+
+- 对 radio 路径来说，它只保留为回归测试和兼容模式
+- 对 core bridge 来说，`sim.local_exchange_dir` 仍然用于：
+  - `ue_to_gnb_nas/*.json`
+  - `gnb_to_ue/*.json`
+
+也就是说，现在的职责已经分开：
+
+- live radio loop: `shared_slot_path`
+- follow-up NAS event handoff: `local_exchange_dir`
+
+### 1.3 gNB -> AMF 的最小控制面桥接
 
 当前 simulator 内部已经接入一个最小 `gNB -> AMF` bridge：
 
@@ -36,7 +65,7 @@
 - 可以继续轮询 `ue_to_gnb_nas/*.json` 中的 `UL_NAS` 事件，并将其转发为 `UplinkNASTransport`
 - 可以把 AMF 返回的后续 `DL_NAS` 写入 `gnb_to_ue/*.json`
 
-### 1.3 会话建立状态解析
+### 1.4 会话建立状态解析
 
 当前 bridge 已经具备最小 session setup 解析能力：
 
@@ -58,7 +87,7 @@
 
 这些状态会体现在 `out/summary.json` 里。
 
-### 1.4 已有的 Open5GS 外部验证工具
+### 1.5 已有的 Open5GS 外部验证工具
 
 仓库里另外还有一个独立工具：
 
@@ -80,7 +109,7 @@
 
 以下能力尚未完成，因此目前不能认为系统已经具备完整端到端 UE 仿真：
 
-- `mini_ue_c` 还不会读取 `gnb_to_ue/*.json` 后自动生成后续 UE NAS 响应
+- `mini_ue_c` 的 live runtime 还不会读取 `gnb_to_ue/*.json` 后自动生成后续 UE NAS 响应
 - 还没有在 UE 侧实现完整的 NAS 状态机
 - 还没有完成持久化 N3 用户面
 - 还没有完成 TUN 接口接入
@@ -106,7 +135,9 @@ cd /home/hzy/codex/test2/codex/gnb_c
 
 当前与 UE/gNB/core bridge 关系最直接的测试包括：
 
-- `test_integration_local_exchange_ue_plan`
+- `test_shared_slot_link_round_trip`
+- `test_shared_slot_link_handles_slot_zero_and_shutdown_boundaries`
+- `test_integration_shared_slot_ue_runtime`
 - `test_integration_core_bridge_prepares_initial_message`
 - `test_integration_core_bridge_relays_followup_ul_nas`
 - `test_integration_core_bridge_extracts_session_setup_state`
@@ -114,37 +145,36 @@ cd /home/hzy/codex/test2/codex/gnb_c
 - `test_gnb_core_bridge_relays_followup_uplink_nas`
 - `test_gnb_core_bridge_parses_session_setup_state`
 
-## 4. 测试本地 UE <-> gNB 闭环
+## 4. 测试本地 UE <-> gNB shared-slot 闭环
 
 ### 4.1 测试目标
 
-验证当前 `mini_ue_c` 和 `mini_gnb_c_sim` 是否能够通过本地 JSON 目录完成单 UE 闭环。
+验证当前 `mini_ue_c` 和 `mini_gnb_c_sim` 是否能够通过共享寄存器式的 shared-slot 完成单 UE 实时联动，并且 UE 通过 gNB 下发的 `SIB1 / RAR / Msg4` 学到接入与 SR 时机。
 
 ### 4.2 测试命令
 
 ```bash
 cd /home/hzy/codex/test2/codex/gnb_c
-rm -rf out/local_exchange out/summary.json
-./build/mini_ue_c config/default_cell.yml
-./build/mini_gnb_c_sim config/default_cell.yml
+rm -rf out/local_exchange out/shared_slot_link.bin out/summary.json
+./build/mini_ue_c config/example_shared_slot_ue.yml &
+UE_PID=$!
+./build/mini_gnb_c_sim config/example_shared_slot_gnb.yml
+wait $UE_PID
 ```
 
 ### 4.3 预期结果
 
-`mini_ue_c` 会生成一组 JSON 事件，例如：
+预期现象：
 
-- `out/local_exchange/ue_to_gnb/seq_000001_ue_PRACH.json`
-- `out/local_exchange/ue_to_gnb/seq_000002_ue_MSG3.json`
-- `out/local_exchange/ue_to_gnb/seq_000003_ue_PUCCH_SR.json`
-
-`mini_gnb_c_sim` 运行结束后，应生成：
-
+- UE 进程会打印当前已经排入 future slot 的上行事件，例如 `UE scheduled PRACH for abs_slot=2`
+- UE 配置文件不需要重复写 gNB 的 PDCCH/HARQ 时序参数；这些由 gNB 配置并经 `SIB1` 下发
+- gNB 进程会在日志中看到实际收到的 `PRACH / MSG3 / PUCCH_SR / DATA`
+- 会生成 `out/shared_slot_link.bin`
 - `out/summary.json`
 
 可以进一步检查：
 
 ```bash
-ls out/local_exchange/ue_to_gnb
 sed -n '1,240p' out/summary.json
 ```
 
@@ -156,9 +186,55 @@ sed -n '1,240p' out/summary.json
 - `ul_bsr_received=true`
 - `ul_data_received=true`
 
-## 5. 测试 gNB 到 AMF 的第一跳桥接
+推荐额外检查 UE 日志，确认它是按 gNB 下行信息学时机：
+
+- 先看到 `UE scheduled PRACH for abs_slot=2`
+- 在收到 `RAR` 后看到 `UE scheduled MSG3 for abs_slot=6`
+- 在收到 `Msg4` 后看到 `UE scheduled PUCCH_SR for abs_slot=12`
+
+### 4.4 shared-slot 边界语义
+
+当前实现已经显式覆盖了你提出的两个边界：
+
+- 起始边界
+  - `txSlot` 初始为 `-1`
+  - gNB 在 slot 0 先发布，UE 只读取并确认
+- 结束边界
+  - UE 可以在结束前留下最后一个 future UL 事件
+  - gNB 即使在 UE 标记结束后，也仍可把这个最终 UL 事件读走
+
+对应自动测试：
+
+- `test_shared_slot_link_handles_slot_zero_and_shutdown_boundaries`
+
+## 5. 测试 legacy JSON UE 计划回退路径
 
 ### 5.1 测试目标
+
+验证旧的 `ue_to_gnb/*.json` 回退路径仍然可用，避免 shared-slot 改造后把已有回归手段破坏掉。
+
+### 5.2 测试命令
+
+```bash
+cd /home/hzy/codex/test2/codex/gnb_c
+rm -rf out/local_exchange out/summary.json
+./build/mini_ue_c config/default_cell.yml
+./build/mini_gnb_c_sim config/default_cell.yml
+```
+
+### 5.3 预期结果
+
+`mini_ue_c` 会重新生成：
+
+- `out/local_exchange/ue_to_gnb/seq_000001_ue_PRACH.json`
+- `out/local_exchange/ue_to_gnb/seq_000002_ue_MSG3.json`
+- `out/local_exchange/ue_to_gnb/seq_000003_ue_PUCCH_SR.json`
+
+这个模式主要用于旧回归和局部调试，不再是推荐的主交互方式。
+
+## 6. 测试 gNB 到 AMF 的第一跳桥接
+
+### 6.1 测试目标
 
 验证 simulator 在启用 `core.enabled` 后，是否能够：
 
@@ -167,13 +243,13 @@ sed -n '1,240p' out/summary.json
 - 在 UE promote 后发送第一条 `InitialUEMessage`
 - 接收第一条 `DL_NAS`
 
-### 5.2 准备配置
+### 6.2 准备配置
 
-复制默认配置并临时打开核心网桥接：
+复制 shared-slot 示例配置并临时打开核心网桥接：
 
 ```bash
 cd /home/hzy/codex/test2/codex/gnb_c
-cp config/default_cell.yml /tmp/mini_gnb_core.yml
+cp config/example_shared_slot_loop.yml /tmp/mini_gnb_core.yml
 sed -i 's/^  enabled: false$/  enabled: true/' /tmp/mini_gnb_core.yml
 ```
 
@@ -183,16 +259,23 @@ sed -i 's/^  enabled: false$/  enabled: true/' /tmp/mini_gnb_core.yml
 - `core.amf_port`
 - `core.timeout_ms`
 
-### 5.3 测试命令
+### 6.3 测试命令
 
 ```bash
 cd /home/hzy/codex/test2/codex/gnb_c
-rm -rf out/local_exchange out/summary.json
-./build/mini_ue_c /tmp/mini_gnb_core.yml
+rm -rf out/local_exchange out/shared_slot_link.bin out/summary.json
+./build/mini_ue_c /tmp/mini_gnb_core.yml &
+UE_PID=$!
 ./build/mini_gnb_c_sim /tmp/mini_gnb_core.yml
+wait $UE_PID
 ```
 
-### 5.4 预期结果
+`/tmp/mini_gnb_core.yml` 同时提供：
+
+- shared-slot radio 联动路径
+- `local_exchange_dir` 下的 `DL_NAS/UL_NAS` 控制面事件目录
+
+### 6.4 预期结果
 
 如果 AMF 可达，当前应能看到：
 
@@ -210,17 +293,17 @@ sed -n '1,240p' out/summary.json
 
 注意：当前这一步只验证第一跳控制面闭环，不代表完整 attach 已自动完成。
 
-## 6. 测试 follow-up UL_NAS / DL_NAS 桥接
+## 7. 测试 follow-up UL_NAS / DL_NAS 桥接
 
-### 6.1 测试目标
+### 7.1 测试目标
 
 验证 gNB bridge 是否会继续轮询 `ue_to_gnb_nas/` 并将后续 UE NAS 转发给 AMF。
 
-### 6.2 当前限制
+### 7.2 当前限制
 
 当前 `mini_ue_c` 还不会自动根据 `DL_NAS` 生成后续 `UL_NAS`。因此这一步目前主要依赖测试代码，或者你手工写入事件文件。
 
-### 6.3 手工事件格式
+### 7.3 手工事件格式
 
 当前支持的 `UL_NAS` 事件格式示例：
 
@@ -246,7 +329,7 @@ out/local_exchange/ue_to_gnb_nas/seq_000001_ue_UL_NAS.json
 
 你手工补入这样的事件后，simulator 会在对应 slot 到达时转发。
 
-### 6.4 推荐验证方式
+### 7.4 推荐验证方式
 
 这一阶段最稳的回归方式仍然是执行已有测试：
 

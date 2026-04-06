@@ -10,6 +10,8 @@ struct mini_gnb_c_metrics_trace;
 typedef struct {
   mini_gnb_c_dl_grant_t pending_dl[MINI_GNB_C_MAX_GRANTS];
   size_t pending_dl_count;
+  mini_gnb_c_pdcch_dci_t pending_dl_pdcch[MINI_GNB_C_MAX_GRANTS];
+  size_t pending_dl_pdcch_count;
   mini_gnb_c_ul_grant_for_msg3_t pending_ul[MINI_GNB_C_MAX_MSG3_GRANTS];
   size_t pending_ul_count;
   mini_gnb_c_ul_data_grant_t pending_ul_data_pdcch[MINI_GNB_C_MAX_UL_DATA_GRANTS];
@@ -41,6 +43,11 @@ size_t mini_gnb_c_initial_access_scheduler_pop_due_downlink(mini_gnb_c_initial_a
                                                             int abs_slot,
                                                             mini_gnb_c_dl_grant_t* out_grants,
                                                             size_t max_grants);
+
+size_t mini_gnb_c_initial_access_scheduler_pop_due_dl_pdcch(mini_gnb_c_initial_access_scheduler_t* scheduler,
+                                                            int abs_slot,
+                                                            mini_gnb_c_pdcch_dci_t* out_pdcch,
+                                                            size_t max_pdcch);
 
 size_t mini_gnb_c_initial_access_scheduler_pop_due_msg3_grants(
     mini_gnb_c_initial_access_scheduler_t* scheduler,

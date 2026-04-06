@@ -35,6 +35,7 @@ add_library(mini_gnb_c_lib
   src/core/core_session.c
   src/config/config_loader.c
   src/link/json_link.c
+  src/link/shared_slot_link.c
   src/ngap/ngap_runtime.c
   src/ngap/ngap_transport.c
   src/timing/slot_engine.c
@@ -49,6 +50,7 @@ add_library(mini_gnb_c_lib
   src/scheduler/initial_access_scheduler.c
   src/phy_ul/mock_msg3_receiver.c
   src/ue/mini_ue_fsm.c
+  src/ue/mini_ue_runtime.c
   src/mac/mac_ul_demux.c
   src/rrc/rrc_ccch_stub.c
   src/ue/ue_context_store.c
@@ -87,6 +89,7 @@ add_executable(mini_gnb_c_tests
   tests/test_gtpu_tunnel.c
   tests/test_ngap_runtime.c
   tests/test_json_link.c
+  tests/test_shared_slot_link.c
   tests/test_mini_ue_fsm.c
   tests/test_ra_manager.c
   tests/test_mac_rrc.c

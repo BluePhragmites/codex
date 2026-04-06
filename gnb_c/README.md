@@ -92,58 +92,98 @@ later UE/gNB/core integration work:
 those message builders and Open5GS session parsers inline. This is the first real
 Stage C reuse point that the future gNB-to-core bridge will share.
 
-For the next local UE/gNB loop milestone, the repository now also includes a tracked
-JSON exchange helper:
+For the local UE/gNB loop, the repository now has two separate exchange helpers with
+different roles:
 
 - `include/mini_gnb_c/link/json_link.h`
   - emits atomic event files with a stable `seq_<nnnnnn>_<source>_<type>.json` naming pattern
   - writes through `tmp + rename` so a local UE process and the simulator can exchange
-    small control/data events through the filesystem without partially written files
+    control-plane NAS events through the filesystem without partially written files
+- `include/mini_gnb_c/link/shared_slot_link.h`
+  - exposes a shared-memory-backed slot register window for the live UE/gNB radio loop
+  - the gNB publishes one slot summary and advances `txSlot`
+  - the UE observes that slot, optionally schedules one future UL burst, then advances `rxSlot`
+  - this is now the primary local UE/gNB interaction path because it keeps both processes
+    slot-synchronous instead of pre-writing a whole UE event plan to disk
+  - it also lets the gNB and UE use separate YAML files while still coupling only through
+    downlink and uplink transport state
 
-The first UE-side user process now exists as well:
+The UE-side process now has both a reusable event template generator and a live runtime:
 
 - `apps/mini_ue_c.c`
   - loads the existing YAML config
-  - uses `sim.local_exchange_dir` as the root exchange directory
-  - emits one deterministic single-UE event plan into `ue_to_gnb/`
+  - when `sim.shared_slot_path` is configured, attaches to the live shared-slot register
+    window and runs slot-by-slot with the gNB
+  - otherwise, can still emit the older deterministic single-UE JSON event plan into
+    `sim.local_exchange_dir/ue_to_gnb/` for regression coverage
 - `include/mini_gnb_c/ue/mini_ue_fsm.h`
   - exposes the reusable UE event generator used by `mini_ue_c`
   - currently emits `PRACH`, `MSG3`, `PUCCH_SR`, `BSR`, and `DATA` events using the same timing assumptions as the mock gNB
+- `include/mini_gnb_c/ue/mini_ue_runtime.h`
+  - runs the live shared-slot UE process
+  - waits for each published gNB slot before scheduling the next due UE burst
+  - learns the PRACH retry policy and occasion timing from the gNB's SIB1 payload
+  - learns the gNB-authored PDCCH timing and HARQ defaults from the same SIB1 payload
+  - learns the post-attach SR periodicity and offset from the gNB's Msg4 / `RRCSetup` payload
+  - uses the RAR payload to derive the exact Msg3 absolute slot instead of relying on local timing guesses
+  - handles the slot-0 and shutdown boundaries explicitly:
+    - at slot 0 the gNB only publishes and the UE only reads
+    - at the end the UE can still leave one final UL burst for the gNB to consume before both sides mark done
 
-The simulator can now consume the same UE event files directly:
+The simulator-side radio frontend now supports that same live register model:
 
 - `src/radio/mock_radio_frontend.c`
-  - resolves `sim.local_exchange_dir`
-  - reads ordered `ue_to_gnb/seq_<nnnnnn>_ue_*.json` events before falling back to older slot-input files
-  - maps `PRACH`, `MSG3`, `PUCCH_SR`, `BSR`, and `DATA` JSON envelopes into the existing mock uplink burst types
-  - disables the legacy synthetic uplink injection when local exchange mode is active so the UE process fully drives the attach path
+  - resolves `sim.shared_slot_path`
+  - consumes one due UE UL burst from the shared slot register before any fallback transport
+  - publishes one per-slot DL summary and waits for the UE to acknowledge that slot
+  - still keeps the older JSON input path as a fallback for deterministic regression tests
 
-You can run the current local UE/gNB loop with:
+The recommended split-config bring-up uses one gNB file and one UE file:
 
 ```bash
-./build/mini_ue_c config/default_cell.yml
-./build/mini_gnb_c_sim config/default_cell.yml
+./build/mini_ue_c config/example_shared_slot_ue.yml &
+UE_PID=$!
+./build/mini_gnb_c_sim config/example_shared_slot_gnb.yml
+wait $UE_PID
 ```
 
-With the default config, the UE writes event files such as:
-
-- `out/local_exchange/ue_to_gnb/seq_000001_ue_PRACH.json`
-- `out/local_exchange/ue_to_gnb/seq_000002_ue_MSG3.json`
-- `out/local_exchange/ue_to_gnb/seq_000003_ue_PUCCH_SR.json`
-
-and the simulator consumes them to complete the current local attach loop:
+That shared-slot loop completes the current local attach and connected-mode mock flow:
 
 - `PRACH -> RAR -> MSG3 -> MSG4`
 - post-attach `PUCCH_SR`
 - scheduled `BSR`
 - scheduled UL `DATA`
 
-This local filesystem loop is covered by the integration test:
+In that split-config mode, the gNB file is the source of truth for downlink-authored
+timing. The UE file no longer needs to duplicate the PDCCH/HARQ timing fields because
+the live UE runtime follows the air-interface information published by the gNB instead:
+
+- `SIB1` carries the PRACH period, offset, response window, and retry delay
+- `SIB1` also carries the post-Msg4 DL/UL `time_indicator`, DL ACK timing, and DL/UL HARQ process counts
+- `RAR` carries the exact mock Msg3 absolute slot
+- `Msg4` / `RRCSetup` carries the SR period and offset
+
+So the local loop now models "UE reacts to downlink scheduling information" instead of
+"UE and gNB happen to share the same hard-coded slot plan".
+
+Those SIB1 timing/HARQ fields are configured on the gNB side through `sim.*` YAML keys
+such as `post_msg4_dl_time_indicator`, `post_msg4_dl_data_to_ul_ack_slots`,
+`post_msg4_ul_time_indicator`, `post_msg4_dl_harq_process_count`, and
+`post_msg4_ul_harq_process_count`. If they are omitted, the config loader supplies
+defaults and the gNB still advertises those default values in SIB1.
+
+The older filesystem-backed UE plan is still available as a fallback path when
+`sim.shared_slot_path=""`, but it is no longer the preferred interaction model.
+
+The live shared-slot loop is covered by the integration test:
 
 - `tests/test_integration.c`
-  - `test_integration_local_exchange_ue_plan`
-  - emits the deterministic UE event plan into a temporary `local_exchange/ue_to_gnb/` directory
-  - runs `mini_gnb_c_sim` against that directory and verifies PRACH, Msg3, SR, BSR, UL DATA, and the promoted UE summary state
+  - `test_integration_shared_slot_ue_runtime`
+  - forks `mini_ue_c`-equivalent shared-slot UE runtime in one process
+  - runs `mini_gnb_c_sim` against the same shared slot register file
+  - verifies PRACH, Msg3, SR, BSR, UL DATA, and the promoted UE summary state
+- `tests/test_shared_slot_link.c`
+  - verifies the slot-0 boundary, the per-slot handshake, and the shutdown-side final UL consumption semantics of the shared register window
 
 The promoted UE state now also carries the future core-bridge placeholder:
 
@@ -190,6 +230,13 @@ configured SCTP association to the AMF, complete `NGSetup`, send one canned
 surface that NAS downlink into the local UE exchange directory. It can also relay
 subsequent UE-originated `UL_NAS` event files through `UplinkNASTransport` and
 emit the returned follow-up `DL_NAS` events back to the local exchange directory.
+
+That means the repository now uses two local transports in parallel:
+
+- shared-slot register window
+  - primary radio-path coupling between `mini_ue_c` and `mini_gnb_c_sim`
+- JSON local exchange directory
+  - control-plane NAS handoff between the simulator-side bridge and later UE-side NAS work
 
 The current follow-up control-plane event format is:
 

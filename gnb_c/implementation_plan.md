@@ -1,6 +1,6 @@
 # gnb_c End-to-End UE/gNB/Core Plan
 
-Last updated: 2026-04-02 (Stage C5 complete; reference captures moved under examples/)
+Last updated: 2026-04-06 (shared-slot split-config timing plus PDCCH/HARQ defaults learned from SIB1/Msg4; tests/docs refreshed)
 
 ## Completed Tasks
 
@@ -50,10 +50,21 @@ Last updated: 2026-04-02 (Stage C5 complete; reference captures moved under exam
 - [x] 2026-04-02: Added unit and integration coverage for session-setup state extraction, summary export, and automatic NGAP acknowledgements.
 - [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the Stage C5 session-state extraction workflow.
 - [x] 2026-04-02: Moved the checked-in `gnb_ngap.pcap` and `gnb_mac.pcap` reference captures into `gnb_c/examples/` and updated runtime/documentation references.
+- [x] 2026-04-06: Replaced the primary local UE/gNB radio interaction model with a shared-slot register transport in `include/mini_gnb_c/link/shared_slot_link.h` and `src/link/shared_slot_link.c`.
+- [x] 2026-04-06: Added the live UE-side shared-slot runtime in `include/mini_gnb_c/ue/mini_ue_runtime.h` and `src/ue/mini_ue_runtime.c`, while keeping the JSON UE plan only as a fallback path.
+- [x] 2026-04-06: Wired `mock_radio_frontend` and `simulator` to publish one DL slot summary, consume one due UL burst, and synchronize per-slot progress through the shared-slot registers.
+- [x] 2026-04-06: Added `config/example_shared_slot_loop.yml` and made `apps/mini_ue_c.c` prefer shared-slot mode whenever `sim.shared_slot_path` is configured.
+- [x] 2026-04-06: Added unit and integration coverage for the shared-slot handshake, including slot-0 and shutdown boundary conditions, and kept `ctest --test-dir build --output-on-failure` passing.
+- [x] 2026-04-06: Updated `gnb_c/README.md`, `gnb_c/architecture.md`, and `gnb_c/feature_test_guide.md` so the shared-slot loop is documented as the primary local UE/gNB path.
+- [x] 2026-04-06: Added split shared-slot example configs in `config/example_shared_slot_gnb.yml` and `config/example_shared_slot_ue.yml` so the gNB and UE can run from separate YAML files.
+- [x] 2026-04-06: Moved the live UE timing model away from shared local assumptions so PRACH timing is learned from SIB1, Msg3 timing is learned from RAR, and SR timing is learned from Msg4 / `RRCSetup`.
+- [x] 2026-04-06: Added gNB-configured PDCCH timing and HARQ defaults to the SIB1 payload so the live UE learns `time_indicator`, DL ACK timing, and HARQ pool sizes directly from downlink signaling.
+- [x] 2026-04-06: Refreshed the shared-slot tests and test harness so output directories are cleaned between runs and stale slot-input artifacts do not corrupt timing-sensitive regressions.
+- [x] 2026-04-06: Updated `gnb_c/README.md`, `gnb_c/architecture.md`, and `gnb_c/feature_test_guide.md` so the split-config, downlink-driven UE timing model is documented as the preferred local radio workflow.
 
 ## Pending Tasks
 
-- [ ] Stage C6: Add the next control-plane milestone tests and docs for session-setup state extraction and later AMF procedures beyond simple NAS relay.
+- [ ] Stage C6: Add the next control-plane milestone tests and docs for later AMF procedures beyond the current NAS relay and session-state extraction path.
 - [ ] Stage C7: Create a local milestone commit after the control plane is stable.
 - [ ] Stage D1: Add a persistent N3 user-plane helper that maintains a live GTP-U socket instead of one-shot probe traffic.
 - [ ] Stage D2: Add minimal UE-side IPv4/ICMP user-plane handling.

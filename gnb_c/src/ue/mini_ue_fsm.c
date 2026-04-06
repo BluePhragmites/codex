@@ -5,6 +5,25 @@
 
 #include "mini_gnb_c/common/hex.h"
 
+static int mini_gnb_c_next_periodic_slot_at_or_after(const int min_abs_slot,
+                                                     const int period_slots,
+                                                     const int offset_slot) {
+  int candidate = 0;
+
+  if (period_slots <= 0 || offset_slot < 0) {
+    return -1;
+  }
+  if (min_abs_slot <= offset_slot) {
+    return offset_slot;
+  }
+
+  candidate = min_abs_slot;
+  while (((candidate - offset_slot) % period_slots) != 0) {
+    ++candidate;
+  }
+  return candidate;
+}
+
 static void mini_gnb_c_mini_ue_build_msg3_mac_pdu(const mini_gnb_c_sim_config_t* sim,
                                                   const uint16_t tc_rnti,
                                                   mini_gnb_c_buffer_t* out_mac_pdu) {
@@ -85,9 +104,11 @@ void mini_gnb_c_mini_ue_fsm_init(mini_gnb_c_mini_ue_fsm_t* fsm, const mini_gnb_c
   fsm->tc_rnti = 0x4601u;
   fsm->msg3_abs_slot = sim->prach_trigger_abs_slot + sim->msg3_delay_slots;
   fsm->msg4_abs_slot = fsm->msg3_abs_slot + sim->msg4_delay_slots;
-  fsm->sr_abs_slot = fsm->msg4_abs_slot + sim->post_msg4_dl_data_delay_slots + sim->post_msg4_ul_grant_delay_slots;
-  fsm->bsr_abs_slot = fsm->sr_abs_slot + 1 + sim->post_msg4_ul_data_k2;
-  fsm->data_abs_slot = fsm->bsr_abs_slot + 1 + sim->post_msg4_ul_data_k2;
+  fsm->sr_abs_slot = mini_gnb_c_next_periodic_slot_at_or_after(fsm->msg4_abs_slot + 1,
+                                                                sim->post_msg4_sr_period_slots,
+                                                                sim->post_msg4_sr_offset_slot);
+  fsm->bsr_abs_slot = fsm->sr_abs_slot + sim->post_msg4_ul_grant_delay_slots + sim->post_msg4_ul_time_indicator;
+  fsm->data_abs_slot = fsm->bsr_abs_slot + sim->post_msg4_ul_grant_delay_slots + sim->post_msg4_ul_time_indicator;
 }
 
 bool mini_gnb_c_mini_ue_fsm_has_pending_event(const mini_gnb_c_mini_ue_fsm_t* fsm) {

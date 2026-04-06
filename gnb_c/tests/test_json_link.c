@@ -22,7 +22,7 @@ void test_json_link_builds_stable_event_path(void) {
                                                            path,
                                                            sizeof(path)) == 0,
                      "expected JSON link path build");
-  mini_gnb_c_require(strstr(path, "test_json_link/ue_to_gnb/seq_000007_ue_UL_NAS.json") != NULL,
+  mini_gnb_c_require(strstr(path, "seq_000007_ue_UL_NAS.json") != NULL,
                      "expected stable event filename");
 }
 

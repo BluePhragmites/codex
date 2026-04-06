@@ -87,7 +87,38 @@
 
 这些状态会体现在 `out/summary.json` 里。
 
-### 1.5 已有的 Open5GS 外部验证工具
+### 1.5 Session setup 之后的后续控制面 relay
+
+当前 control-plane bridge 不会在 `PDUSessionResourceSetupRequest` 之后停住：
+
+- 它会继续处理后续 slot 上的 `ue_to_gnb_nas/*.json`
+- 如果 AMF 在 session setup 之后继续发顶层 `DownlinkNASTransport`
+- 这些后续 `DL_NAS` 仍会继续写入 `gnb_to_ue/*.json`
+- 已提取的 `ue_ipv4 / upf_ip / upf_teid / qfi` 会继续保留在 `core_session` 中
+
+另外，`ue_to_gnb_nas` 的时序语义现在也有明确覆盖：
+
+- 早于当前 slot 的 stale `UL_NAS` 会被跳过
+- 晚于当前 slot 的 future `UL_NAS` 会保留到对应 slot 再发送
+
+### 1.6 持久化 N3 用户面 socket 基础层
+
+当前已经完成 Stage D1 的传输层基础设施，但还没有完成完整用户面闭环：
+
+- simulator 在 `core_session` 中拿到有效的：
+  - `upf_ip`
+  - `upf_teid`
+  - `qfi`
+  - `ue_ipv4`
+- 之后会自动激活一个长期存在的 N3 UDP socket，而不是像 `ngap_probe` 那样只打一发 probe
+- 这个 socket 的目标端口来自 gNB 配置里的 `core.upf_port`
+- 当前 helper 已经支持：
+  - 复用 `gtpu_tunnel` 构造上行 G-PDU
+  - 查询本地绑定的 UDP endpoint
+  - 在 slot loop 中非阻塞轮询下行 GTP-U
+- 当前 simulator 还不会把 mock `UL DATA` 直接送去 UPF，因为 UE 侧最小 IPv4/ICMP 还没完成；这部分属于 Stage D2
+
+### 1.7 已有的 Open5GS 外部验证工具
 
 仓库里另外还有一个独立工具：
 
@@ -111,7 +142,7 @@
 
 - `mini_ue_c` 的 live runtime 还不会读取 `gnb_to_ue/*.json` 后自动生成后续 UE NAS 响应
 - 还没有在 UE 侧实现完整的 NAS 状态机
-- 还没有完成持久化 N3 用户面
+- 还没有完成最小 UE 侧 IPv4/ICMP 用户面处理
 - 还没有完成 TUN 接口接入
 - 还没有完成 `server -> UPF -> gNB -> UE` 的真实 `ping` 闭环
 
@@ -141,9 +172,14 @@ cd /home/hzy/codex/test2/codex/gnb_c
 - `test_integration_core_bridge_prepares_initial_message`
 - `test_integration_core_bridge_relays_followup_ul_nas`
 - `test_integration_core_bridge_extracts_session_setup_state`
+- `test_integration_core_bridge_relays_post_session_nas`
 - `test_gnb_core_bridge_prepares_initial_ue_message`
 - `test_gnb_core_bridge_relays_followup_uplink_nas`
 - `test_gnb_core_bridge_parses_session_setup_state`
+- `test_gnb_core_bridge_skips_stale_and_waits_for_future_uplink_nas`
+- `test_gnb_core_bridge_relays_post_session_downlink_nas`
+- `test_n3_user_plane_activates_and_sends_uplink_gpdu`
+- `test_n3_user_plane_polls_downlink_packet`
 
 ## 4. 测试本地 UE <-> gNB shared-slot 闭环
 
@@ -418,7 +454,47 @@ ip -s link show dev ogstun
 - `out/ngap_probe_ngap_runtime.pcap`
 - `out/ngap_probe_gtpu_runtime.pcap`
 
-## 9. 当前测试结论应该怎么理解
+## 9. 测试持久化 N3 用户面基础层
+
+### 9.1 测试目标
+
+验证当前 Stage D1 已经具备：
+
+- 基于 session state 激活长期存在的 N3 socket
+- 向 UPF 发送最小 G-PDU
+- 非阻塞轮询下行 GTP-U
+
+### 9.2 推荐测试命令
+
+当前最稳的验证方式仍然是测试二进制：
+
+```bash
+cd /home/hzy/codex/test2/codex/gnb_c
+./build/mini_gnb_c_tests
+```
+
+重点看：
+
+- `test_n3_user_plane_activates_and_sends_uplink_gpdu`
+- `test_n3_user_plane_polls_downlink_packet`
+- `test_integration_core_bridge_extracts_session_setup_state`
+
+### 9.3 预期结果
+
+这些测试通过后，说明：
+
+- N3 helper 已能根据 `upf_ip / upf_teid / qfi / ue_ipv4` 激活
+- helper 已能向 loopback UDP peer 发出正确的 GTP-U G-PDU
+- simulator 在 session setup 完成后会自动激活一次 N3 helper
+- 当前 integration 覆盖中，`simulator.n3_user_plane.activation_count == 1`
+
+但这还不代表：
+
+- UE 已经能发送真实 IP 包
+- gNB 已经把 live `UL DATA` 接进 N3
+- 下行 GTP-U 已经能回灌到 UE 用户面
+
+## 10. 当前测试结论应该怎么理解
 
 如果以下三类测试都通过：
 
@@ -428,9 +504,10 @@ ip -s link show dev ogstun
 
 那么当前可以认为：
 
-- 本地简化 UE 与 gNB 的 JSON 驱动闭环已经成立
+- 本地共享寄存器式 UE 与 gNB 联动已经成立
 - gNB 到 AMF 的最小控制面桥接已经成立
 - simulator 侧已经能提取会话建立得到的关键 session state
+- 持久化 N3 socket 基础层已经成立
 
 但还不能认为：
 

@@ -291,6 +291,7 @@ int mini_gnb_c_load_config(const char* path,
   out_config->core.enabled = false;
   (void)snprintf(out_config->core.amf_ip, sizeof(out_config->core.amf_ip), "%s", "127.0.0.5");
   out_config->core.amf_port = 38412u;
+  out_config->core.upf_port = 2152u;
   out_config->core.timeout_ms = 5000u;
   out_config->core.ran_ue_ngap_id_base = 1u;
   out_config->core.default_pdu_session_id = 1u;
@@ -354,6 +355,9 @@ int mini_gnb_c_load_config(const char* path,
   }
   if (mini_gnb_c_extract_int(text, "core", "amf_port", &value) == 0) {
     out_config->core.amf_port = (uint32_t)value;
+  }
+  if (mini_gnb_c_extract_int(text, "core", "upf_port", &value) == 0) {
+    out_config->core.upf_port = (uint16_t)value;
   }
   if (mini_gnb_c_extract_int(text, "core", "timeout_ms", &value) == 0) {
     out_config->core.timeout_ms = (uint32_t)value;
@@ -513,7 +517,7 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                 "Connected traffic summary:\n"
                 "  post_msg4=%s dl_pdcch_delay=%d dl_time_indicator=%d dl_ack=%d sr_period=%d sr_offset=%d ul_grant_delay=%d ul_time_indicator=%d dl_harq=%d ul_harq=%d ul_present=%s\n"
                 "Core bridge summary:\n"
-                "  enabled=%s amf=%s:%u timeout_ms=%u ran_ue_ngap_id_base=%u default_pdu_session_id=%u\n"
+                "  enabled=%s amf=%s:%u upf_port=%u timeout_ms=%u ran_ue_ngap_id_base=%u default_pdu_session_id=%u\n"
                 "RF config summary:\n"
                 "  driver=%s clock=%s srate=%g tx_gain=%g rx_gain=%g",
                config->cell.pci,
@@ -559,6 +563,7 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                 config->core.enabled ? "true" : "false",
                 config->core.amf_ip,
                 config->core.amf_port,
+                config->core.upf_port,
                 config->core.timeout_ms,
                 config->core.ran_ue_ngap_id_base,
                 config->core.default_pdu_session_id,

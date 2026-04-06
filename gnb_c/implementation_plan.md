@@ -1,6 +1,6 @@
 # gnb_c End-to-End UE/gNB/Core Plan
 
-Last updated: 2026-04-06 (shared-slot split-config timing plus PDCCH/HARQ defaults learned from SIB1/Msg4; tests/docs refreshed)
+Last updated: 2026-04-06 (persistent N3 user-plane helper added and plan status refreshed)
 
 ## Completed Tasks
 
@@ -59,14 +59,18 @@ Last updated: 2026-04-06 (shared-slot split-config timing plus PDCCH/HARQ defaul
 - [x] 2026-04-06: Added split shared-slot example configs in `config/example_shared_slot_gnb.yml` and `config/example_shared_slot_ue.yml` so the gNB and UE can run from separate YAML files.
 - [x] 2026-04-06: Moved the live UE timing model away from shared local assumptions so PRACH timing is learned from SIB1, Msg3 timing is learned from RAR, and SR timing is learned from Msg4 / `RRCSetup`.
 - [x] 2026-04-06: Added gNB-configured PDCCH timing and HARQ defaults to the SIB1 payload so the live UE learns `time_indicator`, DL ACK timing, and HARQ pool sizes directly from downlink signaling.
+- [x] 2026-04-06: Added Stage C6 control-plane regression coverage for stale/future `UL_NAS` queue handling and post-session `DL_NAS` relay after `InitialContextSetupRequest` and `PDUSessionResourceSetupRequest`.
+- [x] 2026-04-06: Updated `gnb_c/README.md`, `gnb_c/architecture.md`, and `gnb_c/feature_test_guide.md` to document the later control-plane NAS relay behavior beyond session-state extraction.
 - [x] 2026-04-06: Refreshed the shared-slot tests and test harness so output directories are cleaned between runs and stale slot-input artifacts do not corrupt timing-sensitive regressions.
 - [x] 2026-04-06: Updated `gnb_c/README.md`, `gnb_c/architecture.md`, and `gnb_c/feature_test_guide.md` so the split-config, downlink-driven UE timing model is documented as the preferred local radio workflow.
+- [x] 2026-04-06: Created the local Stage C milestone commit `Stabilize simulator control-plane bridge regressions`.
+- [x] 2026-04-06: Added the persistent simulator-side N3 helper in `include/mini_gnb_c/n3/n3_user_plane.h` and `src/n3/n3_user_plane.c`.
+- [x] 2026-04-06: Extended `core:` config with `upf_port` and wired `src/common/simulator.c` to activate the N3 helper once session setup populates `core_session` with valid user-plane state.
+- [x] 2026-04-06: Added unit and integration coverage for the persistent N3 socket activation, runtime G-PDU encapsulation, and non-blocking downlink polling, and kept `ctest --test-dir build --output-on-failure` passing.
+- [x] 2026-04-06: Updated `gnb_c/README.md`, `gnb_c/architecture.md`, and `gnb_c/feature_test_guide.md` to document the Stage D1 persistent N3 transport layer and its current limits.
 
 ## Pending Tasks
 
-- [ ] Stage C6: Add the next control-plane milestone tests and docs for later AMF procedures beyond the current NAS relay and session-state extraction path.
-- [ ] Stage C7: Create a local milestone commit after the control plane is stable.
-- [ ] Stage D1: Add a persistent N3 user-plane helper that maintains a live GTP-U socket instead of one-shot probe traffic.
 - [ ] Stage D2: Add minimal UE-side IPv4/ICMP user-plane handling.
 - [ ] Stage D3: Add tests and docs for the minimal user-plane path.
 - [ ] Stage D4: Create a local milestone commit after the user-plane path is stable.

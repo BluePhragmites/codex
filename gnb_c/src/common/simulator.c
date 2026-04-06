@@ -155,6 +155,76 @@ static int mini_gnb_c_find_free_ul_harq_process(mini_gnb_c_simulator_ul_harq_sta
   return -1;
 }
 
+static void mini_gnb_c_sync_n3_user_plane(mini_gnb_c_simulator_t* simulator, const int abs_slot) {
+  mini_gnb_c_ue_context_t* ue_context = NULL;
+  uint8_t packet[MINI_GNB_C_N3_MAX_GTPU_PACKET];
+  size_t packet_length = 0u;
+  char local_ip[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
+  uint16_t local_port = 0u;
+  bool needs_activation = false;
+
+  if (simulator == NULL || simulator->ue_store.count == 0u) {
+    return;
+  }
+
+  ue_context = &simulator->ue_store.contexts[0];
+  if (!mini_gnb_c_core_session_has_user_plane(&ue_context->core_session)) {
+    return;
+  }
+  needs_activation = !mini_gnb_c_n3_user_plane_is_ready(&simulator->n3_user_plane) ||
+                     strcmp(simulator->n3_user_plane.upf_ip, ue_context->core_session.upf_ip) != 0 ||
+                     simulator->n3_user_plane.session.upf_teid != ue_context->core_session.upf_teid ||
+                     simulator->n3_user_plane.upf_port != simulator->config.core.upf_port;
+
+  if (needs_activation) {
+    if (mini_gnb_c_n3_user_plane_activate(&simulator->n3_user_plane,
+                                          &ue_context->core_session,
+                                          simulator->config.core.upf_port,
+                                          abs_slot) != 0) {
+      mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                     "n3_user_plane",
+                                     "Failed to activate persistent N3 user-plane socket.",
+                                     abs_slot,
+                                     "c_rnti=%u,upf=%s:%u,teid=0x%08x",
+                                     ue_context->c_rnti,
+                                     ue_context->core_session.upf_ip,
+                                     simulator->config.core.upf_port,
+                                     ue_context->core_session.upf_teid);
+      return;
+    }
+    if (mini_gnb_c_n3_user_plane_get_local_endpoint(&simulator->n3_user_plane,
+                                                    local_ip,
+                                                    sizeof(local_ip),
+                                                    &local_port) != 0) {
+      (void)snprintf(local_ip, sizeof(local_ip), "%s", "(unknown)");
+      local_port = 0u;
+    }
+    mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                   "n3_user_plane",
+                                   "Activated persistent N3 user-plane socket.",
+                                   abs_slot,
+                                   "c_rnti=%u,local=%s:%u,upf=%s:%u,teid=0x%08x,qfi=%u",
+                                   ue_context->c_rnti,
+                                   local_ip,
+                                   local_port,
+                                   ue_context->core_session.upf_ip,
+                                   simulator->config.core.upf_port,
+                                   ue_context->core_session.upf_teid,
+                                   ue_context->core_session.qfi);
+  }
+
+  if (mini_gnb_c_n3_user_plane_poll_downlink(&simulator->n3_user_plane, packet, sizeof(packet), &packet_length) > 0) {
+    mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                   "n3_user_plane",
+                                   "Polled one downlink GTP-U packet on the persistent N3 socket.",
+                                   abs_slot,
+                                   "c_rnti=%u,packet_length=%zu,downlink_gpdu_count=%llu",
+                                   ue_context->c_rnti,
+                                   packet_length,
+                                   (unsigned long long)simulator->n3_user_plane.downlink_gpdu_count);
+  }
+}
+
 static bool mini_gnb_c_path_is_absolute(const char* path) {
   if (path == NULL || path[0] == '\0') {
     return false;
@@ -1137,6 +1207,7 @@ void mini_gnb_c_simulator_init(mini_gnb_c_simulator_t* simulator,
   mini_gnb_c_gnb_core_bridge_init(&simulator->core_bridge,
                                   &simulator->config.core,
                                   simulator->config.sim.local_exchange_dir);
+  mini_gnb_c_n3_user_plane_init(&simulator->n3_user_plane);
 }
 
 int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
@@ -1639,6 +1710,7 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                      (unsigned)simulator->ue_store.count,
                                      simulator->core_bridge.next_ue_to_gnb_nas_sequence);
     }
+    mini_gnb_c_sync_n3_user_plane(simulator, slot.abs_slot);
 
     {
       mini_gnb_c_slot_perf_t perf;
@@ -1654,6 +1726,7 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
   }
 
   mini_gnb_c_mock_radio_frontend_shutdown(&simulator->radio);
+  mini_gnb_c_n3_user_plane_close(&simulator->n3_user_plane);
   return mini_gnb_c_metrics_trace_flush(&simulator->metrics,
                                         simulator->ra_manager.has_active_context,
                                         simulator->ra_manager.has_active_context

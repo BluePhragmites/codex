@@ -163,6 +163,26 @@ static void mini_gnb_c_prepare_fake_amf_dialog_with_session_setup(mini_gnb_c_fak
   fake->response_count = 5u;
 }
 
+static void mini_gnb_c_prepare_fake_amf_dialog_with_session_setup_and_post_session_nas(
+    mini_gnb_c_fake_ngap_transport_t* fake) {
+  static const uint8_t k_post_session_nas[] = {0x7eu, 0x00u, 0x44u, 0xaau, 0xbbu, 0xccu};
+  uint8_t message[MINI_GNB_C_CORE_BRIDGE_MAX_MESSAGE];
+  size_t message_length = 0u;
+
+  mini_gnb_c_prepare_fake_amf_dialog_with_session_setup(fake);
+  mini_gnb_c_require(mini_gnb_c_ngap_build_downlink_nas_transport(0x1234u,
+                                                                  7u,
+                                                                  k_post_session_nas,
+                                                                  sizeof(k_post_session_nas),
+                                                                  message,
+                                                                  sizeof(message),
+                                                                  &message_length) == 0,
+                     "expected canned post-session DownlinkNASTransport");
+  memcpy(fake->responses[5], message, message_length);
+  fake->response_lengths[5] = message_length;
+  fake->response_count = 6u;
+}
+
 void test_gnb_core_bridge_prepares_initial_ue_message(void) {
   mini_gnb_c_core_config_t config;
   mini_gnb_c_gnb_core_bridge_t bridge;
@@ -289,6 +309,88 @@ void test_gnb_core_bridge_relays_followup_uplink_nas(void) {
   free(dl_nas_event_json);
 }
 
+void test_gnb_core_bridge_skips_stale_and_waits_for_future_uplink_nas(void) {
+  char exchange_dir[MINI_GNB_C_MAX_PATH];
+  char second_dl_nas_path[MINI_GNB_C_MAX_PATH];
+  mini_gnb_c_core_config_t config;
+  mini_gnb_c_gnb_core_bridge_t bridge;
+  mini_gnb_c_ue_context_t ue_context;
+  mini_gnb_c_metrics_trace_t metrics;
+  mini_gnb_c_fake_ngap_transport_t fake_transport;
+  char* dl_nas_event_json = NULL;
+
+  memset(&config, 0, sizeof(config));
+  memset(&ue_context, 0, sizeof(ue_context));
+
+  config.enabled = true;
+  config.amf_port = 38412u;
+  config.timeout_ms = 2500u;
+  config.ran_ue_ngap_id_base = 7u;
+  config.default_pdu_session_id = 1u;
+  (void)snprintf(config.amf_ip, sizeof(config.amf_ip), "%s", "127.0.0.5");
+
+  mini_gnb_c_core_session_reset(&ue_context.core_session);
+  ue_context.c_rnti = 0x4601u;
+  mini_gnb_c_core_session_set_c_rnti(&ue_context.core_session, ue_context.c_rnti);
+
+  mini_gnb_c_make_output_dir("test_gnb_core_bridge_stale_future", exchange_dir, sizeof(exchange_dir));
+  mini_gnb_c_prepare_fake_amf_dialog_with_followup(&fake_transport);
+  mini_gnb_c_metrics_trace_init(&metrics, "out/test_gnb_core_bridge_stale_future");
+  mini_gnb_c_gnb_core_bridge_init(&bridge, &config, exchange_dir);
+  mini_gnb_c_ngap_transport_set_ops(&bridge.transport, &k_mini_gnb_c_fake_transport_ops, &fake_transport);
+
+  mini_gnb_c_require(mini_gnb_c_gnb_core_bridge_on_ue_promoted(&bridge, &ue_context, &metrics, 6) == 0,
+                     "expected first bridge NAS exchange");
+  mini_gnb_c_require(mini_gnb_c_json_link_emit_event(exchange_dir,
+                                                     "ue_to_gnb_nas",
+                                                     "ue",
+                                                     "UL_NAS",
+                                                     1u,
+                                                     6,
+                                                     "{\"c_rnti\":17921,\"nas_hex\":\"7E005C000D01\"}",
+                                                     NULL,
+                                                     0u) == 0,
+                     "expected stale UL_NAS event emission");
+  mini_gnb_c_require(mini_gnb_c_json_link_emit_event(exchange_dir,
+                                                     "ue_to_gnb_nas",
+                                                     "ue",
+                                                     "UL_NAS",
+                                                     2u,
+                                                     8,
+                                                     "{\"c_rnti\":17921,\"nas_hex\":\"7E005C000D0164F099F0FF00002143658789\"}",
+                                                     NULL,
+                                                     0u) == 0,
+                     "expected future UL_NAS event emission");
+
+  mini_gnb_c_require(mini_gnb_c_gnb_core_bridge_poll_ue_nas(&bridge, &ue_context, 1u, &metrics, 7) == 0,
+                     "expected bridge to skip stale and hold future UL_NAS");
+  mini_gnb_c_require(bridge.next_ue_to_gnb_nas_sequence == 2u, "expected stale event to be skipped");
+  mini_gnb_c_require(ue_context.core_session.uplink_nas_count == 1u, "expected no new uplink NAS at slot 7");
+  mini_gnb_c_require(ue_context.core_session.downlink_nas_count == 1u, "expected no new downlink NAS at slot 7");
+  mini_gnb_c_require(fake_transport.sent_count == 2u, "expected no follow-up send for stale/future pass");
+
+  mini_gnb_c_require(mini_gnb_c_gnb_core_bridge_poll_ue_nas(&bridge, &ue_context, 1u, &metrics, 8) == 0,
+                     "expected future UL_NAS relay when its slot arrives");
+  mini_gnb_c_require(bridge.next_ue_to_gnb_nas_sequence == 3u, "expected future event to be consumed");
+  mini_gnb_c_require(ue_context.core_session.uplink_nas_count == 2u, "expected second uplink NAS count");
+  mini_gnb_c_require(ue_context.core_session.downlink_nas_count == 2u, "expected second downlink NAS count");
+  mini_gnb_c_require(fake_transport.sent_count == 3u, "expected one UplinkNASTransport send after future event");
+
+  mini_gnb_c_require(mini_gnb_c_json_link_build_event_path(exchange_dir,
+                                                           "gnb_to_ue",
+                                                           "gnb",
+                                                           2u,
+                                                           "DL_NAS",
+                                                           second_dl_nas_path,
+                                                           sizeof(second_dl_nas_path)) == 0,
+                     "expected second downlink NAS path");
+  dl_nas_event_json = mini_gnb_c_read_text_file(second_dl_nas_path);
+  mini_gnb_c_require(dl_nas_event_json != NULL, "expected second downlink NAS file after future event");
+  mini_gnb_c_require(strstr(dl_nas_event_json, "\"nas_hex\":\"7E005D112233\"") != NULL,
+                     "expected future UL_NAS to trigger follow-up DL_NAS");
+  free(dl_nas_event_json);
+}
+
 void test_gnb_core_bridge_ignores_disabled_config(void) {
   mini_gnb_c_core_config_t config;
   mini_gnb_c_gnb_core_bridge_t bridge;
@@ -395,4 +497,119 @@ void test_gnb_core_bridge_parses_session_setup_state(void) {
                      "expected InitialContextSetupResponse send");
   mini_gnb_c_require(fake_transport.sent_messages[6][0] == 0x20u && fake_transport.sent_messages[6][1] == 0x1du,
                      "expected PDUSessionResourceSetupResponse send");
+}
+
+void test_gnb_core_bridge_relays_post_session_downlink_nas(void) {
+  char exchange_dir[MINI_GNB_C_MAX_PATH];
+  char third_dl_nas_path[MINI_GNB_C_MAX_PATH];
+  mini_gnb_c_core_config_t config;
+  mini_gnb_c_gnb_core_bridge_t bridge;
+  mini_gnb_c_ue_context_t ue_context;
+  mini_gnb_c_metrics_trace_t metrics;
+  mini_gnb_c_fake_ngap_transport_t fake_transport;
+  char* dl_nas_event_json = NULL;
+
+  memset(&config, 0, sizeof(config));
+  memset(&ue_context, 0, sizeof(ue_context));
+
+  config.enabled = true;
+  config.amf_port = 38412u;
+  config.timeout_ms = 2500u;
+  config.ran_ue_ngap_id_base = 7u;
+  config.default_pdu_session_id = 1u;
+  (void)snprintf(config.amf_ip, sizeof(config.amf_ip), "%s", "127.0.0.5");
+
+  mini_gnb_c_core_session_reset(&ue_context.core_session);
+  ue_context.c_rnti = 0x4601u;
+  mini_gnb_c_core_session_set_c_rnti(&ue_context.core_session, ue_context.c_rnti);
+
+  mini_gnb_c_make_output_dir("test_gnb_core_bridge_post_session", exchange_dir, sizeof(exchange_dir));
+  mini_gnb_c_prepare_fake_amf_dialog_with_session_setup_and_post_session_nas(&fake_transport);
+  mini_gnb_c_metrics_trace_init(&metrics, "out/test_gnb_core_bridge_post_session");
+  mini_gnb_c_gnb_core_bridge_init(&bridge, &config, exchange_dir);
+  mini_gnb_c_ngap_transport_set_ops(&bridge.transport, &k_mini_gnb_c_fake_transport_ops, &fake_transport);
+
+  mini_gnb_c_require(mini_gnb_c_gnb_core_bridge_on_ue_promoted(&bridge, &ue_context, &metrics, 6) == 0,
+                     "expected initial bridge exchange");
+  mini_gnb_c_require(mini_gnb_c_json_link_emit_event(exchange_dir,
+                                                     "ue_to_gnb_nas",
+                                                     "ue",
+                                                     "UL_NAS",
+                                                     1u,
+                                                     7,
+                                                     "{\"c_rnti\":17921,\"nas_hex\":\"7E005C000D0164F099F0FF00002143658789\"}",
+                                                     NULL,
+                                                     0u) == 0,
+                     "expected first follow-up UL_NAS emission");
+  mini_gnb_c_require(mini_gnb_c_json_link_emit_event(exchange_dir,
+                                                     "ue_to_gnb_nas",
+                                                     "ue",
+                                                     "UL_NAS",
+                                                     2u,
+                                                     8,
+                                                     "{\"c_rnti\":17921,\"nas_hex\":\"7E005E7700098526610956163978F871002E\"}",
+                                                     NULL,
+                                                     0u) == 0,
+                     "expected second follow-up UL_NAS emission");
+  mini_gnb_c_require(mini_gnb_c_json_link_emit_event(exchange_dir,
+                                                     "ue_to_gnb_nas",
+                                                     "ue",
+                                                     "UL_NAS",
+                                                     3u,
+                                                     9,
+                                                     "{\"c_rnti\":17921,\"nas_hex\":\"7E004301\"}",
+                                                     NULL,
+                                                     0u) == 0,
+                     "expected third follow-up UL_NAS emission");
+  mini_gnb_c_require(mini_gnb_c_json_link_emit_event(exchange_dir,
+                                                     "ue_to_gnb_nas",
+                                                     "ue",
+                                                     "UL_NAS",
+                                                     4u,
+                                                     10,
+                                                     "{\"c_rnti\":17921,\"nas_hex\":\"7E004F0102\"}",
+                                                     NULL,
+                                                     0u) == 0,
+                     "expected post-session UL_NAS emission");
+
+  mini_gnb_c_require(mini_gnb_c_gnb_core_bridge_poll_ue_nas(&bridge, &ue_context, 1u, &metrics, 7) == 0,
+                     "expected first follow-up relay");
+  mini_gnb_c_require(mini_gnb_c_gnb_core_bridge_poll_ue_nas(&bridge, &ue_context, 1u, &metrics, 8) == 0,
+                     "expected second follow-up relay");
+  mini_gnb_c_require(mini_gnb_c_gnb_core_bridge_poll_ue_nas(&bridge, &ue_context, 1u, &metrics, 9) == 0,
+                     "expected third follow-up relay");
+  mini_gnb_c_require(mini_gnb_c_gnb_core_bridge_poll_ue_nas(&bridge, &ue_context, 1u, &metrics, 10) == 0,
+                     "expected post-session relay");
+
+  mini_gnb_c_require(ue_context.core_session.uplink_nas_count == 5u, "expected five uplink NAS sends");
+  mini_gnb_c_require(ue_context.core_session.downlink_nas_count == 3u,
+                     "expected post-session downlink NAS relay after session setup");
+  mini_gnb_c_require(strcmp(ue_context.core_session.upf_ip, "127.0.0.7") == 0,
+                     "expected UPF IP to survive later NAS relay");
+  mini_gnb_c_require(ue_context.core_session.upf_teid == 0x0000ef26u,
+                     "expected UPF TEID to survive later NAS relay");
+  mini_gnb_c_require(ue_context.core_session.qfi_valid && ue_context.core_session.qfi == 1u,
+                     "expected QFI to survive later NAS relay");
+  mini_gnb_c_require(bridge.next_ue_to_gnb_nas_sequence == 5u, "expected four follow-up UL_NAS events consumed");
+  mini_gnb_c_require(bridge.next_gnb_to_ue_sequence == 4u, "expected three emitted DL_NAS events");
+  mini_gnb_c_require(bridge.last_downlink_nas_length == 6u, "expected captured post-session downlink NAS");
+  mini_gnb_c_require(bridge.last_downlink_nas[2] == 0x44u, "expected post-session NAS message type");
+  mini_gnb_c_require(fake_transport.sent_count == 8u,
+                     "expected UL NAS sends plus automatic InitialContext/PDU session responses");
+  mini_gnb_c_require(fake_transport.sent_messages[7][0] == 0x00u && fake_transport.sent_messages[7][1] == 0x2eu,
+                     "expected post-session UplinkNASTransport send");
+
+  mini_gnb_c_require(mini_gnb_c_json_link_build_event_path(exchange_dir,
+                                                           "gnb_to_ue",
+                                                           "gnb",
+                                                           3u,
+                                                           "DL_NAS",
+                                                           third_dl_nas_path,
+                                                           sizeof(third_dl_nas_path)) == 0,
+                     "expected third downlink NAS path");
+  dl_nas_event_json = mini_gnb_c_read_text_file(third_dl_nas_path);
+  mini_gnb_c_require(dl_nas_event_json != NULL, "expected third downlink NAS file after post-session relay");
+  mini_gnb_c_require(strstr(dl_nas_event_json, "\"nas_hex\":\"7E0044AABBCC\"") != NULL,
+                     "expected relayed post-session DL_NAS payload");
+  free(dl_nas_event_json);
 }

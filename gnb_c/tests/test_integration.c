@@ -217,6 +217,26 @@ static void mini_gnb_c_prepare_integration_fake_amf_dialog_with_session_setup(
   fake->response_count = 5u;
 }
 
+static void mini_gnb_c_prepare_integration_fake_amf_dialog_with_session_setup_and_post_session_nas(
+    mini_gnb_c_integration_fake_ngap_transport_t* fake) {
+  static const uint8_t k_post_session_nas[] = {0x7eu, 0x00u, 0x44u, 0xaau, 0xbbu, 0xccu};
+  uint8_t message[MINI_GNB_C_CORE_BRIDGE_MAX_MESSAGE];
+  size_t message_length = 0u;
+
+  mini_gnb_c_prepare_integration_fake_amf_dialog_with_session_setup(fake);
+  mini_gnb_c_require(mini_gnb_c_ngap_build_downlink_nas_transport(0x1234u,
+                                                                  1u,
+                                                                  k_post_session_nas,
+                                                                  sizeof(k_post_session_nas),
+                                                                  message,
+                                                                  sizeof(message),
+                                                                  &message_length) == 0,
+                     "expected canned integration post-session DownlinkNASTransport");
+  memcpy(fake->responses[5], message, message_length);
+  fake->response_lengths[5] = message_length;
+  fake->response_count = 6u;
+}
+
 void test_integration_run(void) {
   char config_path[MINI_GNB_C_MAX_PATH];
   char output_dir[MINI_GNB_C_MAX_PATH];
@@ -740,6 +760,11 @@ void test_integration_core_bridge_extracts_session_setup_state(void) {
   mini_gnb_c_require(fake_transport.sent_messages[6][0] == 0x20u &&
                          fake_transport.sent_messages[6][1] == 0x1du,
                      "expected PDUSessionResourceSetupResponse during simulator run");
+  mini_gnb_c_require(simulator.n3_user_plane.activation_count == 1u, "expected N3 user-plane activation");
+  mini_gnb_c_require(simulator.n3_user_plane.last_activation_abs_slot == 9,
+                     "expected N3 user-plane activation after session setup");
+  mini_gnb_c_require(simulator.n3_user_plane.upf_port == config.core.upf_port,
+                     "expected configured UPF port on N3 user-plane");
 
   summary_json = mini_gnb_c_read_text_file(summary.summary_path);
   mini_gnb_c_require(summary_json != NULL, "expected session setup core bridge summary");
@@ -751,6 +776,126 @@ void test_integration_core_bridge_extracts_session_setup_state(void) {
                      "expected summary JSON QFI");
   mini_gnb_c_require(strstr(summary_json, "\"ue_ipv4\":\"10.45.0.7\"") != NULL,
                      "expected summary JSON UE IPv4");
+  free(summary_json);
+}
+
+void test_integration_core_bridge_relays_post_session_nas(void) {
+  char config_path[MINI_GNB_C_MAX_PATH];
+  char output_dir[MINI_GNB_C_MAX_PATH];
+  char exchange_dir[MINI_GNB_C_MAX_PATH];
+  char third_dl_nas_event_path[MINI_GNB_C_MAX_PATH];
+  char error_message[256];
+  mini_gnb_c_config_t config;
+  mini_gnb_c_simulator_t simulator;
+  mini_gnb_c_run_summary_t summary;
+  mini_gnb_c_integration_fake_ngap_transport_t fake_transport;
+  char* summary_json = NULL;
+  char* third_dl_nas_event_json = NULL;
+
+  mini_gnb_c_default_config_path(config_path, sizeof(config_path));
+  mini_gnb_c_require(mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) == 0,
+                     "expected config to load");
+  config.core.enabled = true;
+  config.core.timeout_ms = 2500u;
+  config.core.ran_ue_ngap_id_base = 1u;
+  config.core.default_pdu_session_id = 1u;
+
+  mini_gnb_c_make_output_dir("test_integration_core_bridge_post_session_c", output_dir, sizeof(output_dir));
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "local_exchange", exchange_dir, sizeof(exchange_dir)) == 0,
+                     "expected local exchange dir for post-session core bridge test");
+  (void)snprintf(config.sim.local_exchange_dir, sizeof(config.sim.local_exchange_dir), "%s", exchange_dir);
+  mini_gnb_c_require(mini_gnb_c_json_link_emit_event(exchange_dir,
+                                                     "ue_to_gnb_nas",
+                                                     "ue",
+                                                     "UL_NAS",
+                                                     1u,
+                                                     7,
+                                                     "{\"c_rnti\":17921,\"nas_hex\":\"7E005C000D0164F099F0FF00002143658789\"}",
+                                                     NULL,
+                                                     0u) == 0,
+                     "expected first seeded follow-up UL_NAS event");
+  mini_gnb_c_require(mini_gnb_c_json_link_emit_event(exchange_dir,
+                                                     "ue_to_gnb_nas",
+                                                     "ue",
+                                                     "UL_NAS",
+                                                     2u,
+                                                     8,
+                                                     "{\"c_rnti\":17921,\"nas_hex\":\"7E005E7700098526610956163978F871002E\"}",
+                                                     NULL,
+                                                     0u) == 0,
+                     "expected second seeded follow-up UL_NAS event");
+  mini_gnb_c_require(mini_gnb_c_json_link_emit_event(exchange_dir,
+                                                     "ue_to_gnb_nas",
+                                                     "ue",
+                                                     "UL_NAS",
+                                                     3u,
+                                                     9,
+                                                     "{\"c_rnti\":17921,\"nas_hex\":\"7E004301\"}",
+                                                     NULL,
+                                                     0u) == 0,
+                     "expected third seeded follow-up UL_NAS event");
+  mini_gnb_c_require(mini_gnb_c_json_link_emit_event(exchange_dir,
+                                                     "ue_to_gnb_nas",
+                                                     "ue",
+                                                     "UL_NAS",
+                                                     4u,
+                                                     10,
+                                                     "{\"c_rnti\":17921,\"nas_hex\":\"7E004F0102\"}",
+                                                     NULL,
+                                                     0u) == 0,
+                     "expected post-session UL_NAS event");
+
+  mini_gnb_c_prepare_integration_fake_amf_dialog_with_session_setup_and_post_session_nas(&fake_transport);
+  mini_gnb_c_simulator_init(&simulator, &config, output_dir);
+  mini_gnb_c_ngap_transport_set_ops(&simulator.core_bridge.transport,
+                                    &k_mini_gnb_c_integration_fake_transport_ops,
+                                    &fake_transport);
+  mini_gnb_c_require(mini_gnb_c_simulator_run(&simulator, &summary) == 0, "expected simulator run");
+
+  mini_gnb_c_require(summary.ue_count == 1u, "expected one promoted UE");
+  mini_gnb_c_require(summary.ue_contexts[0].core_session.uplink_nas_count == 5u,
+                     "expected one additional post-session uplink NAS in summary");
+  mini_gnb_c_require(summary.ue_contexts[0].core_session.downlink_nas_count == 3u,
+                     "expected one additional post-session downlink NAS in summary");
+  mini_gnb_c_require(strcmp(summary.ue_contexts[0].core_session.upf_ip, "127.0.0.7") == 0,
+                     "expected summary UPF IP to persist after post-session NAS");
+  mini_gnb_c_require(summary.ue_contexts[0].core_session.upf_teid == 0x0000ef26u,
+                     "expected summary UPF TEID to persist after post-session NAS");
+  mini_gnb_c_require(summary.ue_contexts[0].core_session.qfi_valid &&
+                         summary.ue_contexts[0].core_session.qfi == 1u,
+                     "expected summary QFI to persist after post-session NAS");
+  mini_gnb_c_require(simulator.core_bridge.next_ue_to_gnb_nas_sequence == 5u,
+                     "expected four follow-up UL_NAS events to be consumed");
+  mini_gnb_c_require(simulator.core_bridge.next_gnb_to_ue_sequence == 4u,
+                     "expected third emitted DL_NAS event after session setup");
+  mini_gnb_c_require(fake_transport.sent_count == 8u, "expected post-session UL_NAS send plus prior acknowledgements");
+  mini_gnb_c_require(fake_transport.sent_messages[7][0] == 0x00u &&
+                         fake_transport.sent_messages[7][1] == 0x2eu,
+                     "expected post-session UplinkNASTransport during simulator run");
+
+  summary_json = mini_gnb_c_read_text_file(summary.summary_path);
+  mini_gnb_c_require(summary_json != NULL, "expected post-session core bridge summary");
+  mini_gnb_c_require(strstr(summary_json, "\"uplink_nas_count\":5") != NULL,
+                     "expected summary JSON post-session uplink NAS count");
+  mini_gnb_c_require(strstr(summary_json, "\"downlink_nas_count\":3") != NULL,
+                     "expected summary JSON post-session downlink NAS count");
+  mini_gnb_c_require(strstr(summary_json, "\"upf_teid\":61222") != NULL,
+                     "expected summary JSON UPF TEID after post-session NAS");
+
+  mini_gnb_c_require(mini_gnb_c_json_link_build_event_path(exchange_dir,
+                                                           "gnb_to_ue",
+                                                           "gnb",
+                                                           3u,
+                                                           "DL_NAS",
+                                                           third_dl_nas_event_path,
+                                                           sizeof(third_dl_nas_event_path)) == 0,
+                     "expected third downlink NAS event path");
+  third_dl_nas_event_json = mini_gnb_c_read_text_file(third_dl_nas_event_path);
+  mini_gnb_c_require(third_dl_nas_event_json != NULL, "expected third downlink NAS event JSON");
+  mini_gnb_c_require(strstr(third_dl_nas_event_json, "\"nas_hex\":\"7E0044AABBCC\"") != NULL,
+                     "expected third downlink NAS payload");
+
+  free(third_dl_nas_event_json);
   free(summary_json);
 }
 

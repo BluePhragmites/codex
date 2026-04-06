@@ -101,6 +101,10 @@ same core/session and N3 code paths:
   - supports injected transport ops so bridge tests can run without a live AMF
 - `n3/gtpu_tunnel`
   - builds and validates the minimal GTP-U Echo and UL G-PDU packets used by replay mode
+- `n3/n3_user_plane`
+  - owns the persistent simulator-side UDP GTP-U socket
+  - activates once the embedded `core_session` has enough session state to target the UPF
+  - reuses `n3/gtpu_tunnel` for runtime uplink encapsulation and non-blocking downlink polling
 
 `apps/ngap_probe.c` now consumes the extracted `ngap/ngap_runtime` helpers instead
 of owning those builders and Open5GS session parsers inline. That keeps the replay
@@ -192,13 +196,17 @@ The first live simulator-side core bridge is now wired on top of that state:
   - recognizes `InitialContextSetupRequest` and `PDUSessionResourceSetupRequest` from the AMF
   - sends `InitialContextSetupResponse` and `PDUSessionResourceSetupResponse` without leaving the slot-driven simulator model
   - parses Open5GS user-plane session state from `PDUSessionResourceSetupRequest` and writes it into the embedded `core_session`
+  - continues relaying later top-level `DownlinkNASTransport` messages after session setup while preserving that extracted session state
 - `config/default_cell.yml`
   - now includes an optional `core:` section
+  - that section now also carries `upf_port` so the simulator-side N3 socket can target the configured UPF UDP port
   - the section now also carries a `timeout_ms` setting for the SCTP bridge
   - the bridge is disabled by default so older local-loop runs do not change behavior
 - `src/common/simulator.c`
   - invokes the bridge immediately after `ue_context_store` promotion
   - polls the bridge once per slot for due follow-up `UL_NAS` control-plane events
+  - activates `n3/n3_user_plane` once the promoted UE context gains valid `UPF IP`, `TEID`, `QFI`, and `UE IPv4`
+  - keeps polling that persistent N3 socket once per slot so later Stage D2/E work can consume downlink user-plane packets without changing the top-level slot loop
   - keeps the bridge outcome inside the embedded `core_session`, so the summary schema stays aligned with the future live AMF bridge
 
 This is now a minimal live control-plane bridge covering the first NAS hop plus the
@@ -206,9 +214,23 @@ follow-up session-setup acknowledgements needed by the Open5GS attach flow.
 The simulator can bring up SCTP + NGAP to the AMF, surface the first AMF NAS
 downlink into the local UE exchange directory, and relay later filesystem-backed
 `UL_NAS` events into follow-up `UplinkNASTransport` exchanges. It can also parse
-later PDU-session user-plane state inside the simulator path and send the required
-gNB-side NGAP acknowledgements. It still does not yet drive the full UE NAS state
-machine automatically.
+later PDU-session user-plane state inside the simulator path, keep relaying later
+top-level `DL_NAS`, and send the required gNB-side NGAP acknowledgements. It still
+does not yet drive the full UE NAS state machine automatically.
+
+The first Stage D user-plane slice is now present as well, but it is intentionally
+limited:
+
+- once `core_session` contains the parsed UPF tunnel state, the simulator activates one persistent UDP socket through `n3/n3_user_plane`
+- that socket stays connected to `core.upf_port` and can already:
+  - encapsulate one inner packet into a session G-PDU
+  - expose the local UDP endpoint for tests and diagnostics
+  - poll one downlink GTP-U packet without blocking the slot loop
+- the simulator currently only activates and polls that socket; it does not yet
+  transform live UE payloads into IP packets or inject downlink IP packets into
+  the UE runtime
+- that separation is deliberate so Stage D1 finishes the transport/runtime layer
+  before Stage D2 adds minimal UE-side IPv4 and ICMP behavior
 
 So `ngap_probe` is not part of the radio simulator loop. It is a protocol bring-up
 tool that shares the same repository because it validates the external Open5GS
@@ -250,7 +272,7 @@ Subsystem mapping:
 - `link`
   - reusable local JSON exchange helpers plus the shared-slot register transport
 - `n3`
-  - reusable GTP-U packet builders and validators
+  - reusable GTP-U packet builders, validators, and the persistent simulator-side N3 socket helper
 - `ue`
   - minimal UE-side FSM, live runtime, and context helpers for the local-loop bring-up path
 - `phy_dl`

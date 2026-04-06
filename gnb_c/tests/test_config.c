@@ -20,6 +20,7 @@ void test_config_loads(void) {
   mini_gnb_c_require(!config.core.enabled, "expected core bridge disabled by default");
   mini_gnb_c_require(strcmp(config.core.amf_ip, "127.0.0.5") == 0, "expected default AMF IP");
   mini_gnb_c_require(config.core.amf_port == 38412u, "expected default AMF port");
+  mini_gnb_c_require(config.core.upf_port == 2152u, "expected default UPF port");
   mini_gnb_c_require(config.core.timeout_ms == 5000u, "expected default AMF timeout");
   mini_gnb_c_require(config.core.ran_ue_ngap_id_base == 1u, "expected default RAN UE NGAP ID base");
   mini_gnb_c_require(config.core.default_pdu_session_id == 1u, "expected default requested PDU session ID");

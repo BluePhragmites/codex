@@ -40,6 +40,7 @@ add_library(mini_gnb_c_lib
   src/ngap/ngap_transport.c
   src/timing/slot_engine.c
   src/n3/gtpu_tunnel.c
+  src/n3/n3_user_plane.c
   src/radio/mock_radio_frontend.c
   src/broadcast/broadcast_engine.c
   src/phy_ul/mock_prach_detector.c
@@ -87,6 +88,7 @@ add_executable(mini_gnb_c_tests
   tests/test_ue_context_store.c
   tests/test_gnb_core_bridge.c
   tests/test_gtpu_tunnel.c
+  tests/test_n3_user_plane.c
   tests/test_ngap_runtime.c
   tests/test_json_link.c
   tests/test_shared_slot_link.c

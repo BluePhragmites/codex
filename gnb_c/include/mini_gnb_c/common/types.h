@@ -105,6 +105,7 @@ typedef struct {
   bool enabled;
   char amf_ip[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
   uint32_t amf_port;
+  uint16_t upf_port;
   uint32_t timeout_ms;
   uint16_t ran_ue_ngap_id_base;
   uint8_t default_pdu_session_id;

@@ -85,6 +85,10 @@ later UE/gNB/core integration work:
   - supports injected transport ops so unit and integration tests can validate the bridge without a live AMF listener
 - `include/mini_gnb_c/n3/gtpu_tunnel.h`
   - builds and validates the minimal GTP-U Echo and UL G-PDU packets used by replay mode
+- `include/mini_gnb_c/n3/n3_user_plane.h`
+  - owns the persistent simulator-side N3 user-plane socket
+  - activates a long-lived UDP GTP-U endpoint once `core_session` contains `UPF IP`, `TEID`, and `QFI`
+  - reuses the extracted `gtpu_tunnel` helpers for runtime G-PDU encapsulation and one-packet-per-slot downlink polling
 - the current extraction is covered by unit tests in `tests/test_core_session.c` and
   `tests/test_gtpu_tunnel.c`
 
@@ -202,9 +206,9 @@ The first simulator-side core bridge now exists as well:
   - owns the single-UE gNB-to-AMF bridge runtime for the simulator
   - opens the reusable SCTP/NGAP transport, runs `NGSetup`, sends one `InitialUEMessage`, and captures the first AMF downlink NAS
   - after that first exchange, polls follow-up UE control-plane NAS events from `ue_to_gnb_nas/` and forwards them as `UplinkNASTransport`
-  - recognizes later `InitialContextSetup` and `PDUSessionResourceSetup` AMF messages, sends the matching gNB responses, and updates `core_session`
+  - recognizes later `InitialContextSetup` and `PDUSessionResourceSetup` AMF messages, sends the matching gNB responses, updates `core_session`, and keeps relaying later top-level `DL_NAS`
 - `config/default_cell.yml`
-  - now includes an optional `core:` section with `enabled`, `amf_ip`, `amf_port`, `timeout_ms`, `ran_ue_ngap_id_base`, and `default_pdu_session_id`
+  - now includes an optional `core:` section with `enabled`, `amf_ip`, `amf_port`, `upf_port`, `timeout_ms`, `ran_ue_ngap_id_base`, and `default_pdu_session_id`
 - `src/common/simulator.c`
   - calls the core bridge as soon as the UE context is promoted after Msg3
   - seeds `core_session.ran_ue_ngap_id` and the requested `pdu_session_id`
@@ -212,10 +216,13 @@ The first simulator-side core bridge now exists as well:
   - if `sim.local_exchange_dir` is configured, writes downlink NAS messages to `gnb_to_ue/seq_<nnnnnn>_gnb_DL_NAS.json`
   - polls `ue_to_gnb_nas/seq_<nnnnnn>_ue_UL_NAS.json` each slot after the first exchange and forwards due events to the AMF
   - parses later session-setup state such as `UE IPv4`, `UPF TEID`, and `QFI` into the promoted UE `core_session`
+  - activates a persistent N3 UDP socket as soon as that user-plane session state becomes valid
+  - keeps that socket open for the rest of the run and polls one downlink GTP-U packet per slot for later Stage D/E delivery work
 - `tests/test_gnb_core_bridge.c`
   - verifies the standalone bridge path against an injected fake SCTP/NGAP transport
   - verifies one follow-up `UL_NAS -> UplinkNASTransport -> DL_NAS` exchange after the initial attach message
   - verifies `InitialContextSetupRequest` and `PDUSessionResourceSetupRequest` handling, including automatic NGAP acknowledgements and `core_session` user-plane state extraction
+  - verifies stale-vs-future `UL_NAS` queue handling and post-session `DL_NAS` relay after session setup
 - `tests/test_integration.c`
   - `test_integration_core_bridge_prepares_initial_message`
   - verifies the simulator-side bridge wiring, summary export, and emitted `gnb_to_ue` downlink NAS event
@@ -223,6 +230,8 @@ The first simulator-side core bridge now exists as well:
   - verifies that a due `ue_to_gnb_nas/UL_NAS` event is relayed through the simulator bridge and produces a second `gnb_to_ue/DL_NAS` event
   - `test_integration_core_bridge_extracts_session_setup_state`
   - verifies summary export of `upf_ip`, `upf_teid`, `qfi`, and `ue_ipv4` after a fake `PDUSessionResourceSetupRequest`
+  - `test_integration_core_bridge_relays_post_session_nas`
+  - verifies that later top-level `DownlinkNASTransport` messages are still relayed after session setup while the parsed session state remains intact
 
 This is now the first live-control-plane bridge slice. The simulator can open the
 configured SCTP association to the AMF, complete `NGSetup`, send one canned
@@ -230,6 +239,23 @@ configured SCTP association to the AMF, complete `NGSetup`, send one canned
 surface that NAS downlink into the local UE exchange directory. It can also relay
 subsequent UE-originated `UL_NAS` event files through `UplinkNASTransport` and
 emit the returned follow-up `DL_NAS` events back to the local exchange directory.
+
+The simulator now also includes the first persistent N3 runtime slice:
+
+- after `PDUSessionResourceSetupRequest` populates `core_session.upf_ip`,
+  `core_session.upf_teid`, `core_session.qfi`, and `core_session.ue_ipv4`, the
+  simulator activates `n3/n3_user_plane`
+- that helper opens one non-blocking UDP socket, connects it to `core.upf_port`,
+  and keeps the endpoint alive across later slots instead of sending one-shot probe traffic
+- each slot, `src/common/simulator.c` gives the helper a chance to poll one
+  downlink GTP-U packet and emits a trace event when something arrives
+- the reusable helper can already encapsulate one inner packet into a session
+  G-PDU through `mini_gnb_c_n3_user_plane_send_uplink()`, but the simulator does
+  not yet feed live UE IPv4 packets into it; that remains the Stage D2 work item
+- `tests/test_n3_user_plane.c` now verifies:
+  - socket activation against a loopback UDP peer
+  - runtime uplink G-PDU encapsulation using the extracted session state
+  - downlink GTP-U polling on the persistent socket
 
 That means the repository now uses two local transports in parallel:
 
@@ -244,11 +270,11 @@ The current follow-up control-plane event format is:
   - envelope fields: `sequence`, `abs_slot`, `channel`, `source`, `type`
   - payload fields: `c_rnti`, `nas_hex`
 
-The current bridge still stops after that first NAS exchange. It does not yet:
+The current bridge still does not implement a full UE-side NAS procedure state machine. It does not yet:
 
 - maintain the full UE NAS procedure sequence that `ngap_probe --replay` already exercises
 - auto-generate those follow-up `UL_NAS` events from `apps/mini_ue_c.c`; today they are still test-driven or manually emitted
-- drive real `InitialContextSetup` or `PDUSessionResourceSetup` semantics on the UE side; today it only captures the resulting session state and sends the required gNB acknowledgements
+- drive real `InitialContextSetup` or `PDUSessionResourceSetup` semantics on the UE side; today it only captures the resulting session state, relays later top-level `DL_NAS`, and sends the required gNB acknowledgements
 
 This means the current `--replay` mode validates:
 

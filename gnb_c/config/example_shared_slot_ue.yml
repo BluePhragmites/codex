@@ -32,6 +32,7 @@ core:
   enabled: false
   amf_ip: "127.0.0.5"
   amf_port: 38412
+  upf_port: 2152
   timeout_ms: 5000
   ran_ue_ngap_id_base: 1
   default_pdu_session_id: 1

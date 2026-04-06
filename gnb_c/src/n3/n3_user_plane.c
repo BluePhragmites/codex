@@ -1,0 +1,200 @@
+#include "mini_gnb_c/n3/n3_user_plane.h"
+
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include "mini_gnb_c/n3/gtpu_tunnel.h"
+
+static int mini_gnb_c_n3_user_plane_open_socket(mini_gnb_c_n3_user_plane_t* user_plane) {
+  struct sockaddr_in bind_addr;
+  int socket_fd = -1;
+  int flags = 0;
+
+  if (user_plane == NULL) {
+    return -1;
+  }
+  if (user_plane->socket_fd >= 0) {
+    return 0;
+  }
+
+  socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
+  if (socket_fd < 0) {
+    return -1;
+  }
+
+  memset(&bind_addr, 0, sizeof(bind_addr));
+  bind_addr.sin_family = AF_INET;
+  bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  bind_addr.sin_port = htons(0u);
+  if (bind(socket_fd, (const struct sockaddr*)&bind_addr, sizeof(bind_addr)) != 0) {
+    close(socket_fd);
+    return -1;
+  }
+
+  flags = fcntl(socket_fd, F_GETFL, 0);
+  if (flags < 0 || fcntl(socket_fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+    close(socket_fd);
+    return -1;
+  }
+
+  user_plane->socket_fd = socket_fd;
+  return 0;
+}
+
+static int mini_gnb_c_n3_user_plane_connect(mini_gnb_c_n3_user_plane_t* user_plane) {
+  struct sockaddr_in upf_addr;
+
+  if (user_plane == NULL || user_plane->socket_fd < 0 || user_plane->upf_ip[0] == '\0' || user_plane->upf_port == 0u) {
+    return -1;
+  }
+
+  memset(&upf_addr, 0, sizeof(upf_addr));
+  upf_addr.sin_family = AF_INET;
+  upf_addr.sin_port = htons(user_plane->upf_port);
+  if (inet_pton(AF_INET, user_plane->upf_ip, &upf_addr.sin_addr) != 1) {
+    return -1;
+  }
+  if (connect(user_plane->socket_fd, (const struct sockaddr*)&upf_addr, sizeof(upf_addr)) != 0) {
+    return -1;
+  }
+  return 0;
+}
+
+void mini_gnb_c_n3_user_plane_init(mini_gnb_c_n3_user_plane_t* user_plane) {
+  if (user_plane == NULL) {
+    return;
+  }
+
+  memset(user_plane, 0, sizeof(*user_plane));
+  user_plane->socket_fd = -1;
+  user_plane->last_activation_abs_slot = -1;
+}
+
+void mini_gnb_c_n3_user_plane_close(mini_gnb_c_n3_user_plane_t* user_plane) {
+  if (user_plane == NULL) {
+    return;
+  }
+
+  if (user_plane->socket_fd >= 0) {
+    close(user_plane->socket_fd);
+    user_plane->socket_fd = -1;
+  }
+  user_plane->ready = false;
+}
+
+int mini_gnb_c_n3_user_plane_activate(mini_gnb_c_n3_user_plane_t* user_plane,
+                                      const mini_gnb_c_core_session_t* session,
+                                      const uint16_t upf_port,
+                                      const int abs_slot) {
+  if (user_plane == NULL || session == NULL || upf_port == 0u || !mini_gnb_c_core_session_has_user_plane(session) ||
+      session->upf_ip[0] == '\0') {
+    return -1;
+  }
+
+  if (mini_gnb_c_n3_user_plane_open_socket(user_plane) != 0) {
+    return -1;
+  }
+
+  user_plane->session = *session;
+  user_plane->upf_port = upf_port;
+  (void)snprintf(user_plane->upf_ip, sizeof(user_plane->upf_ip), "%s", session->upf_ip);
+  if (mini_gnb_c_n3_user_plane_connect(user_plane) != 0) {
+    return -1;
+  }
+
+  user_plane->ready = true;
+  user_plane->last_activation_abs_slot = abs_slot;
+  ++user_plane->activation_count;
+  return 0;
+}
+
+bool mini_gnb_c_n3_user_plane_is_ready(const mini_gnb_c_n3_user_plane_t* user_plane) {
+  return user_plane != NULL && user_plane->ready && user_plane->socket_fd >= 0;
+}
+
+int mini_gnb_c_n3_user_plane_get_local_endpoint(const mini_gnb_c_n3_user_plane_t* user_plane,
+                                                char* ip_text,
+                                                const size_t ip_text_size,
+                                                uint16_t* port) {
+  struct sockaddr_in local_addr;
+  socklen_t local_addr_length = sizeof(local_addr);
+
+  if (user_plane == NULL || user_plane->socket_fd < 0) {
+    return -1;
+  }
+  if (getsockname(user_plane->socket_fd, (struct sockaddr*)&local_addr, &local_addr_length) != 0) {
+    return -1;
+  }
+  if (port != NULL) {
+    *port = ntohs(local_addr.sin_port);
+  }
+  if (ip_text != NULL && ip_text_size > 0u) {
+    if (inet_ntop(AF_INET, &local_addr.sin_addr, ip_text, (socklen_t)ip_text_size) == NULL) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+int mini_gnb_c_n3_user_plane_send_uplink(mini_gnb_c_n3_user_plane_t* user_plane,
+                                         const uint8_t* inner_packet,
+                                         const size_t inner_packet_length) {
+  uint8_t packet[MINI_GNB_C_N3_MAX_GTPU_PACKET];
+  size_t packet_length = 0u;
+  ssize_t sent = 0;
+
+  if (!mini_gnb_c_n3_user_plane_is_ready(user_plane) || inner_packet == NULL || inner_packet_length == 0u) {
+    return -1;
+  }
+  if (mini_gnb_c_gtpu_build_gpdu(&user_plane->session,
+                                 inner_packet,
+                                 inner_packet_length,
+                                 packet,
+                                 sizeof(packet),
+                                 &packet_length) != 0) {
+    return -1;
+  }
+
+  sent = send(user_plane->socket_fd, packet, packet_length, 0);
+  if (sent != (ssize_t)packet_length) {
+    return -1;
+  }
+
+  user_plane->last_uplink_packet_length = packet_length;
+  ++user_plane->uplink_gpdu_count;
+  return 0;
+}
+
+int mini_gnb_c_n3_user_plane_poll_downlink(mini_gnb_c_n3_user_plane_t* user_plane,
+                                           uint8_t* packet,
+                                           const size_t packet_capacity,
+                                           size_t* packet_length) {
+  ssize_t received = 0;
+
+  if (packet_length != NULL) {
+    *packet_length = 0u;
+  }
+  if (!mini_gnb_c_n3_user_plane_is_ready(user_plane) || packet == NULL || packet_capacity == 0u) {
+    return -1;
+  }
+
+  received = recv(user_plane->socket_fd, packet, packet_capacity, 0);
+  if (received < 0) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      return 0;
+    }
+    return -1;
+  }
+
+  if (packet_length != NULL) {
+    *packet_length = (size_t)received;
+  }
+  user_plane->last_downlink_packet_length = (size_t)received;
+  ++user_plane->downlink_gpdu_count;
+  return 1;
+}

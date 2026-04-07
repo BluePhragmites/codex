@@ -152,6 +152,14 @@
 - `sim.ue_tun_isolate_netns=true`
 - UE 会在隔离的 user+network namespace 中创建 `miniue0`
 - 这样不会污染宿主机默认网络命名空间
+- 如果再配置 `sim.ue_tun_netns_name`，UE 会把这个隔离 namespace 发布到 `/var/run/netns/<name>`
+- 如果再配置 `sim.ue_tun_add_default_route=true`，UE 会在拿到核心网分配 IP 后安装 `default dev <ue_tun_name>`
+- 如果再配置 `sim.ue_tun_dns_server_ipv4`，UE 会写 `/etc/netns/<name>/resolv.conf`
+
+这意味着当前不仅可以做“服务器侧 ping UE IP”，也可以做“UE 侧主动发公网流量”的手工验证：
+
+- `ip netns exec <ue_netns_name> ping -c 4 8.8.8.8`
+- `ip netns exec <ue_netns_name> ping -c 4 www.baidu.com`
 
 ### 1.9 当前可执行的端到端 ping 路径
 
@@ -195,6 +203,7 @@
 - `mini_ue_c` 只实现了面向 Open5GS happy-path 的最小 UE NAS 响应链路，不是通用完整 NAS 状态机
 - 当前的真实 `ping` 路径仍依赖手工 Open5GS 环境验证，而不是自动化测试
 - TUN 端到端演示依赖宿主机权限、`/dev/net/tun`、`ip` 命令和真实的 AMF/UPF
+- 如果要从 UE 侧访问公网，Open5GS 宿主机还必须为 UE 子网开启 IPv4 转发和 NAT 或等价路由
 
 ## 3. 基础构建与回归测试
 
@@ -243,6 +252,8 @@ cd /home/hzy/codex/test2/codex/gnb_c
 
 - `test_config_loads`
   - 校验 `slot_sleep_ms` 和 `ue_tun_*` 默认配置
+- `test_open5gs_end_to_end_ue_config_loads_tun_internet_settings`
+  - 校验 end-to-end UE 示例里的 `ue_tun_netns_name / ue_tun_add_default_route / ue_tun_dns_server_ipv4`
 - `test_shared_slot_link_round_trip`
   - 校验 shared-slot 下行摘要中的 `ue_ipv4` 字段可以稳定往返
 
@@ -570,6 +581,7 @@ cd /home/hzy/codex/test2/codex/gnb_c
 - 当前 integration 覆盖中，`simulator.n3_user_plane.activation_count == 1`
 - UE 侧已经能把一个下行 ICMP request 变成下一次上行 data grant 上的 ICMP reply
 - simulator 已经能把一个合法 IPv4 上行 payload 再封回 GTP-U 发给 fake UPF
+- simulator 已会生成可供 Wireshark 检查的 runtime `NGAP` / `GTP-U` pcap
 
 但这还不代表：
 
@@ -645,6 +657,14 @@ sed -n '1,240p' out/summary.json
 - `core_session.upf_ip`
 - `core_session.upf_teid`
 - `core_session.qfi`
+- `ngap_trace_pcap_path`
+- `gtpu_trace_pcap_path`
+
+还可以直接检查 runtime pcap 是否已经生成：
+
+```bash
+ls -l out/gnb_core_ngap_runtime.pcap out/gnb_core_gtpu_runtime.pcap
+```
 
 如果 UE TUN 路径已经接上，UE 日志里通常会出现类似：
 
@@ -652,7 +672,13 @@ sed -n '1,240p' out/summary.json
 - `UE injected DL DATA into TUN ...`
 - `UE captured TUN uplink packet ...`
 
-### 10.6 发送 ping
+同时建议检查 runtime pcap：
+
+```bash
+ls -l out/gnb_core_ngap_runtime.pcap out/gnb_core_gtpu_runtime.pcap
+```
+
+### 10.6 宿主机或服务器侧 ping UE
 
 拿到 `summary.json` 里的 `ue_ipv4` 之后，从宿主机或服务器侧发包：
 
@@ -666,11 +692,47 @@ ping -c 4 <ue_ipv4_from_summary>
 
 但实际测试时仍应以 `summary.json` 为准。
 
-### 10.7 辅助观测命令
+### 10.7 UE 侧主动 ping 公网地址
+
+先确认 Open5GS 宿主机已经允许 UE 子网出公网。最小前提通常是：
+
+```bash
+sysctl -w net.ipv4.ip_forward=1
+iptables -t nat -A POSTROUTING -s 10.45.0.0/16 -o <host_uplink_if> -j MASQUERADE
+```
+
+然后从 UE 的隔离 namespace 里发流量：
+
+```bash
+ip netns exec miniue-demo ping -c 4 8.8.8.8
+ip netns exec miniue-demo ping -c 4 www.baidu.com
+```
+
+建议按这个顺序排查：
+
+- 先测 `8.8.8.8`
+- 再测 `www.baidu.com`
+
+如果第一个失败，问题通常在：
+
+- UE 默认路由没有装上
+- Open5GS/UPF 出公网没有 NAT 或转发
+- N3 用户面链路没通
+
+如果第一个成功、第二个失败，问题通常在：
+
+- `sim.ue_tun_dns_server_ipv4` 没配置
+- `/etc/netns/miniue-demo/resolv.conf` 不存在
+- DNS 服务器本身不可达
+
+### 10.8 辅助观测命令
 
 ```bash
 ip -s link show dev ogstun
 tcpdump -ni ogstun icmp
+ip netns exec miniue-demo ip addr
+ip netns exec miniue-demo ip route
+cat /etc/netns/miniue-demo/resolv.conf
 ```
 
 期望现象：

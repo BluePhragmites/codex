@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "mini_gnb_c/common/hex.h"
 #include "mini_gnb_c/link/shared_slot_link.h"
@@ -59,6 +60,7 @@ typedef struct {
   mini_gnb_c_ue_tun_t tun;
   bool pending_tun_uplink_valid;
   mini_gnb_c_buffer_t pending_tun_uplink_packet;
+  bool tun_network_ready_announced;
 } mini_gnb_c_mini_ue_runtime_t;
 
 static int mini_gnb_c_next_periodic_slot_at_or_after(const int min_abs_slot,
@@ -455,6 +457,8 @@ static void mini_gnb_c_mini_ue_runtime_observe_dl(mini_gnb_c_mini_ue_runtime_t* 
     memcpy(runtime->ip_stack.local_ipv4, dl_summary->ue_ipv4, sizeof(runtime->ip_stack.local_ipv4));
     if (runtime->tun.opened && mini_gnb_c_ue_tun_configure_ipv4(&runtime->tun, dl_summary->ue_ipv4) == 0 &&
         (!tun_was_configured || ue_ipv4_changed)) {
+      const char* netns_name = mini_gnb_c_ue_tun_netns_name(&runtime->tun);
+
       printf("UE configured TUN %s with IPv4 %u.%u.%u.%u/%u\n",
              runtime->tun.ifname,
              dl_summary->ue_ipv4[0],
@@ -462,6 +466,24 @@ static void mini_gnb_c_mini_ue_runtime_observe_dl(mini_gnb_c_mini_ue_runtime_t* 
              dl_summary->ue_ipv4[2],
              dl_summary->ue_ipv4[3],
              runtime->tun.prefix_len);
+      if (runtime->tun.default_route_configured) {
+        printf("UE installed default route via %s inside the UE namespace\n", runtime->tun.ifname);
+      }
+      if (netns_name != NULL) {
+        printf("UE published isolated netns '%s'; try `ip netns exec %s ping -c 4 8.8.8.8`\n",
+               netns_name,
+               netns_name);
+        if (runtime->tun.dns_server_ipv4[0] != '\0') {
+          printf("UE wrote /etc/netns/%s/resolv.conf with DNS %s; try `ip netns exec %s ping -c 4 www.baidu.com`\n",
+                 netns_name,
+                 runtime->tun.dns_server_ipv4,
+                 netns_name);
+        }
+      } else if (runtime->tun.isolate_netns && !runtime->tun_network_ready_announced) {
+        printf("UE is running in an anonymous isolated netns; use `nsenter -n -t %ld ping -c 4 8.8.8.8`\n",
+               (long)getpid());
+      }
+      runtime->tun_network_ready_announced = true;
       fflush(stdout);
     }
   }

@@ -10,13 +10,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <linux/if_tun.h>
 #include <net/if.h>
 
-static int mini_gnb_c_write_text_file(const char* path, const char* text) {
+static int mini_gnb_c_write_text_file_existing(const char* path, const char* text) {
   int fd = -1;
   size_t remaining = 0u;
   const char* cursor = text;
@@ -26,6 +28,39 @@ static int mini_gnb_c_write_text_file(const char* path, const char* text) {
   }
 
   fd = open(path, O_WRONLY | O_CLOEXEC);
+  if (fd < 0) {
+    return -1;
+  }
+
+  remaining = strlen(text);
+  while (remaining > 0u) {
+    const ssize_t written = write(fd, cursor, remaining);
+    if (written < 0) {
+      const int saved_errno = errno;
+      close(fd);
+      errno = saved_errno;
+      return -1;
+    }
+    cursor += (size_t)written;
+    remaining -= (size_t)written;
+  }
+
+  if (close(fd) != 0) {
+    return -1;
+  }
+  return 0;
+}
+
+static int mini_gnb_c_write_text_file_create(const char* path, const char* text) {
+  int fd = -1;
+  size_t remaining = 0u;
+  const char* cursor = text;
+
+  if (path == NULL || text == NULL) {
+    return -1;
+  }
+
+  fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
   if (fd < 0) {
     return -1;
   }
@@ -91,19 +126,19 @@ static int mini_gnb_c_ue_tun_enter_isolated_netns(void) {
   if (unshare(CLONE_NEWUSER) != 0) {
     return -1;
   }
-  if (mini_gnb_c_write_text_file("/proc/self/setgroups", "deny\n") != 0 && errno != ENOENT) {
+  if (mini_gnb_c_write_text_file_existing("/proc/self/setgroups", "deny\n") != 0 && errno != ENOENT) {
     return -1;
   }
   if (snprintf(map_text, sizeof(map_text), "0 %u 1\n", (unsigned)getuid()) >= (int)sizeof(map_text)) {
     return -1;
   }
-  if (mini_gnb_c_write_text_file("/proc/self/uid_map", map_text) != 0) {
+  if (mini_gnb_c_write_text_file_existing("/proc/self/uid_map", map_text) != 0) {
     return -1;
   }
   if (snprintf(map_text, sizeof(map_text), "0 %u 1\n", (unsigned)getgid()) >= (int)sizeof(map_text)) {
     return -1;
   }
-  if (mini_gnb_c_write_text_file("/proc/self/gid_map", map_text) != 0) {
+  if (mini_gnb_c_write_text_file_existing("/proc/self/gid_map", map_text) != 0) {
     return -1;
   }
   if (setresgid(0, 0, 0) != 0) {
@@ -135,6 +170,25 @@ static int mini_gnb_c_ue_tun_set_mtu_and_up(const char* ifname, const uint16_t m
   return mini_gnb_c_run_ip_command(up_command);
 }
 
+static int mini_gnb_c_ensure_dir(const char* path) {
+  if (path == NULL || path[0] == '\0') {
+    return -1;
+  }
+  if (mkdir(path, 0755) == 0 || errno == EEXIST) {
+    return 0;
+  }
+  return -1;
+}
+
+static int mini_gnb_c_ue_tun_replace_default_route(const char* ifname) {
+  char* const command[] = {"ip", "route", "replace", "default", "dev", (char*)ifname, NULL};
+
+  if (ifname == NULL || ifname[0] == '\0') {
+    return -1;
+  }
+  return mini_gnb_c_run_ip_command(command);
+}
+
 static int mini_gnb_c_ue_tun_replace_ipv4_address(const char* ifname,
                                                   const uint8_t ue_ipv4[4],
                                                   const uint8_t prefix_len) {
@@ -157,6 +211,98 @@ static int mini_gnb_c_ue_tun_replace_ipv4_address(const char* ifname,
   return mini_gnb_c_run_ip_command(command);
 }
 
+static int mini_gnb_c_ue_tun_publish_named_netns(mini_gnb_c_ue_tun_t* tun) {
+  char netns_path[MINI_GNB_C_MAX_PATH];
+  int fd = -1;
+
+  if (tun == NULL || tun->netns_name[0] == '\0') {
+    return 0;
+  }
+  if (mini_gnb_c_ensure_dir("/var/run/netns") != 0) {
+    return -1;
+  }
+  if (snprintf(netns_path, sizeof(netns_path), "/var/run/netns/%s", tun->netns_name) >= (int)sizeof(netns_path)) {
+    return -1;
+  }
+
+  fd = open(netns_path, O_RDONLY | O_CREAT | O_CLOEXEC, 0644);
+  if (fd < 0) {
+    return -1;
+  }
+  if (close(fd) != 0) {
+    return -1;
+  }
+  if (mount("/proc/self/ns/net", netns_path, NULL, MS_BIND, NULL) != 0) {
+    (void)unlink(netns_path);
+    return -1;
+  }
+  tun->netns_published = true;
+  return 0;
+}
+
+static int mini_gnb_c_ue_tun_write_netns_resolv_conf(mini_gnb_c_ue_tun_t* tun) {
+  char etc_netns_dir[MINI_GNB_C_MAX_PATH];
+  char resolv_path[MINI_GNB_C_MAX_PATH];
+  char resolv_text[128];
+
+  if (tun == NULL || tun->netns_name[0] == '\0' || tun->dns_server_ipv4[0] == '\0') {
+    return 0;
+  }
+  if (mini_gnb_c_ensure_dir("/etc/netns") != 0) {
+    return -1;
+  }
+  if (snprintf(etc_netns_dir, sizeof(etc_netns_dir), "/etc/netns/%s", tun->netns_name) >= (int)sizeof(etc_netns_dir)) {
+    return -1;
+  }
+  if (mini_gnb_c_ensure_dir(etc_netns_dir) != 0) {
+    return -1;
+  }
+  if (snprintf(resolv_path, sizeof(resolv_path), "%s/resolv.conf", etc_netns_dir) >= (int)sizeof(resolv_path)) {
+    return -1;
+  }
+  if (snprintf(resolv_text,
+               sizeof(resolv_text),
+               "nameserver %s\noptions timeout:1 attempts:1\n",
+               tun->dns_server_ipv4) >= (int)sizeof(resolv_text)) {
+    return -1;
+  }
+  if (mini_gnb_c_write_text_file_create(resolv_path, resolv_text) != 0) {
+    return -1;
+  }
+  tun->dns_configured = true;
+  return 0;
+}
+
+static void mini_gnb_c_ue_tun_cleanup_netns(const mini_gnb_c_ue_tun_t* tun) {
+  char netns_path[MINI_GNB_C_MAX_PATH];
+
+  if (tun == NULL || !tun->netns_published || tun->netns_name[0] == '\0') {
+    return;
+  }
+  if (snprintf(netns_path, sizeof(netns_path), "/var/run/netns/%s", tun->netns_name) >= (int)sizeof(netns_path)) {
+    return;
+  }
+  (void)umount(netns_path);
+  (void)unlink(netns_path);
+}
+
+static void mini_gnb_c_ue_tun_cleanup_dns(const mini_gnb_c_ue_tun_t* tun) {
+  char etc_netns_dir[MINI_GNB_C_MAX_PATH];
+  char resolv_path[MINI_GNB_C_MAX_PATH];
+
+  if (tun == NULL || !tun->dns_configured || tun->netns_name[0] == '\0') {
+    return;
+  }
+  if (snprintf(etc_netns_dir, sizeof(etc_netns_dir), "/etc/netns/%s", tun->netns_name) >= (int)sizeof(etc_netns_dir)) {
+    return;
+  }
+  if (snprintf(resolv_path, sizeof(resolv_path), "%s/resolv.conf", etc_netns_dir) >= (int)sizeof(resolv_path)) {
+    return;
+  }
+  (void)unlink(resolv_path);
+  (void)rmdir(etc_netns_dir);
+}
+
 void mini_gnb_c_ue_tun_init(mini_gnb_c_ue_tun_t* tun) {
   if (tun == NULL) {
     return;
@@ -174,10 +320,17 @@ int mini_gnb_c_ue_tun_open(mini_gnb_c_ue_tun_t* tun, const mini_gnb_c_sim_config
   }
   mini_gnb_c_ue_tun_init(tun);
   tun->isolate_netns = sim->ue_tun_isolate_netns;
+  tun->default_route_enabled = sim->ue_tun_add_default_route;
   tun->mtu = sim->ue_tun_mtu;
   tun->prefix_len = sim->ue_tun_prefix_len;
+  (void)snprintf(tun->netns_name, sizeof(tun->netns_name), "%s", sim->ue_tun_netns_name);
+  (void)snprintf(tun->dns_server_ipv4, sizeof(tun->dns_server_ipv4), "%s", sim->ue_tun_dns_server_ipv4);
 
   if (tun->isolate_netns && mini_gnb_c_ue_tun_enter_isolated_netns() != 0) {
+    return -1;
+  }
+  if (tun->isolate_netns && mini_gnb_c_ue_tun_publish_named_netns(tun) != 0) {
+    mini_gnb_c_ue_tun_close(tun);
     return -1;
   }
 
@@ -222,6 +375,13 @@ int mini_gnb_c_ue_tun_configure_ipv4(mini_gnb_c_ue_tun_t* tun, const uint8_t ue_
   if (mini_gnb_c_ue_tun_replace_ipv4_address(tun->ifname, ue_ipv4, tun->prefix_len) != 0) {
     return -1;
   }
+  if (tun->default_route_enabled && mini_gnb_c_ue_tun_replace_default_route(tun->ifname) != 0) {
+    return -1;
+  }
+  tun->default_route_configured = tun->default_route_enabled;
+  if (mini_gnb_c_ue_tun_write_netns_resolv_conf(tun) != 0) {
+    return -1;
+  }
   memcpy(tun->local_ipv4, ue_ipv4, sizeof(tun->local_ipv4));
   tun->configured = true;
   return 0;
@@ -261,6 +421,13 @@ int mini_gnb_c_ue_tun_write_packet(mini_gnb_c_ue_tun_t* tun, const uint8_t* pack
   return written == (ssize_t)packet_length ? 0 : -1;
 }
 
+const char* mini_gnb_c_ue_tun_netns_name(const mini_gnb_c_ue_tun_t* tun) {
+  if (tun == NULL || tun->netns_name[0] == '\0') {
+    return NULL;
+  }
+  return tun->netns_name;
+}
+
 void mini_gnb_c_ue_tun_close(mini_gnb_c_ue_tun_t* tun) {
   if (tun == NULL) {
     return;
@@ -270,6 +437,11 @@ void mini_gnb_c_ue_tun_close(mini_gnb_c_ue_tun_t* tun) {
     close(tun->fd);
   }
   tun->fd = -1;
+  mini_gnb_c_ue_tun_cleanup_netns(tun);
+  mini_gnb_c_ue_tun_cleanup_dns(tun);
   tun->opened = false;
   tun->configured = false;
+  tun->netns_published = false;
+  tun->dns_configured = false;
+  tun->default_route_configured = false;
 }

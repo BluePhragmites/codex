@@ -156,6 +156,8 @@ On top of those transports, the UE side now has two layers:
 - `ue/ue_tun`
   - owns the optional live UE TUN device
   - can create and configure that device inside an isolated user+network namespace
+  - can publish that namespace under `/var/run/netns/<name>` when `sim.ue_tun_netns_name` is configured
+  - can install a default route on the UE TUN device and write `/etc/netns/<name>/resolv.conf` for DNS lookups
   - lets the kernel stack generate the reply traffic instead of relying only on the synthetic `ue_ip_stack_min` path
 - `apps/mini_ue_c.c`
   - loads the YAML config
@@ -215,10 +217,12 @@ The first live simulator-side core bridge is now wired on top of that state:
   - sends `InitialContextSetupResponse` and `PDUSessionResourceSetupResponse` without leaving the slot-driven simulator model
   - parses Open5GS user-plane session state from `PDUSessionResourceSetupRequest` and writes it into the embedded `core_session`
   - continues relaying later top-level `DownlinkNASTransport` messages after session setup while preserving that extracted session state
+  - appends every AMF-facing NGAP request/response to one runtime pcap when tracing is enabled
 - `config/default_cell.yml`
   - now includes an optional `core:` section
   - that section now also carries `upf_port` so the simulator-side N3 socket can target the configured UPF UDP port
   - the section now also carries a `timeout_ms` setting for the SCTP bridge
+  - the section now also carries optional `ngap_trace_pcap` / `gtpu_trace_pcap` overrides for runtime packet capture
   - the bridge is disabled by default so older local-loop runs do not change behavior
 - `src/common/simulator.c`
   - invokes the bridge immediately after `ue_context_store` promotion
@@ -229,6 +233,10 @@ The first live simulator-side core bridge is now wired on top of that state:
   - now forwards one valid uplink IPv4 `UL DATA` payload through the persistent N3 socket without changing the top-level slot loop
   - can optionally slow the live slot loop with `sim.slot_sleep_ms` so manual host-side traffic has time to interact with the running UE process
   - keeps the bridge outcome inside the embedded `core_session`, so the summary schema stays aligned with the future live AMF bridge
+  - resolves default runtime pcap output paths for both Open5GS-facing links and exports them in `summary.json`
+- `trace/pcap_trace`
+  - owns the tiny reusable libpcap writer used by the simulator-side NGAP and GTP-U traces
+  - supports payload-level NGAP pcaps and synthetic outer IPv4/UDP framing for GTP-U pcaps
 
 This is now a minimal live control-plane bridge covering the first NAS hop plus the
 follow-up session-setup acknowledgements needed by the Open5GS attach flow.
@@ -239,7 +247,9 @@ later PDU-session user-plane state inside the simulator path, keep relaying late
 top-level `DL_NAS`, and send the required gNB-side NGAP acknowledgements. The live
 UE runtime now consumes those later `DL_NAS` events and auto-generates the matching
 happy-path follow-up `UL_NAS` messages, but this is still a narrow demo-oriented
-NAS implementation rather than a full generic UE NAS stack.
+NAS implementation rather than a full generic UE NAS stack. The same simulator path
+now emits runtime NGAP and GTP-U pcaps, which makes it easier to see whether the
+Open5GS interaction stopped at SCTP setup, NAS relay, session setup, or N3 traffic.
 
 The Stage D and Stage E user-plane slices are now present:
 
@@ -256,6 +266,9 @@ The Stage D and Stage E user-plane slices are now present:
     - waits for the next granted `UL_BURST_DATA`
   - live kernel-stack mode through `ue/ue_tun`
     - configures a TUN interface once the gNB has learned and staged the `UE IPv4`
+    - installs `default dev <ue_tun_name>` so the UE namespace can originate outbound traffic
+    - can expose the UE namespace through `ip netns exec <name> ...`
+    - can provide per-namespace DNS for name-based probes such as `ping www.baidu.com`
     - injects the downlink IP packet into that TUN device
     - reads the later kernel-generated reply back from the same TUN interface
 - in the unscripted live path, `src/common/simulator.c` auto-queues one follow-up UL payload grant after a downlink N3 packet so the UE can return either synthetic or TUN-sourced data without a handcrafted schedule file
@@ -272,6 +285,11 @@ The architecture still does not yet include:
 
 - a full generic UE NAS/session state machine beyond the current Open5GS happy path
 - an automated CI-style end-to-end `ping` test; the full TUN path is still a manual validation workflow
+
+The outbound-internet demo also depends on the host-side Open5GS environment:
+
+- the host must enable IPv4 forwarding
+- the host must NAT or otherwise route the UE subnet toward the public network
 
 So `ngap_probe` is not part of the radio simulator loop. It is a protocol bring-up
 tool that shares the same repository because it validates the external Open5GS

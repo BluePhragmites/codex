@@ -109,6 +109,8 @@ typedef struct {
   uint32_t timeout_ms;
   uint16_t ran_ue_ngap_id_base;
   uint8_t default_pdu_session_id;
+  char ngap_trace_pcap[MINI_GNB_C_MAX_PATH];
+  char gtpu_trace_pcap[MINI_GNB_C_MAX_PATH];
 } mini_gnb_c_core_config_t;
 
 typedef struct {
@@ -160,6 +162,9 @@ typedef struct {
   uint16_t ue_tun_mtu;
   uint8_t ue_tun_prefix_len;
   bool ue_tun_isolate_netns;
+  bool ue_tun_add_default_route;
+  char ue_tun_netns_name[MINI_GNB_C_MAX_TEXT];
+  char ue_tun_dns_server_ipv4[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
   char scripted_schedule_dir[MINI_GNB_C_MAX_PATH];
   char scripted_pdcch_dir[MINI_GNB_C_MAX_PATH];
   char ul_data_hex[MINI_GNB_C_MAX_PAYLOAD * 2 + 1];
@@ -466,6 +471,8 @@ typedef struct {
   char trace_path[MINI_GNB_C_MAX_PATH];
   char metrics_path[MINI_GNB_C_MAX_PATH];
   char summary_path[MINI_GNB_C_MAX_PATH];
+  char ngap_trace_pcap_path[MINI_GNB_C_MAX_PATH];
+  char gtpu_trace_pcap_path[MINI_GNB_C_MAX_PATH];
 } mini_gnb_c_run_summary_t;
 
 const char* mini_gnb_c_dl_object_type_to_string(mini_gnb_c_dl_object_type_t type);

@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "mini_gnb_c/common/types.h"
@@ -41,6 +42,23 @@ static inline void mini_gnb_c_reset_test_dir(const char* path) {
   mini_gnb_c_require(path != NULL, "expected test directory path");
   (void)snprintf(command, sizeof(command), "mkdir -p '%s'", path);
   mini_gnb_c_require(system(command) == 0, "expected test subdirectory");
+}
+
+static inline bool mini_gnb_c_path_exists(const char* path) {
+  struct stat st;
+
+  if (path == NULL || path[0] == '\0') {
+    return false;
+  }
+  return stat(path, &st) == 0;
+}
+
+static inline size_t mini_gnb_c_file_size(const char* path) {
+  struct stat st;
+
+  mini_gnb_c_require(path != NULL && path[0] != '\0', "expected file path");
+  mini_gnb_c_require(stat(path, &st) == 0, "expected file to exist");
+  return (size_t)st.st_size;
 }
 
 #endif

@@ -6,6 +6,7 @@ void test_config_loads(void);
 void test_sib1_schedule_uses_period_and_offset(void);
 void test_prach_schedule_uses_period_and_offset(void);
 void test_tbsize_lookup_table(void);
+void test_open5gs_end_to_end_ue_config_loads_tun_internet_settings(void);
 void test_core_session_tracks_user_plane_state(void);
 void test_core_session_rejects_invalid_values(void);
 void test_ue_context_store_promote_initializes_core_session(void);
@@ -17,6 +18,7 @@ void test_gnb_core_bridge_relays_post_session_downlink_nas(void);
 void test_gnb_core_bridge_ignores_disabled_config(void);
 void test_ngap_runtime_builders_encode_expected_headers(void);
 void test_ngap_runtime_extracts_open5gs_user_plane_state(void);
+void test_pcap_trace_writes_payload_and_udp_ipv4(void);
 void test_nas_5gs_min_builds_followup_uplinks(void);
 void test_nas_5gs_min_polls_downlink_exchange(void);
 void test_gtpu_builders_encode_expected_headers(void);
@@ -61,6 +63,8 @@ int main(void) {
       {"test_sib1_schedule_uses_period_and_offset", test_sib1_schedule_uses_period_and_offset},
       {"test_prach_schedule_uses_period_and_offset", test_prach_schedule_uses_period_and_offset},
       {"test_tbsize_lookup_table", test_tbsize_lookup_table},
+      {"test_open5gs_end_to_end_ue_config_loads_tun_internet_settings",
+       test_open5gs_end_to_end_ue_config_loads_tun_internet_settings},
       {"test_core_session_tracks_user_plane_state", test_core_session_tracks_user_plane_state},
       {"test_core_session_rejects_invalid_values", test_core_session_rejects_invalid_values},
       {"test_ue_context_store_promote_initializes_core_session",
@@ -77,6 +81,7 @@ int main(void) {
        test_ngap_runtime_builders_encode_expected_headers},
       {"test_ngap_runtime_extracts_open5gs_user_plane_state",
        test_ngap_runtime_extracts_open5gs_user_plane_state},
+      {"test_pcap_trace_writes_payload_and_udp_ipv4", test_pcap_trace_writes_payload_and_udp_ipv4},
       {"test_nas_5gs_min_builds_followup_uplinks", test_nas_5gs_min_builds_followup_uplinks},
       {"test_nas_5gs_min_polls_downlink_exchange", test_nas_5gs_min_polls_downlink_exchange},
       {"test_gtpu_builders_encode_expected_headers", test_gtpu_builders_encode_expected_headers},

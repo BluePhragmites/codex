@@ -791,6 +791,10 @@ void test_integration_shared_slot_ue_runtime_auto_nas_session_setup(void) {
                          summary.ue_contexts[0].core_session.ue_ipv4[2] == 0u &&
                          summary.ue_contexts[0].core_session.ue_ipv4[3] == 7u,
                      "expected session setup UE IPv4");
+  mini_gnb_c_require(summary.ngap_trace_pcap_path[0] != '\0', "expected exported NGAP trace pcap path");
+  mini_gnb_c_require(mini_gnb_c_path_exists(summary.ngap_trace_pcap_path), "expected NGAP trace pcap file");
+  mini_gnb_c_require(mini_gnb_c_file_size(summary.ngap_trace_pcap_path) > 24u,
+                     "expected NGAP trace pcap payloads");
   mini_gnb_c_require(fake_transport.sent_count == 9u, "expected live UE NAS uplinks plus NGAP acknowledgements");
 
   mini_gnb_c_require(mini_gnb_c_ngap_extract_nas_pdu(fake_transport.sent_messages[2],
@@ -846,6 +850,8 @@ void test_integration_shared_slot_ue_runtime_auto_nas_session_setup(void) {
                      "expected shared-slot auto NAS downlink count");
   mini_gnb_c_require(strstr(summary_json, "\"ue_ipv4\":\"10.45.0.7\"") != NULL,
                      "expected shared-slot auto NAS UE IPv4");
+  mini_gnb_c_require(strstr(summary_json, "\"ngap_trace_pcap_path\":") != NULL,
+                     "expected NGAP trace pcap path in summary");
   free(summary_json);
 }
 
@@ -1651,6 +1657,10 @@ void test_integration_core_bridge_forwards_ul_ipv4_to_n3(void) {
   mini_gnb_c_require(memcmp(extracted_inner_packet, inner_packet, inner_packet_length) == 0,
                      "expected forwarded inner IPv4 bytes");
   mini_gnb_c_require(simulator.n3_user_plane.uplink_gpdu_count >= 1u, "expected tracked uplink G-PDU count");
+  mini_gnb_c_require(summary.gtpu_trace_pcap_path[0] != '\0', "expected exported GTP-U trace pcap path");
+  mini_gnb_c_require(mini_gnb_c_path_exists(summary.gtpu_trace_pcap_path), "expected GTP-U trace pcap file");
+  mini_gnb_c_require(mini_gnb_c_file_size(summary.gtpu_trace_pcap_path) > 24u,
+                     "expected GTP-U trace payloads");
 
   close(upf_socket_fd);
 }

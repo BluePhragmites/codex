@@ -295,6 +295,8 @@ int mini_gnb_c_load_config(const char* path,
   out_config->core.timeout_ms = 5000u;
   out_config->core.ran_ue_ngap_id_base = 1u;
   out_config->core.default_pdu_session_id = 1u;
+  out_config->core.ngap_trace_pcap[0] = '\0';
+  out_config->core.gtpu_trace_pcap[0] = '\0';
   out_config->sim.post_msg4_dl_pdcch_delay_slots = 1;
   out_config->sim.post_msg4_dl_time_indicator = 1;
   out_config->sim.post_msg4_dl_data_to_ul_ack_slots = 1;
@@ -318,6 +320,9 @@ int mini_gnb_c_load_config(const char* path,
   out_config->sim.ue_tun_mtu = 1400u;
   out_config->sim.ue_tun_prefix_len = 16u;
   out_config->sim.ue_tun_isolate_netns = true;
+  out_config->sim.ue_tun_add_default_route = true;
+  out_config->sim.ue_tun_netns_name[0] = '\0';
+  out_config->sim.ue_tun_dns_server_ipv4[0] = '\0';
   out_config->sim.scripted_schedule_dir[0] = '\0';
   out_config->sim.scripted_pdcch_dir[0] = '\0';
   (void)snprintf(out_config->sim.ul_data_hex,
@@ -373,6 +378,20 @@ int mini_gnb_c_load_config(const char* path,
   }
   if (mini_gnb_c_extract_int(text, "core", "default_pdu_session_id", &value) == 0) {
     out_config->core.default_pdu_session_id = (uint8_t)value;
+  }
+  if (mini_gnb_c_extract_string(text,
+                                "core",
+                                "ngap_trace_pcap",
+                                out_config->core.ngap_trace_pcap,
+                                sizeof(out_config->core.ngap_trace_pcap)) != 0) {
+    out_config->core.ngap_trace_pcap[0] = '\0';
+  }
+  if (mini_gnb_c_extract_string(text,
+                                "core",
+                                "gtpu_trace_pcap",
+                                out_config->core.gtpu_trace_pcap,
+                                sizeof(out_config->core.gtpu_trace_pcap)) != 0) {
+    out_config->core.gtpu_trace_pcap[0] = '\0';
   }
 
   MINI_GNB_C_LOAD_INT("broadcast", "ssb_period_slots", out_config->broadcast.ssb_period_slots, int);
@@ -491,6 +510,23 @@ int mini_gnb_c_load_config(const char* path,
   if (mini_gnb_c_extract_bool(text, "sim", "ue_tun_isolate_netns", &bool_value) == 0) {
     out_config->sim.ue_tun_isolate_netns = bool_value;
   }
+  if (mini_gnb_c_extract_bool(text, "sim", "ue_tun_add_default_route", &bool_value) == 0) {
+    out_config->sim.ue_tun_add_default_route = bool_value;
+  }
+  if (mini_gnb_c_extract_string(text,
+                                "sim",
+                                "ue_tun_netns_name",
+                                out_config->sim.ue_tun_netns_name,
+                                sizeof(out_config->sim.ue_tun_netns_name)) != 0) {
+    out_config->sim.ue_tun_netns_name[0] = '\0';
+  }
+  if (mini_gnb_c_extract_string(text,
+                                "sim",
+                                "ue_tun_dns_server_ipv4",
+                                out_config->sim.ue_tun_dns_server_ipv4,
+                                sizeof(out_config->sim.ue_tun_dns_server_ipv4)) != 0) {
+    out_config->sim.ue_tun_dns_server_ipv4[0] = '\0';
+  }
   if (mini_gnb_c_extract_string(text,
                                 "sim",
                                 "scripted_schedule_dir",
@@ -543,11 +579,11 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                 "UL input summary:\n"
                 "  prach_trigger_abs_slot=%d prach_retry_delay_slots=%d msg3_delay_slots=%d msg3_present=%s input_dir=%s local_exchange_dir=%s shared_slot_path=%s shared_slot_timeout_ms=%u slot_sleep_ms=%u scripted_schedule_dir=%s scripted_pdcch_dir=%s\n"
                 "UE runtime summary:\n"
-                "  ue_tun_enabled=%s ue_tun_name=%s ue_tun_mtu=%u ue_tun_prefix_len=%u ue_tun_isolate_netns=%s\n"
+                "  ue_tun_enabled=%s ue_tun_name=%s ue_tun_mtu=%u ue_tun_prefix_len=%u ue_tun_isolate_netns=%s ue_tun_add_default_route=%s ue_tun_netns_name=%s ue_tun_dns_server_ipv4=%s\n"
                 "Connected traffic summary:\n"
                 "  post_msg4=%s dl_pdcch_delay=%d dl_time_indicator=%d dl_ack=%d sr_period=%d sr_offset=%d ul_grant_delay=%d ul_time_indicator=%d dl_harq=%d ul_harq=%d ul_present=%s\n"
                 "Core bridge summary:\n"
-                "  enabled=%s amf=%s:%u upf_port=%u timeout_ms=%u ran_ue_ngap_id_base=%u default_pdu_session_id=%u\n"
+                "  enabled=%s amf=%s:%u upf_port=%u timeout_ms=%u ran_ue_ngap_id_base=%u default_pdu_session_id=%u ngap_trace_pcap=%s gtpu_trace_pcap=%s\n"
                 "RF config summary:\n"
                 "  driver=%s clock=%s srate=%g tx_gain=%g rx_gain=%g",
                config->cell.pci,
@@ -585,6 +621,9 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                 config->sim.ue_tun_mtu,
                 config->sim.ue_tun_prefix_len,
                 config->sim.ue_tun_isolate_netns ? "true" : "false",
+                config->sim.ue_tun_add_default_route ? "true" : "false",
+                config->sim.ue_tun_netns_name[0] != '\0' ? config->sim.ue_tun_netns_name : "(disabled)",
+                config->sim.ue_tun_dns_server_ipv4[0] != '\0' ? config->sim.ue_tun_dns_server_ipv4 : "(disabled)",
                 config->sim.post_msg4_traffic_enabled ? "true" : "false",
                 config->sim.post_msg4_dl_pdcch_delay_slots,
                 config->sim.post_msg4_dl_time_indicator,
@@ -603,6 +642,8 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                 config->core.timeout_ms,
                 config->core.ran_ue_ngap_id_base,
                 config->core.default_pdu_session_id,
+                config->core.ngap_trace_pcap[0] != '\0' ? config->core.ngap_trace_pcap : "(auto)",
+                config->core.gtpu_trace_pcap[0] != '\0' ? config->core.gtpu_trace_pcap : "(auto)",
                 config->rf.device_driver,
                 config->rf.clock_src,
                 config->rf.srate,

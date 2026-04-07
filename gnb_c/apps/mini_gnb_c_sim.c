@@ -61,5 +61,11 @@ int main(int argc, char** argv) {
   printf("  trace: %s\n", summary.trace_path);
   printf("  metrics: %s\n", summary.metrics_path);
   printf("  summary: %s\n", summary.summary_path);
+  if (summary.ngap_trace_pcap_path[0] != '\0') {
+    printf("  ngap_pcap: %s\n", summary.ngap_trace_pcap_path);
+  }
+  if (summary.gtpu_trace_pcap_path[0] != '\0') {
+    printf("  gtpu_pcap: %s\n", summary.gtpu_trace_pcap_path);
+  }
   return 0;
 }

@@ -24,6 +24,8 @@ void test_config_loads(void) {
   mini_gnb_c_require(config.core.timeout_ms == 5000u, "expected default AMF timeout");
   mini_gnb_c_require(config.core.ran_ue_ngap_id_base == 1u, "expected default RAN UE NGAP ID base");
   mini_gnb_c_require(config.core.default_pdu_session_id == 1u, "expected default requested PDU session ID");
+  mini_gnb_c_require(config.core.ngap_trace_pcap[0] == '\0', "expected auto NGAP trace path");
+  mini_gnb_c_require(config.core.gtpu_trace_pcap[0] == '\0', "expected auto GTP-U trace path");
   mini_gnb_c_require(config.sim.total_slots == 20, "expected total slot count");
   mini_gnb_c_require(config.sim.slot_sleep_ms == 0u, "expected default slot pacing disabled");
   mini_gnb_c_require(config.sim.prach_retry_delay_slots == 4, "expected PRACH retry delay");
@@ -38,6 +40,10 @@ void test_config_loads(void) {
   mini_gnb_c_require(config.sim.ue_tun_mtu == 1400u, "expected default UE TUN mtu");
   mini_gnb_c_require(config.sim.ue_tun_prefix_len == 16u, "expected default UE TUN prefix length");
   mini_gnb_c_require(config.sim.ue_tun_isolate_netns, "expected UE TUN netns isolation enabled by default");
+  mini_gnb_c_require(config.sim.ue_tun_add_default_route, "expected UE TUN default route enabled by default");
+  mini_gnb_c_require(config.sim.ue_tun_netns_name[0] == '\0', "expected UE TUN netns name disabled by default");
+  mini_gnb_c_require(config.sim.ue_tun_dns_server_ipv4[0] == '\0',
+                     "expected UE TUN DNS override disabled by default");
   mini_gnb_c_require(config.sim.post_msg4_traffic_enabled, "expected post-Msg4 traffic enabled");
   mini_gnb_c_require(config.sim.post_msg4_dl_pdcch_delay_slots == 1, "expected DL PDCCH delay");
   mini_gnb_c_require(config.sim.post_msg4_dl_time_indicator == 1, "expected DL time indicator");
@@ -111,4 +117,23 @@ void test_tbsize_lookup_table(void) {
   mini_gnb_c_require(mini_gnb_c_lookup_tbsize(24U, 8U) == 96U, "expected large UL payload tbsize");
   mini_gnb_c_require(mini_gnb_c_lookup_tbsize(24U, 9U) == 120U, "expected DL data tbsize");
   mini_gnb_c_require(mini_gnb_c_lookup_tbsize(7U, 9U) == 0U, "expected unknown PRB/MCS pair to map to 0");
+}
+
+void test_open5gs_end_to_end_ue_config_loads_tun_internet_settings(void) {
+  char config_path[MINI_GNB_C_MAX_PATH];
+  char error_message[256];
+  mini_gnb_c_config_t config;
+
+  (void)snprintf(config_path,
+                 sizeof(config_path),
+                 "%s/config/example_open5gs_end_to_end_ue.yml",
+                 MINI_GNB_C_SOURCE_DIR);
+  mini_gnb_c_require(mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) == 0,
+                     "expected Open5GS UE config to load");
+  mini_gnb_c_require(config.sim.ue_tun_enabled, "expected end-to-end UE TUN enabled");
+  mini_gnb_c_require(config.sim.ue_tun_add_default_route, "expected end-to-end UE default route enabled");
+  mini_gnb_c_require(strcmp(config.sim.ue_tun_netns_name, "miniue-demo") == 0,
+                     "expected end-to-end UE netns name");
+  mini_gnb_c_require(strcmp(config.sim.ue_tun_dns_server_ipv4, "223.5.5.5") == 0,
+                     "expected end-to-end UE DNS server");
 }

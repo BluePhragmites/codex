@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include "mini_gnb_c/core/core_session.h"
+#include "mini_gnb_c/trace/pcap_trace.h"
 
 #define MINI_GNB_C_N3_MAX_GTPU_PACKET 4096u
 
@@ -21,9 +22,12 @@ typedef struct {
   size_t last_uplink_packet_length;
   size_t last_downlink_packet_length;
   int last_activation_abs_slot;
+  mini_gnb_c_pcap_writer_t gtpu_trace_writer;
 } mini_gnb_c_n3_user_plane_t;
 
 void mini_gnb_c_n3_user_plane_init(mini_gnb_c_n3_user_plane_t* user_plane);
+int mini_gnb_c_n3_user_plane_set_gtpu_trace_path(mini_gnb_c_n3_user_plane_t* user_plane, const char* path);
+const char* mini_gnb_c_n3_user_plane_get_gtpu_trace_path(const mini_gnb_c_n3_user_plane_t* user_plane);
 void mini_gnb_c_n3_user_plane_close(mini_gnb_c_n3_user_plane_t* user_plane);
 int mini_gnb_c_n3_user_plane_activate(mini_gnb_c_n3_user_plane_t* user_plane,
                                       const mini_gnb_c_core_session_t* session,

@@ -305,7 +305,9 @@ static int mini_gnb_c_write_summary_json(const char* path,
                                          int64_t last_hw_time_ns,
                                          const char* trace_path,
                                          const char* metrics_path,
-                                         const char* summary_path) {
+                                         const char* summary_path,
+                                         const char* ngap_trace_pcap_path,
+                                         const char* gtpu_trace_pcap_path) {
   FILE* file = fopen(path, "wb");
   if (file == NULL) {
     return -1;
@@ -326,6 +328,10 @@ static int mini_gnb_c_write_summary_json(const char* path,
   mini_gnb_c_json_write_string(file, metrics_path);
   fputs(",\"summary_path\":", file);
   mini_gnb_c_json_write_string(file, summary_path);
+  fputs(",\"ngap_trace_pcap_path\":", file);
+  mini_gnb_c_json_write_string(file, ngap_trace_pcap_path != NULL ? ngap_trace_pcap_path : "");
+  fputs(",\"gtpu_trace_pcap_path\":", file);
+  mini_gnb_c_json_write_string(file, gtpu_trace_pcap_path != NULL ? gtpu_trace_pcap_path : "");
   fputs("}\n", file);
 
   fclose(file);
@@ -442,6 +448,8 @@ int mini_gnb_c_metrics_trace_flush(const mini_gnb_c_metrics_trace_t* metrics,
                                    size_t ue_count,
                                    uint64_t tx_burst_count,
                                    int64_t last_hw_time_ns,
+                                   const char* ngap_trace_pcap_path,
+                                   const char* gtpu_trace_pcap_path,
                                    mini_gnb_c_run_summary_t* out_summary) {
   char trace_path[MINI_GNB_C_MAX_PATH];
   char metrics_path[MINI_GNB_C_MAX_PATH];
@@ -491,7 +499,9 @@ int mini_gnb_c_metrics_trace_flush(const mini_gnb_c_metrics_trace_t* metrics,
                                     last_hw_time_ns,
                                     trace_path,
                                     metrics_path,
-                                    summary_path) != 0) {
+                                    summary_path,
+                                    ngap_trace_pcap_path,
+                                    gtpu_trace_pcap_path) != 0) {
     return -1;
   }
 
@@ -510,5 +520,11 @@ int mini_gnb_c_metrics_trace_flush(const mini_gnb_c_metrics_trace_t* metrics,
   mini_gnb_c_copy_string(out_summary->trace_path, sizeof(out_summary->trace_path), trace_path);
   mini_gnb_c_copy_string(out_summary->metrics_path, sizeof(out_summary->metrics_path), metrics_path);
   mini_gnb_c_copy_string(out_summary->summary_path, sizeof(out_summary->summary_path), summary_path);
+  mini_gnb_c_copy_string(out_summary->ngap_trace_pcap_path,
+                         sizeof(out_summary->ngap_trace_pcap_path),
+                         ngap_trace_pcap_path != NULL ? ngap_trace_pcap_path : "");
+  mini_gnb_c_copy_string(out_summary->gtpu_trace_pcap_path,
+                         sizeof(out_summary->gtpu_trace_pcap_path),
+                         gtpu_trace_pcap_path != NULL ? gtpu_trace_pcap_path : "");
   return 0;
 }

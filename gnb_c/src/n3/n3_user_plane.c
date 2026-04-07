@@ -10,6 +10,26 @@
 
 #include "mini_gnb_c/n3/gtpu_tunnel.h"
 
+static void mini_gnb_c_n3_user_plane_trace_packet(mini_gnb_c_n3_user_plane_t* user_plane,
+                                                  const char* src_ip,
+                                                  uint16_t src_port,
+                                                  const char* dst_ip,
+                                                  uint16_t dst_port,
+                                                  const uint8_t* packet,
+                                                  size_t packet_length) {
+  if (user_plane == NULL || src_ip == NULL || dst_ip == NULL || packet == NULL || packet_length == 0u ||
+      !mini_gnb_c_pcap_writer_is_open(&user_plane->gtpu_trace_writer)) {
+    return;
+  }
+  (void)mini_gnb_c_pcap_writer_write_udp_ipv4(&user_plane->gtpu_trace_writer,
+                                              src_ip,
+                                              src_port,
+                                              dst_ip,
+                                              dst_port,
+                                              packet,
+                                              packet_length);
+}
+
 static int mini_gnb_c_n3_user_plane_open_socket(mini_gnb_c_n3_user_plane_t* user_plane) {
   struct sockaddr_in bind_addr;
   int socket_fd = -1;
@@ -73,6 +93,23 @@ void mini_gnb_c_n3_user_plane_init(mini_gnb_c_n3_user_plane_t* user_plane) {
   memset(user_plane, 0, sizeof(*user_plane));
   user_plane->socket_fd = -1;
   user_plane->last_activation_abs_slot = -1;
+  mini_gnb_c_pcap_writer_init(&user_plane->gtpu_trace_writer);
+}
+
+int mini_gnb_c_n3_user_plane_set_gtpu_trace_path(mini_gnb_c_n3_user_plane_t* user_plane, const char* path) {
+  if (user_plane == NULL) {
+    return -1;
+  }
+  if (path == NULL || path[0] == '\0') {
+    mini_gnb_c_pcap_writer_close(&user_plane->gtpu_trace_writer);
+    user_plane->gtpu_trace_writer.path[0] = '\0';
+    return 0;
+  }
+  return mini_gnb_c_pcap_writer_open(&user_plane->gtpu_trace_writer, path, MINI_GNB_C_PCAP_LINKTYPE_RAW);
+}
+
+const char* mini_gnb_c_n3_user_plane_get_gtpu_trace_path(const mini_gnb_c_n3_user_plane_t* user_plane) {
+  return user_plane != NULL ? mini_gnb_c_pcap_writer_path(&user_plane->gtpu_trace_writer) : "";
 }
 
 void mini_gnb_c_n3_user_plane_close(mini_gnb_c_n3_user_plane_t* user_plane) {
@@ -85,6 +122,7 @@ void mini_gnb_c_n3_user_plane_close(mini_gnb_c_n3_user_plane_t* user_plane) {
     user_plane->socket_fd = -1;
   }
   user_plane->ready = false;
+  mini_gnb_c_pcap_writer_close(&user_plane->gtpu_trace_writer);
 }
 
 int mini_gnb_c_n3_user_plane_activate(mini_gnb_c_n3_user_plane_t* user_plane,
@@ -146,6 +184,8 @@ int mini_gnb_c_n3_user_plane_send_uplink(mini_gnb_c_n3_user_plane_t* user_plane,
                                          const size_t inner_packet_length) {
   uint8_t packet[MINI_GNB_C_N3_MAX_GTPU_PACKET];
   size_t packet_length = 0u;
+  char local_ip[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
+  uint16_t local_port = 0u;
   ssize_t sent = 0;
 
   if (!mini_gnb_c_n3_user_plane_is_ready(user_plane) || inner_packet == NULL || inner_packet_length == 0u) {
@@ -164,6 +204,15 @@ int mini_gnb_c_n3_user_plane_send_uplink(mini_gnb_c_n3_user_plane_t* user_plane,
   if (sent != (ssize_t)packet_length) {
     return -1;
   }
+  if (mini_gnb_c_n3_user_plane_get_local_endpoint(user_plane, local_ip, sizeof(local_ip), &local_port) == 0) {
+    mini_gnb_c_n3_user_plane_trace_packet(user_plane,
+                                          local_ip,
+                                          local_port,
+                                          user_plane->upf_ip,
+                                          user_plane->upf_port,
+                                          packet,
+                                          packet_length);
+  }
 
   user_plane->last_uplink_packet_length = packet_length;
   ++user_plane->uplink_gpdu_count;
@@ -174,6 +223,8 @@ int mini_gnb_c_n3_user_plane_poll_downlink(mini_gnb_c_n3_user_plane_t* user_plan
                                            uint8_t* packet,
                                            const size_t packet_capacity,
                                            size_t* packet_length) {
+  char local_ip[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
+  uint16_t local_port = 0u;
   ssize_t received = 0;
 
   if (packet_length != NULL) {
@@ -193,6 +244,15 @@ int mini_gnb_c_n3_user_plane_poll_downlink(mini_gnb_c_n3_user_plane_t* user_plan
 
   if (packet_length != NULL) {
     *packet_length = (size_t)received;
+  }
+  if (mini_gnb_c_n3_user_plane_get_local_endpoint(user_plane, local_ip, sizeof(local_ip), &local_port) == 0) {
+    mini_gnb_c_n3_user_plane_trace_packet(user_plane,
+                                          user_plane->upf_ip,
+                                          user_plane->upf_port,
+                                          local_ip,
+                                          local_port,
+                                          packet,
+                                          (size_t)received);
   }
   user_plane->last_downlink_packet_length = (size_t)received;
   ++user_plane->downlink_gpdu_count;

@@ -326,7 +326,7 @@ static bool mini_gnb_c_path_is_absolute(const char* path) {
   return strlen(path) > 1U && path[1] == ':';
 }
 
-static void mini_gnb_c_resolve_optional_dir_in_place(char* path, const size_t path_size) {
+static void mini_gnb_c_resolve_optional_path_in_place(char* path, const size_t path_size) {
   char resolved[MINI_GNB_C_MAX_PATH];
 
   if (path == NULL || path_size == 0U || path[0] == '\0' || mini_gnb_c_path_is_absolute(path)) {
@@ -335,6 +335,44 @@ static void mini_gnb_c_resolve_optional_dir_in_place(char* path, const size_t pa
 
   if (mini_gnb_c_join_path(MINI_GNB_C_SOURCE_DIR, path, resolved, sizeof(resolved)) == 0) {
     (void)snprintf(path, path_size, "%s", resolved);
+  }
+}
+
+static void mini_gnb_c_resolve_optional_dir_in_place(char* path, const size_t path_size) {
+  mini_gnb_c_resolve_optional_path_in_place(path, path_size);
+}
+
+static void mini_gnb_c_configure_core_trace_paths(mini_gnb_c_simulator_t* simulator, const char* output_dir) {
+  char default_ngap_path[MINI_GNB_C_MAX_PATH];
+  char default_gtpu_path[MINI_GNB_C_MAX_PATH];
+
+  if (simulator == NULL || output_dir == NULL || !simulator->config.core.enabled) {
+    return;
+  }
+
+  mini_gnb_c_resolve_optional_path_in_place(simulator->config.core.ngap_trace_pcap,
+                                            sizeof(simulator->config.core.ngap_trace_pcap));
+  mini_gnb_c_resolve_optional_path_in_place(simulator->config.core.gtpu_trace_pcap,
+                                            sizeof(simulator->config.core.gtpu_trace_pcap));
+  if (simulator->config.core.ngap_trace_pcap[0] == '\0' &&
+      mini_gnb_c_join_path(output_dir,
+                           "gnb_core_ngap_runtime.pcap",
+                           default_ngap_path,
+                           sizeof(default_ngap_path)) == 0) {
+    (void)snprintf(simulator->config.core.ngap_trace_pcap,
+                   sizeof(simulator->config.core.ngap_trace_pcap),
+                   "%s",
+                   default_ngap_path);
+  }
+  if (simulator->config.core.gtpu_trace_pcap[0] == '\0' &&
+      mini_gnb_c_join_path(output_dir,
+                           "gnb_core_gtpu_runtime.pcap",
+                           default_gtpu_path,
+                           sizeof(default_gtpu_path)) == 0) {
+    (void)snprintf(simulator->config.core.gtpu_trace_pcap,
+                   sizeof(simulator->config.core.gtpu_trace_pcap),
+                   "%s",
+                   default_gtpu_path);
   }
 }
 
@@ -1273,6 +1311,7 @@ void mini_gnb_c_simulator_init(mini_gnb_c_simulator_t* simulator,
 
   memset(simulator, 0, sizeof(*simulator));
   simulator->config = *config;
+  mini_gnb_c_configure_core_trace_paths(simulator, output_dir);
   mini_gnb_c_resolve_optional_dir_in_place(simulator->config.sim.local_exchange_dir,
                                            sizeof(simulator->config.sim.local_exchange_dir));
   mini_gnb_c_resolve_optional_dir_in_place(simulator->config.sim.shared_slot_path,
@@ -1298,7 +1337,27 @@ void mini_gnb_c_simulator_init(mini_gnb_c_simulator_t* simulator,
   mini_gnb_c_gnb_core_bridge_init(&simulator->core_bridge,
                                   &simulator->config.core,
                                   simulator->config.sim.local_exchange_dir);
+  if (simulator->config.core.ngap_trace_pcap[0] != '\0' &&
+      mini_gnb_c_gnb_core_bridge_set_ngap_trace_path(&simulator->core_bridge,
+                                                     simulator->config.core.ngap_trace_pcap) != 0) {
+    mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                   "pcap_trace",
+                                   "Failed to open simulator NGAP trace pcap.",
+                                   -1,
+                                   "path=%s",
+                                   simulator->config.core.ngap_trace_pcap);
+  }
   mini_gnb_c_n3_user_plane_init(&simulator->n3_user_plane);
+  if (simulator->config.core.gtpu_trace_pcap[0] != '\0' &&
+      mini_gnb_c_n3_user_plane_set_gtpu_trace_path(&simulator->n3_user_plane,
+                                                   simulator->config.core.gtpu_trace_pcap) != 0) {
+    mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                   "pcap_trace",
+                                   "Failed to open simulator GTP-U trace pcap.",
+                                   -1,
+                                   "path=%s",
+                                   simulator->config.core.gtpu_trace_pcap);
+  }
 }
 
 int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
@@ -1844,6 +1903,7 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
 
   mini_gnb_c_mock_radio_frontend_shutdown(&simulator->radio);
   mini_gnb_c_n3_user_plane_close(&simulator->n3_user_plane);
+  mini_gnb_c_gnb_core_bridge_close(&simulator->core_bridge);
   return mini_gnb_c_metrics_trace_flush(&simulator->metrics,
                                         simulator->ra_manager.has_active_context,
                                         simulator->ra_manager.has_active_context
@@ -1853,5 +1913,7 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                         simulator->ue_store.count,
                                         simulator->radio.tx_burst_count,
                                         simulator->radio.last_hw_time_ns,
+                                        mini_gnb_c_gnb_core_bridge_get_ngap_trace_path(&simulator->core_bridge),
+                                        mini_gnb_c_n3_user_plane_get_gtpu_trace_path(&simulator->n3_user_plane),
                                         out_summary);
 }

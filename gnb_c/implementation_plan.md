@@ -1,93 +1,58 @@
 # gnb_c End-to-End UE/gNB/Core Plan
 
-Last updated: 2026-04-06 (all staged A-E implementation items complete)
+Last updated: 2026-04-07 (new outbound UE internet scheduling plan added)
 
-## Completed Tasks
+## Completed Milestones
 
-- [x] 2026-04-02: Reviewed the current `mini_gnb_c_sim` and `ngap_probe` architecture and mapped the staged implementation order.
-- [x] 2026-04-02: Created this tracked implementation plan file with explicit completed and pending task sections.
-- [x] 2026-04-02: Extracted reusable single-UE core session helpers into `include/mini_gnb_c/core/core_session.h` and `src/core/core_session.c`.
-- [x] 2026-04-02: Extracted reusable GTP-U packet builders and validators into `include/mini_gnb_c/n3/gtpu_tunnel.h` and `src/n3/gtpu_tunnel.c`.
-- [x] 2026-04-02: Updated `apps/ngap_probe.c` to consume the extracted Stage A session and GTP-U helpers.
-- [x] 2026-04-02: Added unit coverage for the new helpers in `tests/test_core_session.c` and `tests/test_gtpu_tunnel.c`, and kept `ctest --test-dir build --output-on-failure` passing.
-- [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the Stage A reusable modules and the tracked implementation plan.
-- [x] 2026-04-02: Created a local Stage A milestone commit: `Extract reusable core session and GTP-U helpers`.
-- [x] 2026-04-02: Added the Stage B1 JSON exchange helper in `include/mini_gnb_c/link/json_link.h` and `src/link/json_link.c`.
-- [x] 2026-04-02: Added `tests/test_json_link.c` and kept `ctest --test-dir build --output-on-failure` passing after the Stage B1 JSON exchange work.
-- [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the Stage B1 local JSON exchange foundation.
-- [x] 2026-04-02: Added the Stage B2 standalone UE app in `apps/mini_ue_c.c`.
-- [x] 2026-04-02: Added the reusable UE event FSM in `include/mini_gnb_c/ue/mini_ue_fsm.h` and `src/ue/mini_ue_fsm.c`.
-- [x] 2026-04-02: Added `tests/test_mini_ue_fsm.c` and kept `ctest --test-dir build --output-on-failure` passing after the Stage B2 UE process work.
-- [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the Stage B2 standalone UE process and FSM.
-- [x] 2026-04-02: Connected `mini_gnb_c_sim` and `mock_radio_frontend` to consume ordered `ue_to_gnb/*.json` events from `sim.local_exchange_dir`.
-- [x] 2026-04-02: Added the Stage B3 local-loop integration coverage in `tests/test_integration.c` so PRACH, Msg3, SR, BSR, and UL DATA can run from the UE event plan without handcrafted slot input files.
-- [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the Stage B3 and Stage B4 filesystem-backed UE/gNB loop.
-- [x] 2026-04-02: Created a local Stage B milestone commit for the filesystem-backed UE/gNB loop after validating build, `ctest`, and a manual `mini_ue_c -> mini_gnb_c_sim` run.
-- [x] 2026-04-02: Extended `mini_gnb_c_ue_context_t` with embedded `core_session` state so promoted UEs now have a stable place for upcoming AMF/session/N3 bridge data.
-- [x] 2026-04-02: Added `tests/test_ue_context_store.c` plus integration assertions for the exported `core_session` summary shape, and kept `ctest --test-dir build --output-on-failure` passing.
-- [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the Stage C groundwork for UE context and summary state export.
-- [x] 2026-04-02: Extracted reusable NGAP runtime builders and Open5GS session parsers into `include/mini_gnb_c/ngap/ngap_runtime.h` and `src/ngap/ngap_runtime.c`.
-- [x] 2026-04-02: Updated `apps/ngap_probe.c` to consume the extracted NGAP runtime helpers instead of owning those builders/parsers inline.
-- [x] 2026-04-02: Added `tests/test_ngap_runtime.c` and kept `ctest --test-dir build --output-on-failure` passing after the Stage C1 NGAP runtime extraction.
-- [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the Stage C1 NGAP runtime extraction.
-- [x] 2026-04-02: Added `core/gnb_core_bridge` and `core:` config wiring so the simulator can prepare a reusable `InitialUEMessage` when a UE is promoted.
-- [x] 2026-04-02: Wired `mini_gnb_c_sim` to seed `ran_ue_ngap_id`, requested `pdu_session_id`, and `uplink_nas_count` through the new core bridge when `core.enabled=true`.
-- [x] 2026-04-02: Added `tests/test_gnb_core_bridge.c` plus integration coverage for the simulator-side core bridge path, and kept `ctest --test-dir build --output-on-failure` passing.
-- [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the simulator-side core bridge groundwork.
-- [x] 2026-04-02: Added the reusable SCTP NGAP transport wrapper in `include/mini_gnb_c/ngap/ngap_transport.h` and `src/ngap/ngap_transport.c`.
-- [x] 2026-04-02: Extended `core:` config with `timeout_ms` and wired the simulator to pass `sim.local_exchange_dir` into the core bridge.
-- [x] 2026-04-02: Extended `ngap/ngap_runtime` with reusable `NGSetupRequest`, `DownlinkNASTransport`, and `NAS-PDU` extraction helpers.
-- [x] 2026-04-02: Advanced `core/gnb_core_bridge` from prepared-only state to a real first-hop AMF bridge that runs `NGSetup`, sends one `InitialUEMessage`, parses `AMF UE NGAP ID`, and captures the first downlink NAS.
-- [x] 2026-04-02: Emitted the first AMF downlink NAS into `gnb_to_ue/*.json` when `sim.local_exchange_dir` is configured.
-- [x] 2026-04-02: Added fake-transport unit and integration coverage for the live bridge path, and kept `ctest --test-dir build --output-on-failure` passing.
-- [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the first live SCTP/NGAP bridge slice.
-- [x] 2026-04-02: Extracted shared JSON field and event-lookup helpers so the radio path and the core bridge can reuse the same local exchange parsing logic.
-- [x] 2026-04-02: Added follow-up `ue_to_gnb_nas/UL_NAS` polling to `core/gnb_core_bridge` and relayed those events as `UplinkNASTransport` beyond the first `InitialUEMessage`.
-- [x] 2026-04-02: Emitted subsequent AMF downlink NAS messages back into `gnb_to_ue/*.json` for the local control-plane workflow.
-- [x] 2026-04-02: Added unit and integration coverage for the follow-up NAS relay path, and updated `gnb_c/README.md` and `gnb_c/architecture.md` for the Stage C4 control-plane workflow.
-- [x] 2026-04-02: Extended `core/gnb_core_bridge` to recognize `InitialContextSetupRequest` and `PDUSessionResourceSetupRequest`, send the matching gNB NGAP responses, and keep the simulator slot loop synchronous.
-- [x] 2026-04-02: Parsed `ue_ipv4`, `upf_teid`, and `qfi` from later Open5GS session-setup messages into the simulator-side `core_session` path.
-- [x] 2026-04-02: Added unit and integration coverage for session-setup state extraction, summary export, and automatic NGAP acknowledgements.
-- [x] 2026-04-02: Updated `gnb_c/README.md` and `gnb_c/architecture.md` to document the Stage C5 session-state extraction workflow.
-- [x] 2026-04-02: Moved the checked-in `gnb_ngap.pcap` and `gnb_mac.pcap` reference captures into `gnb_c/examples/` and updated runtime/documentation references.
-- [x] 2026-04-06: Replaced the primary local UE/gNB radio interaction model with a shared-slot register transport in `include/mini_gnb_c/link/shared_slot_link.h` and `src/link/shared_slot_link.c`.
-- [x] 2026-04-06: Added the live UE-side shared-slot runtime in `include/mini_gnb_c/ue/mini_ue_runtime.h` and `src/ue/mini_ue_runtime.c`, while keeping the JSON UE plan only as a fallback path.
-- [x] 2026-04-06: Wired `mock_radio_frontend` and `simulator` to publish one DL slot summary, consume one due UL burst, and synchronize per-slot progress through the shared-slot registers.
-- [x] 2026-04-06: Added `config/example_shared_slot_loop.yml` and made `apps/mini_ue_c.c` prefer shared-slot mode whenever `sim.shared_slot_path` is configured.
-- [x] 2026-04-06: Added unit and integration coverage for the shared-slot handshake, including slot-0 and shutdown boundary conditions, and kept `ctest --test-dir build --output-on-failure` passing.
-- [x] 2026-04-06: Updated `gnb_c/README.md`, `gnb_c/architecture.md`, and `gnb_c/feature_test_guide.md` so the shared-slot loop is documented as the primary local UE/gNB path.
-- [x] 2026-04-06: Added split shared-slot example configs in `config/example_shared_slot_gnb.yml` and `config/example_shared_slot_ue.yml` so the gNB and UE can run from separate YAML files.
-- [x] 2026-04-06: Moved the live UE timing model away from shared local assumptions so PRACH timing is learned from SIB1, Msg3 timing is learned from RAR, and SR timing is learned from Msg4 / `RRCSetup`.
-- [x] 2026-04-06: Added gNB-configured PDCCH timing and HARQ defaults to the SIB1 payload so the live UE learns `time_indicator`, DL ACK timing, and HARQ pool sizes directly from downlink signaling.
-- [x] 2026-04-06: Added Stage C6 control-plane regression coverage for stale/future `UL_NAS` queue handling and post-session `DL_NAS` relay after `InitialContextSetupRequest` and `PDUSessionResourceSetupRequest`.
-- [x] 2026-04-06: Updated `gnb_c/README.md`, `gnb_c/architecture.md`, and `gnb_c/feature_test_guide.md` to document the later control-plane NAS relay behavior beyond session-state extraction.
-- [x] 2026-04-06: Refreshed the shared-slot tests and test harness so output directories are cleaned between runs and stale slot-input artifacts do not corrupt timing-sensitive regressions.
-- [x] 2026-04-06: Updated `gnb_c/README.md`, `gnb_c/architecture.md`, and `gnb_c/feature_test_guide.md` so the split-config, downlink-driven UE timing model is documented as the preferred local radio workflow.
-- [x] 2026-04-06: Created the local Stage C milestone commit `Stabilize simulator control-plane bridge regressions`.
-- [x] 2026-04-06: Added the persistent simulator-side N3 helper in `include/mini_gnb_c/n3/n3_user_plane.h` and `src/n3/n3_user_plane.c`.
-- [x] 2026-04-06: Extended `core:` config with `upf_port` and wired `src/common/simulator.c` to activate the N3 helper once session setup populates `core_session` with valid user-plane state.
-- [x] 2026-04-06: Added unit and integration coverage for the persistent N3 socket activation, runtime G-PDU encapsulation, and non-blocking downlink polling, and kept `ctest --test-dir build --output-on-failure` passing.
-- [x] 2026-04-06: Updated `gnb_c/README.md`, `gnb_c/architecture.md`, and `gnb_c/feature_test_guide.md` to document the Stage D1 persistent N3 transport layer and its current limits.
-- [x] 2026-04-06: Added the minimal UE-side IPv4/ICMP helper in `include/mini_gnb_c/ue/ue_ip_stack_min.h` and `src/ue/ue_ip_stack_min.c`.
-- [x] 2026-04-06: Extended `ue/mini_ue_runtime` so downlink `DL_OBJ_DATA` can generate a pending `ICMP Echo Reply` payload for the next granted uplink data transmission.
-- [x] 2026-04-06: Extended `n3/gtpu_tunnel` and `src/common/simulator.c` so downlink GTP-U packets can be decapsulated into `DL_OBJ_DATA` and valid uplink IPv4 payloads can be forwarded back to the UPF over the persistent N3 socket.
-- [x] 2026-04-06: Added unit and integration coverage for the minimal user-plane path, including the shared-slot UE ICMP reply flow and simulator-side uplink IPv4 forwarding to a fake UPF.
-- [x] 2026-04-06: Updated `gnb_c/README.md`, `gnb_c/architecture.md`, and `gnb_c/feature_test_guide.md` to document the Stage D2 minimal IPv4/ICMP user-plane flow.
-- [x] 2026-04-06: Added the Stage D3 tests and docs needed for the current minimal user-plane path.
-- [x] 2026-04-06: Created the local Stage D milestone commit after stabilizing the minimal IPv4/ICMP user-plane path.
-- [x] 2026-04-06: Extended the shared-slot downlink summary so the simulator can publish the parsed `UE IPv4` from `core_session` into the live UE process.
-- [x] 2026-04-06: Added the optional UE-side TUN helper in `include/mini_gnb_c/ue/ue_tun.h` and `src/ue/ue_tun.c`, including isolated user+network namespace support for local end-to-end demos.
-- [x] 2026-04-06: Extended `ue/mini_ue_runtime` so the live UE can configure its TUN interface from the learned `UE IPv4`, inject downlink IP payloads into that TUN device, and source later uplink payloads from the TUN read path when enabled.
-- [x] 2026-04-06: Added `sim.slot_sleep_ms` plus the `sim.ue_tun_*` config keys, and wired `src/common/simulator.c` to pace live slots for manual demos and to auto-queue a follow-up UL payload grant after one downlink N3 packet in the unscripted path.
-- [x] 2026-04-06: Added `config/example_open5gs_end_to_end_gnb.yml`, `config/example_open5gs_end_to_end_ue.yml`, and `examples/open5gs_ul_nas_seed/` so the current Open5GS manual end-to-end path can be reproduced without reconstructing the control-plane seed inputs.
-- [x] 2026-04-06: Updated `gnb_c/README.md`, `gnb_c/architecture.md`, and `gnb_c/feature_test_guide.md` to document the optional TUN path, the new end-to-end example configs, and the manual `server -> UPF -> gNB -> UE` validation flow.
-- [x] 2026-04-06: Created the local Stage E milestone commit `Add TUN-based UE ping demo path` after stabilizing the optional TUN path, end-to-end example configs, and manual validation guide.
-- [x] 2026-04-06: Added the minimal live UE NAS helper in `include/mini_gnb_c/nas/nas_5gs_min.h` and `src/nas/nas_5gs_min.c` so `mini_ue_c` can consume `gnb_to_ue/DL_NAS` and auto-generate the follow-up `UL_NAS` happy-path sequence for Open5GS.
-- [x] 2026-04-06: Wired `ue/mini_ue_runtime` to poll the local exchange directory for later `DL_NAS` messages and emit `IdentityResponse`, `AuthenticationResponse`, `SecurityModeComplete`, `RegistrationComplete`, and `PDUSessionEstablishmentRequest` as due `ue_to_gnb_nas/*.json` events.
-- [x] 2026-04-06: Added unit and integration coverage for the live UE NAS follow-up flow in `tests/test_nas_5gs_min.c` and `tests/test_integration.c`, and kept `ctest --test-dir build --output-on-failure` passing.
-- [x] 2026-04-06: Updated `gnb_c/README.md`, `gnb_c/architecture.md`, and `gnb_c/feature_test_guide.md` so the end-to-end Open5GS demo is documented as self-contained without pre-seeding later `UL_NAS` files.
+- [x] Stage A: Extracted reusable single-UE core/session, NGAP runtime, SCTP transport, and GTP-U helpers from `ngap_probe` into reusable library modules.
+- [x] Stage B: Replaced the old filesystem-prebaked UE/gNB loop with the live shared-slot register loop, while keeping JSON NAS exchange as a fallback control-plane path.
+- [x] Stage C: Completed the simulator-side gNB <-> AMF control-plane bridge, including `NGSetup`, `InitialUEMessage`, follow-up NAS relay, session-state extraction, and runtime NGAP tracing.
+- [x] Stage D: Added the persistent N3 user-plane socket, minimal UE-side IPv4/ICMP handling, and simulator-side GTP-U uplink/downlink forwarding.
+- [x] Stage E: Added the optional UE TUN path, live UE NAS follow-up flow, end-to-end Open5GS demo configs, runtime NGAP/GTP-U pcap tracing, and UE-side default-route/netns/DNS support for manual demos.
+
+## Current Problem Statement
+
+- The current TUN-based UE path can read outbound packets from the UE kernel stack, but active UE-originated traffic such as `ip netns exec <ue-netns> ping -c 4 8.8.8.8` can stall after the first TUN read.
+- Root cause: the connected-mode uplink path is still too demo-oriented for sustained UE-originated traffic.
+- Specifically:
+  - the UE keeps only one pending TUN uplink packet instead of a queue
+  - `SR` is effectively one-shot instead of being re-triggered whenever the uplink buffer becomes non-empty
+  - the gNB does not yet run a sustained `SR -> BSR -> repeated UL grant` loop for UE-originated traffic
 
 ## Pending Tasks
 
-- None. All staged Stage A-E implementation tasks are complete.
-- Push the current branch state to GitHub only when the user explicitly approves.
+### Stage F: Sustained UE-Originated Uplink Scheduling
+
+- [ ] F1: Replace the single pending TUN uplink packet in `src/ue/mini_ue_runtime.c` with a small FIFO queue.
+- [ ] F2: Add UE-side uplink demand state such as `sr_pending`, `bsr_dirty`, and one last reported buffer size.
+- [ ] F3: Change the UE SR logic so `SR` can be sent repeatedly on valid SR occasions whenever the UE uplink queue is non-empty and no usable grant is currently available.
+- [ ] F4: Keep the current simplified HARQ model, but make new UL grants consume queued packets in order instead of only one pending packet.
+
+### Stage G: gNB-Side Continuous UL Scheduling
+
+- [ ] G1: Add simulator-side connected-mode uplink queue accounting in `src/common/simulator.c`, starting with one `pending_ul_bytes` or equivalent per UE.
+- [ ] G2: When the gNB receives `PUCCH_SR`, schedule a small `UL grant` for `BSR` instead of treating SR as a one-shot demo event.
+- [ ] G3: When the gNB receives `BSR`, store the reported bytes and keep issuing `DCI0_1 + UL DATA grant` while bytes remain pending.
+- [ ] G4: On each successful `UL DATA`, decrement the pending bytes and only stop uplink scheduling when the UE queue is empty.
+- [ ] G5: Remove reliance on the current “downlink packet arrived, so auto-queue one follow-up UL grant” shortcut for the UE-originated internet case.
+
+### Stage H: Validation and Regression Coverage
+
+- [ ] H1: Add unit coverage for the new UE uplink queue behavior and repeated-SR state transitions.
+- [ ] H2: Add integration coverage showing that one outbound packet read from TUN is eventually forwarded by the gNB into the persistent N3 socket.
+- [ ] H3: Add integration coverage for multi-packet UE-originated traffic so the queue and repeated grants do not stop after one packet.
+- [ ] H4: Update `README.md`, `architecture.md`, and `feature_test_guide.md` with the new sustained uplink behavior and validation commands.
+
+### Stage I: Manual Open5GS Validation
+
+- [ ] I1: Re-run the manual Open5GS demo with `ip netns exec <ue-netns> ping -c 4 8.8.8.8`.
+- [ ] I2: Re-run the same demo with `ip netns exec <ue-netns> ping -c 4 www.baidu.com`.
+- [ ] I3: Confirm the NGAP and GTP-U runtime pcaps show outbound UE-originated traffic reaching the UPF and receiving the return path.
+
+## Recommended Implementation Order
+
+1. Implement the UE-side TUN uplink queue and repeated-SR logic.
+2. Implement the gNB-side `SR -> BSR -> repeated UL DATA grant` loop.
+3. Add tests for single-packet and multi-packet UE-originated uplink traffic.
+4. Update the documentation and test guide.
+5. Re-run the manual Open5GS end-to-end validation.

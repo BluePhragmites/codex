@@ -155,6 +155,10 @@ The UE-side process now has both a reusable event template generator and a live 
   - owns the optional live UE TUN device
   - can create that device inside an isolated user+network namespace when
     `sim.ue_tun_isolate_netns=true`, which is the default for the end-to-end demo
+  - can optionally publish that isolated namespace as `sim.ue_tun_netns_name`
+  - can install `default dev <ue_tun_name>` and write `/etc/netns/<name>/resolv.conf`
+    from `sim.ue_tun_dns_server_ipv4`, which makes outbound `ping 8.8.8.8` and
+    `ping www.baidu.com` practical from the UE side
   - configures the learned `UE IPv4` and MTU with the host `ip` tool so the kernel
     networking stack can generate the real `ICMP Echo Reply`
 
@@ -232,11 +236,12 @@ The first simulator-side core bridge now exists as well:
   - after that first exchange, polls follow-up UE control-plane NAS events from `ue_to_gnb_nas/` and forwards them as `UplinkNASTransport`
   - recognizes later `InitialContextSetup` and `PDUSessionResourceSetup` AMF messages, sends the matching gNB responses, updates `core_session`, and keeps relaying later top-level `DL_NAS`
 - `config/default_cell.yml`
-  - now includes an optional `core:` section with `enabled`, `amf_ip`, `amf_port`, `upf_port`, `timeout_ms`, `ran_ue_ngap_id_base`, and `default_pdu_session_id`
+  - now includes an optional `core:` section with `enabled`, `amf_ip`, `amf_port`, `upf_port`, `timeout_ms`, `ran_ue_ngap_id_base`, `default_pdu_session_id`, and optional `ngap_trace_pcap` / `gtpu_trace_pcap`
 - `src/common/simulator.c`
   - calls the core bridge as soon as the UE context is promoted after Msg3
   - seeds `core_session.ran_ue_ngap_id` and the requested `pdu_session_id`
   - when `core.enabled=true`, performs `NGSetup + InitialUEMessage`, stores `amf_ue_ngap_id`, and increments the first uplink/downlink NAS counters
+  - auto-opens runtime pcap traces for the Open5GS-facing NGAP and GTP-U paths; by default they land under the simulator output directory as `gnb_core_ngap_runtime.pcap` and `gnb_core_gtpu_runtime.pcap`
   - if `sim.local_exchange_dir` is configured, writes downlink NAS messages to `gnb_to_ue/seq_<nnnnnn>_gnb_DL_NAS.json`
   - polls `ue_to_gnb_nas/seq_<nnnnnn>_ue_UL_NAS.json` each slot after the first exchange and forwards due events to the AMF
   - parses later session-setup state such as `UE IPv4`, `UPF TEID`, and `QFI` into the promoted UE `core_session`
@@ -244,6 +249,7 @@ The first simulator-side core bridge now exists as well:
     reconfigure its user-plane path without touching control-plane files
   - activates a persistent N3 UDP socket as soon as that user-plane session state becomes valid
   - keeps that socket open for the rest of the run and polls one downlink GTP-U packet per slot for later Stage D/E delivery work
+  - exports the resolved `ngap_trace_pcap_path` and `gtpu_trace_pcap_path` in `summary.json`, and `apps/mini_gnb_c_sim.c` prints them at the end of the run
 - `tests/test_gnb_core_bridge.c`
   - verifies the standalone bridge path against an injected fake SCTP/NGAP transport
   - verifies one follow-up `UL_NAS -> UplinkNASTransport -> DL_NAS` exchange after the initial attach message
@@ -380,6 +386,9 @@ Those example configs add:
 - `config/example_open5gs_end_to_end_ue.yml`
   - enables `sim.ue_tun_enabled=true`
   - keeps `sim.ue_tun_isolate_netns=true`, so the UE-side TUN device and kernel reply path stay isolated from the host network namespace
+  - publishes that namespace as `miniue-demo`
+  - installs a default route on the UE TUN device
+  - writes `/etc/netns/miniue-demo/resolv.conf` with `223.5.5.5` so name-based reachability checks can run through `ip netns exec`
 - `examples/open5gs_ul_nas_seed/`
   - keeps optional canned follow-up `UL_NAS` fixtures for debugging or manual bridge experiments
 
@@ -388,10 +397,30 @@ then validate the real end-to-end data path from the host or server side:
 
 ```bash
 sed -n '1,240p' out/summary.json
+ls -l out/gnb_core_ngap_runtime.pcap out/gnb_core_gtpu_runtime.pcap
 ping -c 4 <ue_ipv4_from_summary>
 ip -s link show dev ogstun
 tcpdump -ni ogstun icmp
 ```
+
+To originate traffic from the UE side instead of the host side, first make sure the
+Open5GS host has internet forwarding enabled for the UE subnet, then use the named
+UE namespace from the example config:
+
+```bash
+sysctl -w net.ipv4.ip_forward=1
+iptables -t nat -A POSTROUTING -s 10.45.0.0/16 -o <host_uplink_if> -j MASQUERADE
+ip netns exec miniue-demo ping -c 4 8.8.8.8
+ip netns exec miniue-demo ping -c 4 www.baidu.com
+```
+
+For debugging, validate in this order:
+
+- first `ip netns exec miniue-demo ping -c 4 8.8.8.8`
+- then `ip netns exec miniue-demo ping -c 4 www.baidu.com`
+
+That split is important because public-IP reachability and DNS are separate failure
+modes.
 
 With the default Open5GS data plane used during development, the learned UE address is
 typically `10.45.0.7`, but the runtime summary is the source of truth.
@@ -404,6 +433,12 @@ The generated trace pcaps are intended for later Wireshark inspection:
   - link type is `Private use 5`
 - `out/ngap_probe_gtpu_runtime.pcap`
   - stores synthetic outer IPv4/UDP packets carrying the emitted and received GTP-U payloads
+  - link type is `Raw IP`
+- `out/gnb_core_ngap_runtime.pcap`
+  - stores the simulator-side AMF-facing NGAP exchanges in send/receive order during `mini_gnb_c_sim`
+  - link type is `Private use 5`
+- `out/gnb_core_gtpu_runtime.pcap`
+  - stores the simulator-side UPF-facing GTP-U packets with synthetic outer IPv4/UDP headers during `mini_gnb_c_sim`
   - link type is `Raw IP`
 
 The current WSL validation result is:

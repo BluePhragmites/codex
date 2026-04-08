@@ -21,6 +21,8 @@ void test_ngap_runtime_extracts_open5gs_user_plane_state(void);
 void test_pcap_trace_writes_payload_and_udp_ipv4(void);
 void test_nas_5gs_min_builds_followup_uplinks(void);
 void test_nas_5gs_min_polls_downlink_exchange(void);
+void test_rlc_lite_builds_and_reassembles_segmented_sdu(void);
+void test_rlc_lite_rejects_out_of_order_segment(void);
 void test_gtpu_builders_encode_expected_headers(void);
 void test_gtpu_builders_reject_missing_state(void);
 void test_n3_user_plane_activates_and_sends_uplink_gpdu(void);
@@ -38,6 +40,9 @@ void test_mini_ue_runtime_uplink_queue_tracks_bytes_and_bsr_dirty(void);
 void test_mini_ue_runtime_update_uplink_state_rearms_sr_after_grant_consumption(void);
 void test_mini_ue_runtime_builds_bsr_from_current_queue_bytes(void);
 void test_mini_ue_runtime_skips_new_payload_grant_without_queue(void);
+void test_mini_ue_runtime_preserves_payload_kind_for_new_and_retx_grants(void);
+void test_mini_ue_runtime_segments_ipv4_payload_across_multiple_grants(void);
+void test_mini_ue_runtime_exports_ul_event_into_rx_dir(void);
 void test_ra_manager_flow(void);
 void test_ra_timeout(void);
 void test_mac_rrc_and_msg4_contention_identity(void);
@@ -92,6 +97,8 @@ int main(void) {
       {"test_pcap_trace_writes_payload_and_udp_ipv4", test_pcap_trace_writes_payload_and_udp_ipv4},
       {"test_nas_5gs_min_builds_followup_uplinks", test_nas_5gs_min_builds_followup_uplinks},
       {"test_nas_5gs_min_polls_downlink_exchange", test_nas_5gs_min_polls_downlink_exchange},
+      {"test_rlc_lite_builds_and_reassembles_segmented_sdu", test_rlc_lite_builds_and_reassembles_segmented_sdu},
+      {"test_rlc_lite_rejects_out_of_order_segment", test_rlc_lite_rejects_out_of_order_segment},
       {"test_gtpu_builders_encode_expected_headers", test_gtpu_builders_encode_expected_headers},
       {"test_gtpu_builders_reject_missing_state", test_gtpu_builders_reject_missing_state},
       {"test_n3_user_plane_activates_and_sends_uplink_gpdu",
@@ -116,6 +123,11 @@ int main(void) {
        test_mini_ue_runtime_builds_bsr_from_current_queue_bytes},
       {"test_mini_ue_runtime_skips_new_payload_grant_without_queue",
        test_mini_ue_runtime_skips_new_payload_grant_without_queue},
+      {"test_mini_ue_runtime_preserves_payload_kind_for_new_and_retx_grants",
+       test_mini_ue_runtime_preserves_payload_kind_for_new_and_retx_grants},
+      {"test_mini_ue_runtime_segments_ipv4_payload_across_multiple_grants",
+       test_mini_ue_runtime_segments_ipv4_payload_across_multiple_grants},
+      {"test_mini_ue_runtime_exports_ul_event_into_rx_dir", test_mini_ue_runtime_exports_ul_event_into_rx_dir},
       {"test_ra_manager_flow", test_ra_manager_flow},
       {"test_ra_timeout", test_ra_timeout},
       {"test_mac_rrc_and_msg4_contention_identity", test_mac_rrc_and_msg4_contention_identity},

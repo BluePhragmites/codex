@@ -111,9 +111,9 @@ different roles:
     slot-synchronous instead of pre-writing a whole UE event plan to disk
   - it also lets the gNB and UE use separate YAML files while still coupling only through
     downlink and uplink transport state
-  - once session setup has produced a `UE IPv4`, later slot summaries also carry that
-    address so the live UE can configure its optional TUN path without reading
-    control-plane JSON directly
+  - later slot summaries now also tag `DL_OBJ_DATA` with a `payload_kind` and carry the
+    learned `UE IPv4`, so the live UE can distinguish NAS-vs-IP payloads and configure its
+    optional TUN path without reading control-plane JSON directly
 
 The UE-side process now has both a reusable event template generator and a live runtime:
 
@@ -133,12 +133,19 @@ The UE-side process now has both a reusable event template generator and a live 
   - learns the gNB-authored PDCCH timing and HARQ defaults from the same SIB1 payload
   - learns the post-attach SR periodicity and offset from the gNB's Msg4 / `RRCSetup` payload
   - uses the RAR payload to derive the exact Msg3 absolute slot instead of relying on local timing guesses
-  - polls `gnb_to_ue/*.json` for later `DL_NAS` messages and feeds them into the minimal UE NAS helper
+  - when `core.enabled=true` and `sim.shared_slot_path` is set, consumes follow-up NAS PDUs
+    directly from `DL_OBJ_DATA` on the mock `PDSCH` and queues the matching NAS responses
+    for later `UL_OBJ_DATA` mock `PUSCH` grants
+  - otherwise still falls back to polling `gnb_to_ue/*.json` for later `DL_NAS` messages
   - now keeps a small FIFO of pending uplink payloads instead of a single pending packet
   - tracks UE-side uplink demand with `sr_pending`, `bsr_dirty`, and the last reported BSR byte count
   - re-triggers `PUCCH_SR` on later valid SR occasions whenever that queue is still non-empty and no future UL grant is already available
   - consumes queued UL payload grants in FIFO order while still keeping the last HARQ payload for retransmission reuse
+  - now segments larger IPv4 payloads across multiple mock `PUSCH` grants when one SDU no longer fits the current `tbsize`
+  - reassembles matching segmented downlink IPv4 payloads before handing them to the TUN path or the synthetic UE IP helper
   - now also inspects `DL_OBJ_DATA` payloads and, when they carry a minimal IPv4 `ICMP Echo Request`, stages a matching `Echo Reply` for the next granted UL data transmission
+  - writes each UE-authored shared-slot uplink burst into `out/rx/slot_<abs_slot>_UL_OBJ_*.txt`,
+    mirroring the gNB-side `out/tx` exports and including `payload_kind=GENERIC|IPV4|NAS`
   - when `sim.ue_tun_enabled=true`, configures a local TUN interface from the downlink-learned
     `UE IPv4`, injects later downlink IP packets into that TUN device, and prefers packets
     read back from the TUN device over the fallback synthetic `ue_ip_stack_min` reply path
@@ -149,12 +156,17 @@ The UE-side process now has both a reusable event template generator and a live 
   - owns the minimal UE-side IPv4/ICMP behavior used by the shared-slot runtime
   - validates IPv4 packets
   - turns one downlink `ICMP Echo Request` into one pending uplink `ICMP Echo Reply`
+- `include/mini_gnb_c/rlc/rlc_lite.h`
+  - owns the minimal bearer segmentation/reassembly helper used when one IPv4 SDU is larger than the current mock radio `tbsize`
+  - intentionally stays smaller than a full 3GPP RLC AM/UM stack; it only carries the metadata needed to split and rejoin one SDU across several grants
 - `include/mini_gnb_c/nas/nas_5gs_min.h`
   - owns the minimal UE-side 5GS NAS happy-path logic used by the live shared-slot runtime
-  - consumes later `DL_NAS` messages from the local exchange directory
-  - auto-emits `IdentityResponse`, `AuthenticationResponse`, `SecurityModeComplete`,
-    `RegistrationComplete`, and `PDUSessionEstablishmentRequest` as follow-up
-    `ue_to_gnb_nas/*.json` events for the simulator-side bridge
+  - consumes later downlink NAS PDUs from either the live radio bearer or the fallback local
+    exchange directory
+  - stages `IdentityResponse`, `AuthenticationResponse`, `SecurityModeComplete`,
+    `RegistrationComplete`, and `PDUSessionEstablishmentRequest` as due follow-up NAS PDUs
+    that the caller can either put onto `UL_OBJ_DATA` or emit as fallback `ue_to_gnb_nas/*.json`
+    events for the simulator-side bridge
 - `include/mini_gnb_c/ue/ue_tun.h`
   - owns the optional live UE TUN device
   - can create that device inside an isolated user+network namespace when
@@ -176,6 +188,8 @@ The simulator-side radio frontend now supports that same live register model:
   - resolves `sim.shared_slot_path`
   - consumes one due UE UL burst from the shared slot register before any fallback transport
   - publishes one per-slot DL summary and waits for the UE to acknowledge that slot
+  - preserves `payload_kind` across scheduled `DL_OBJ_DATA`, shared-slot DL summaries, and
+    consumed UE `UL_OBJ_DATA`, so NAS and IPv4 payloads can share the same mock bearer path
   - still keeps the older JSON input path as a fallback for deterministic regression tests
 
 The recommended split-config bring-up uses one gNB file and one UE file:
@@ -205,6 +219,14 @@ of one-shot:
 - `out/summary.json` now also exports `connected_ul_pending_bytes` and
   `connected_ul_last_reported_bsr_bytes` for that gNB-side accounting state
 
+For larger user-plane packets, that same connected-mode path now also layers a minimal
+`RLC-lite` segmentation/reassembly step on top of the grant loop:
+
+- uplink IPv4 packets larger than one `PUSCH` `tbsize` are sliced across multiple grants instead of being truncated
+- downlink IPv4 packets from N3 larger than one `PDSCH` `tbsize` are queued as several `DL_OBJ_DATA` segments until the full SDU is delivered
+- the receiving side reassembles those segments before handing the packet to TUN or forwarding it back to N3
+- NAS and smaller IPv4 packets still ride a single grant without this extra header
+
 In that split-config mode, the gNB file is the source of truth for downlink-authored
 timing. The UE file no longer needs to duplicate the PDCCH/HARQ timing fields because
 the live UE runtime follows the air-interface information published by the gNB instead:
@@ -233,6 +255,9 @@ The live shared-slot loop is covered by the integration test:
   - forks `mini_ue_c`-equivalent shared-slot UE runtime in one process
   - runs `mini_gnb_c_sim` against the same shared slot register file
   - verifies PRACH, Msg3, SR, BSR, UL DATA, and the promoted UE summary state
+  - `test_integration_shared_slot_ue_runtime_auto_nas_session_setup`
+  - verifies that follow-up NAS now rides `DL_OBJ_DATA` / `UL_OBJ_DATA` with `payload_kind=NAS`
+    and that the corresponding artifacts appear under both `out/tx/` and `out/rx/`
   - `test_integration_shared_slot_ue_runtime_repeats_sr_for_pending_uplink_queue`
   - verifies that the UE re-sends `PUCCH_SR` on a later SR occasion when queued UL payloads still have no grant
   - `test_integration_shared_slot_ue_runtime_consumes_uplink_queue_in_order`
@@ -246,7 +271,12 @@ The live shared-slot loop is covered by the integration test:
   - `test_mini_ue_runtime_update_uplink_state_rearms_sr_after_grant_consumption`
   - `test_mini_ue_runtime_builds_bsr_from_current_queue_bytes`
   - `test_mini_ue_runtime_skips_new_payload_grant_without_queue`
+  - `test_mini_ue_runtime_preserves_payload_kind_for_new_and_retx_grants`
+  - `test_mini_ue_runtime_segments_ipv4_payload_across_multiple_grants`
+  - `test_mini_ue_runtime_exports_ul_event_into_rx_dir`
   - verifies that UE-side BSR and new-data UL payload generation now reflect only the real queued bytes instead of falling back to synthetic payloads after the queue drains
+- `tests/test_rlc_lite.c`
+  - verifies segmented SDU build/reassembly and rejects out-of-order segments
 - `tests/test_shared_slot_link.c`
   - verifies the slot-0 boundary, the per-slot handshake, and the shutdown-side final UL consumption semantics of the shared register window
 
@@ -266,7 +296,13 @@ The first simulator-side core bridge now exists as well:
 - `include/mini_gnb_c/core/gnb_core_bridge.h`
   - owns the single-UE gNB-to-AMF bridge runtime for the simulator
   - opens the reusable SCTP/NGAP transport, runs `NGSetup`, sends one `InitialUEMessage`, and captures the first AMF downlink NAS
-  - after that first exchange, polls follow-up UE control-plane NAS events from `ue_to_gnb_nas/` and forwards them as `UplinkNASTransport`
+  - in live shared-slot mode, stages each returned follow-up downlink NAS PDU in memory so the
+    simulator can place it onto connected-mode `PDSCH` as `DL_OBJ_DATA`
+  - otherwise keeps the older `gnb_to_ue/*.json` / `ue_to_gnb_nas/*.json` control-plane handoff
+    as a fallback regression path
+  - accepts follow-up uplink NAS either from live `UL_OBJ_DATA` payloads with
+    `payload_kind=NAS` or from fallback `ue_to_gnb_nas/` events, then forwards them as
+    `UplinkNASTransport`
   - recognizes later `InitialContextSetup` and `PDUSessionResourceSetup` AMF messages, sends the matching gNB responses, updates `core_session`, and keeps relaying later top-level `DL_NAS`
 - `config/default_cell.yml`
   - now includes an optional `core:` section with `enabled`, `amf_ip`, `amf_port`, `upf_port`, `timeout_ms`, `ran_ue_ngap_id_base`, `default_pdu_session_id`, and optional `ngap_trace_pcap` / `gtpu_trace_pcap`
@@ -275,8 +311,12 @@ The first simulator-side core bridge now exists as well:
   - seeds `core_session.ran_ue_ngap_id` and the requested `pdu_session_id`
   - when `core.enabled=true`, performs `NGSetup + InitialUEMessage`, stores `amf_ue_ngap_id`, and increments the first uplink/downlink NAS counters
   - auto-opens runtime pcap traces for the Open5GS-facing NGAP and GTP-U paths; by default they land under the simulator output directory as `gnb_core_ngap_runtime.pcap` and `gnb_core_gtpu_runtime.pcap`
-  - if `sim.local_exchange_dir` is configured, writes downlink NAS messages to `gnb_to_ue/seq_<nnnnnn>_gnb_DL_NAS.json`
-  - polls `ue_to_gnb_nas/seq_<nnnnnn>_ue_UL_NAS.json` each slot after the first exchange and forwards due events to the AMF
+  - when `core.enabled=true` and `sim.shared_slot_path` is set, stages pending downlink NAS as
+    connected-mode `DL_OBJ_DATA` with `payload_kind=NAS`
+  - forwards live `UL_OBJ_DATA` bursts with `payload_kind=NAS` back to the bridge as
+    `UplinkNASTransport`
+  - when shared-slot radio NAS transport is disabled, still falls back to
+    `gnb_to_ue/seq_<nnnnnn>_gnb_DL_NAS.json` and `ue_to_gnb_nas/seq_<nnnnnn>_ue_UL_NAS.json`
   - parses later session-setup state such as `UE IPv4`, `UPF TEID`, and `QFI` into the promoted UE `core_session`
   - stages that parsed `UE IPv4` into later shared-slot DL summaries so the live UE can
     reconfigure its user-plane path without touching control-plane files
@@ -301,9 +341,10 @@ The first simulator-side core bridge now exists as well:
 This is now the first live-control-plane bridge slice. The simulator can open the
 configured SCTP association to the AMF, complete `NGSetup`, send one canned
 `InitialUEMessage`, parse the first returned `AMF UE NGAP ID` and `NAS-PDU`, and
-surface that NAS downlink into the local UE exchange directory. It can also relay
-subsequent UE-originated `UL_NAS` event files through `UplinkNASTransport` and
-emit the returned follow-up `DL_NAS` events back to the local exchange directory.
+surface that NAS downlink onto connected-mode `PDSCH` in live shared-slot mode or
+into the local UE exchange directory in fallback mode. It can also relay subsequent
+UE-originated NAS back through `UplinkNASTransport`, either from live `UL_OBJ_DATA`
+radio payloads or from fallback `UL_NAS` event files.
 
 The simulator now also includes the first persistent N3 runtime slice:
 
@@ -352,10 +393,12 @@ That means the repository now uses two local transports in parallel:
 
 - shared-slot register window
   - primary radio-path coupling between `mini_ue_c` and `mini_gnb_c_sim`
+  - also carries follow-up NAS over mock `PDSCH/PUSCH` when shared-slot mode and the
+    core bridge are both enabled
 - JSON local exchange directory
-  - control-plane NAS handoff between the simulator-side bridge and later UE-side NAS work
+  - fallback control-plane NAS handoff for non-shared-slot runs and standalone bridge tests
 
-The current follow-up control-plane event format is:
+The current fallback follow-up control-plane event format is:
 
 - `out/local_exchange/ue_to_gnb_nas/seq_000001_ue_UL_NAS.json`
   - envelope fields: `sequence`, `abs_slot`, `channel`, `source`, `type`
@@ -395,9 +438,10 @@ single inner IPv4/UDP probe payload emitted through the parsed GTP-U session tun
 The repository now also carries a manual Stage E end-to-end demo for the live
 `mini_ue_c + mini_gnb_c_sim` path. The control-plane path is now closed far enough
 for one happy-path Open5GS attach plus PDU session establishment: `mini_ue_c`
-auto-consumes later `DL_NAS` messages and emits the matching follow-up `UL_NAS`
-messages dynamically. The remaining limitation is that this is still a minimal,
-hard-coded NAS workflow rather than a general UE NAS implementation.
+auto-consumes follow-up NAS on `DL_OBJ_DATA` / `payload_kind=NAS` and emits the
+matching `UL_OBJ_DATA` / `payload_kind=NAS` responses dynamically. The remaining
+limitation is that this is still a minimal, hard-coded NAS workflow rather than a
+general UE NAS implementation.
 
 For a local Open5GS setup matching the default example IPs, the manual bring-up flow is:
 
@@ -448,6 +492,8 @@ sysctl -w net.ipv4.ip_forward=1
 iptables -t nat -A POSTROUTING -s 10.45.0.0/16 -o <host_uplink_if> -j MASQUERADE
 ip netns exec miniue-demo ping -c 4 8.8.8.8
 ip netns exec miniue-demo ping -c 4 www.baidu.com
+ip netns exec miniue-demo curl -I --max-time 25 http://www.baidu.com
+ip netns exec miniue-demo curl --max-time 30 -sS www.baidu.com -o /tmp/miniue_curl_body.html
 ```
 
 On rootless hosts where `/var/run/netns` is not writable, use the anonymous namespace
@@ -456,15 +502,19 @@ fallback printed by the UE log:
 ```bash
 nsenter --preserve-credentials -S 0 -G 0 -U -n -t <ue_pid> ping -c 4 8.8.8.8
 nsenter --preserve-credentials -S 0 -G 0 -U -n -m -t <ue_pid> ping -c 4 www.baidu.com
+nsenter --preserve-credentials -S 0 -G 0 -U -n -m -t <ue_pid> curl -I --max-time 25 http://www.baidu.com
 ```
 
 For debugging, validate in this order:
 
 - first `ip netns exec miniue-demo ping -c 4 8.8.8.8`
 - then `ip netns exec miniue-demo ping -c 4 www.baidu.com`
+- then `ip netns exec miniue-demo curl -I --max-time 25 http://www.baidu.com`
+- finally `ip netns exec miniue-demo curl --max-time 30 -sS www.baidu.com -o /tmp/miniue_curl_body.html`
 
 That split is important because public-IP reachability and DNS are separate failure
-modes.
+modes, while `curl` is the first simple probe that consistently forces larger HTTP/DNS
+packets through the mock bearer.
 
 With the default Open5GS data plane used during development, the learned UE address is
 usually in `10.45.0.0/16`, but the runtime summary and UE log are the source of truth.
@@ -475,6 +525,13 @@ On the current host, the 2026-04-08 manual re-run completed end-to-end:
   returned `4 received`
 - `nsenter --preserve-credentials -S 0 -G 0 -U -n -m -t <ue_pid> ping -c 4 www.baidu.com`
   resolved `www.a.shifen.com` and also returned `4 received`
+- `ip netns exec miniue-demo curl -I --max-time 25 http://www.baidu.com`
+  returned `HTTP/1.1 200 OK`
+- `ip netns exec miniue-demo curl --max-time 30 -sS www.baidu.com -o /tmp/miniue_curl_body.html`
+  completed successfully, and the same validation flow produced a `2381`-byte response body
+- the runtime logs from that `curl` flow showed both segmented downlink IPv4 delivery and
+  reassembled uplink IPv4 SDUs on the mock bearer, which is the intended `RLC-lite`
+  behavior for packets that exceed one `tbsize`
 - `out/gnb_core_gtpu_runtime.pcap` showed the matching bidirectional
   `127.0.0.1:2152 <-> 127.0.0.7:2152` GTP-U traffic
 - companion `ogstun` and `enp4s0` captures showed the same ICMP and DNS traffic
@@ -523,6 +580,7 @@ The simulator writes:
 - `out/metrics.json`
 - `out/summary.json`
 - `out/tx/*.txt`
+- `out/rx/*.txt`
 - `out/tx/*PDCCH*.txt`
 - `out/iq/*.cf32`
 - `out/iq/*.json`
@@ -531,6 +589,9 @@ The mock radio transport is now text-first:
 
 - uplink input can be described with `slot_<abs_slot>_UL_OBJ_*.txt`
 - downlink scheduling and payload are exported as `out/tx/slot_<abs_slot>_DL_OBJ_*.txt`
+- live shared-slot UE runtime exports its authored uplink bursts as
+  `out/rx/slot_<abs_slot>_UL_OBJ_*.txt`
+- both directions now tag `DATA` payloads with `payload_kind=GENERIC|IPV4|NAS`
 - `.cf32` is still kept as an optional waveform artifact for compatibility
 
 Typical uplink text files are:
@@ -619,6 +680,20 @@ rnti=17921
 crc_ok=true
 tbsize=96
 payload_text=UL_DATA_20
+```
+
+Example live UE `out/rx` export:
+
+```text
+direction=UL
+channel=PUSCH
+abs_slot=27
+type=UL_OBJ_DATA
+rnti=17921
+purpose=PAYLOAD
+payload_kind=NAS
+payload_len=11
+payload_hex=7E005C000D0164F099F0FF
 ```
 
 `tbsize` is in bytes and comes from the mock scheduler's `prb_len + mcs`
@@ -725,6 +800,7 @@ rnti=17921
 prb_start=48
 prb_len=16
 tbsize=32
+payload_kind=GENERIC
 payload_hex=1006...
 payload_text=\x10\x06...RRCSetup|cause=3|ue_type=1
 scheduled_by_pdcch=true
@@ -788,9 +864,11 @@ The current C prototype keeps:
 - SSB/PBCH/MIB scheduling
 - companion PDCCH/DCI export for scheduled PDSCH objects
 - post-Msg4 connected traffic with `PUCCH` config, `SR`, a small `DCI0_1` grant for `BSR`, and a larger `DCI0_1` grant for UL payload
+- minimal AMF/UPF integration through the simulator-side core bridge and persistent N3 socket
+- follow-up UE/gNB NAS transport over mock `DL_OBJ_DATA` / `UL_OBJ_DATA` with `payload_kind=NAS`
 - SIB1 scheduling with `period + offset`
 - mock radio RX bursts for PRACH and Msg3
-- text transport export for DL scheduling and payload
+- text transport export for gNB downlink scheduling in `out/tx/` and live UE uplink bursts in `out/rx/`
 - text transport input for UL PRACH and Msg3 content
 - slot-driven UL burst input from `input/slot_<abs_slot>_UL_OBJ_*.cf32`
 - PRACH detection driven by received UL burst rather than direct slot trigger
@@ -817,7 +895,7 @@ Useful `sim:` configuration keys:
 
 The current C prototype does not keep:
 
-- core network integration
+- a general-purpose core-network / UE NAS implementation beyond the current Open5GS happy path
 - real RF/UHD
 - multi-UE scheduling
 - security, reconfiguration, handover, paging

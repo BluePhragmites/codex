@@ -89,6 +89,18 @@ const char* mini_gnb_c_ra_state_to_string(const mini_gnb_c_ra_state_t state) {
   return "UNKNOWN";
 }
 
+const char* mini_gnb_c_payload_kind_to_string(const mini_gnb_c_payload_kind_t kind) {
+  switch (kind) {
+    case MINI_GNB_C_PAYLOAD_KIND_GENERIC:
+      return "GENERIC";
+    case MINI_GNB_C_PAYLOAD_KIND_IPV4:
+      return "IPV4";
+    case MINI_GNB_C_PAYLOAD_KIND_NAS:
+      return "NAS";
+  }
+  return "UNKNOWN";
+}
+
 uint16_t mini_gnb_c_lookup_tbsize(const uint16_t prb_len, const uint8_t mcs) {
   size_t i = 0;
 

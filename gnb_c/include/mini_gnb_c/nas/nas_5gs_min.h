@@ -66,6 +66,7 @@ typedef struct {
   bool pdu_session_request_pending;
   bool pdu_session_request_sent;
   bool security_context_valid;
+  int response_delay_slots;
   mini_gnb_c_nas_5gs_min_security_context_t security_context;
   mini_gnb_c_nas_5gs_min_pending_uplink_t pending[MINI_GNB_C_NAS_5GS_MIN_MAX_PENDING];
 } mini_gnb_c_nas_5gs_min_ue_t;
@@ -84,6 +85,9 @@ int mini_gnb_c_nas_5gs_min_handle_downlink_nas(mini_gnb_c_nas_5gs_min_ue_t* runt
 int mini_gnb_c_nas_5gs_min_emit_due_uplinks(mini_gnb_c_nas_5gs_min_ue_t* runtime,
                                             const char* exchange_dir,
                                             int current_slot);
+int mini_gnb_c_nas_5gs_min_pop_due_uplink(mini_gnb_c_nas_5gs_min_ue_t* runtime,
+                                          int current_slot,
+                                          mini_gnb_c_nas_5gs_min_pending_uplink_t* out_pending);
 int mini_gnb_c_nas_5gs_min_poll_exchange(mini_gnb_c_nas_5gs_min_ue_t* runtime,
                                          const char* exchange_dir,
                                          int current_slot);

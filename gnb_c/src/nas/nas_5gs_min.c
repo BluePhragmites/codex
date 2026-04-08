@@ -493,6 +493,7 @@ void mini_gnb_c_nas_5gs_min_ue_init(mini_gnb_c_nas_5gs_min_ue_t* runtime) {
   memset(runtime, 0, sizeof(*runtime));
   runtime->next_gnb_to_ue_sequence = 1u;
   runtime->next_ue_to_gnb_nas_sequence = 1u;
+  runtime->response_delay_slots = MINI_GNB_C_NAS_5GS_MIN_RESPONSE_DELAY_SLOTS;
 }
 
 int mini_gnb_c_nas_5gs_min_handle_downlink_nas(mini_gnb_c_nas_5gs_min_ue_t* runtime,
@@ -507,6 +508,9 @@ int mini_gnb_c_nas_5gs_min_handle_downlink_nas(mini_gnb_c_nas_5gs_min_ue_t* runt
   uint8_t message[MINI_GNB_C_MAX_PAYLOAD];
   size_t message_length = 0u;
   uint8_t message_type = 0u;
+  const int response_delay_slots =
+      runtime != NULL && runtime->response_delay_slots >= 0 ? runtime->response_delay_slots
+                                                            : MINI_GNB_C_NAS_5GS_MIN_RESPONSE_DELAY_SLOTS;
 
   if (runtime == NULL || nas_pdu == NULL || nas_pdu_length == 0u) {
     return -1;
@@ -524,7 +528,7 @@ int mini_gnb_c_nas_5gs_min_handle_downlink_nas(mini_gnb_c_nas_5gs_min_ue_t* runt
                                              MINI_GNB_C_NAS_5GS_MIN_UPLINK_IDENTITY_RESPONSE,
                                              k_mini_gnb_c_identity_response_nas,
                                              sizeof(k_mini_gnb_c_identity_response_nas),
-                                             current_slot + MINI_GNB_C_NAS_5GS_MIN_RESPONSE_DELAY_SLOTS) != 0) {
+                                             current_slot + response_delay_slots) != 0) {
       return -1;
     }
     runtime->identity_response_pending = true;
@@ -543,7 +547,7 @@ int mini_gnb_c_nas_5gs_min_handle_downlink_nas(mini_gnb_c_nas_5gs_min_ue_t* runt
                                              MINI_GNB_C_NAS_5GS_MIN_UPLINK_AUTHENTICATION_RESPONSE,
                                              message,
                                              message_length,
-                                             current_slot + MINI_GNB_C_NAS_5GS_MIN_RESPONSE_DELAY_SLOTS) != 0) {
+                                             current_slot + response_delay_slots) != 0) {
       return -1;
     }
     runtime->security_context_valid = true;
@@ -579,7 +583,7 @@ int mini_gnb_c_nas_5gs_min_handle_downlink_nas(mini_gnb_c_nas_5gs_min_ue_t* runt
                                              MINI_GNB_C_NAS_5GS_MIN_UPLINK_SECURITY_MODE_COMPLETE,
                                              message,
                                              message_length,
-                                             current_slot + MINI_GNB_C_NAS_5GS_MIN_RESPONSE_DELAY_SLOTS) != 0) {
+                                             current_slot + response_delay_slots) != 0) {
       return -1;
     }
     runtime->security_mode_complete_pending = true;
@@ -595,7 +599,7 @@ int mini_gnb_c_nas_5gs_min_handle_downlink_nas(mini_gnb_c_nas_5gs_min_ue_t* runt
                                              MINI_GNB_C_NAS_5GS_MIN_UPLINK_REGISTRATION_COMPLETE,
                                              message,
                                              message_length,
-                                             current_slot + MINI_GNB_C_NAS_5GS_MIN_RESPONSE_DELAY_SLOTS + 1) != 0) {
+                                             current_slot + response_delay_slots + 1) != 0) {
       return -1;
     }
     runtime->registration_complete_pending = true;
@@ -611,7 +615,7 @@ int mini_gnb_c_nas_5gs_min_handle_downlink_nas(mini_gnb_c_nas_5gs_min_ue_t* runt
                                              MINI_GNB_C_NAS_5GS_MIN_UPLINK_PDU_SESSION_REQUEST,
                                              message,
                                              message_length,
-                                             current_slot + MINI_GNB_C_NAS_5GS_MIN_RESPONSE_DELAY_SLOTS + 2) != 0) {
+                                             current_slot + response_delay_slots + 2) != 0) {
       return -1;
     }
     runtime->pdu_session_request_pending = true;
@@ -638,6 +642,27 @@ int mini_gnb_c_nas_5gs_min_emit_due_uplinks(mini_gnb_c_nas_5gs_min_ue_t* runtime
     pending = mini_gnb_c_nas_5gs_min_find_next_due(runtime, current_slot);
   }
   return 0;
+}
+
+int mini_gnb_c_nas_5gs_min_pop_due_uplink(mini_gnb_c_nas_5gs_min_ue_t* runtime,
+                                          int current_slot,
+                                          mini_gnb_c_nas_5gs_min_pending_uplink_t* out_pending) {
+  mini_gnb_c_nas_5gs_min_pending_uplink_t* pending = NULL;
+
+  if (runtime == NULL || out_pending == NULL) {
+    return 0;
+  }
+
+  pending = mini_gnb_c_nas_5gs_min_find_next_due(runtime, current_slot);
+  if (pending == NULL) {
+    memset(out_pending, 0, sizeof(*out_pending));
+    return 0;
+  }
+
+  *out_pending = *pending;
+  mini_gnb_c_nas_5gs_min_mark_sent(runtime, pending->kind);
+  memset(pending, 0, sizeof(*pending));
+  return 1;
 }
 
 int mini_gnb_c_nas_5gs_min_poll_exchange(mini_gnb_c_nas_5gs_min_ue_t* runtime,

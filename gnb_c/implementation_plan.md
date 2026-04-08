@@ -1,6 +1,6 @@
 # gnb_c End-to-End UE/gNB/Core Plan
 
-Last updated: 2026-04-08 (all staged A-I work completed; manual Open5GS end-to-end validation passed)
+Last updated: 2026-04-08 (all staged A-I work completed; follow-up NAS now rides the mock PDSCH/PUSCH bearer, UE UL exports are mirrored under out/rx, larger IPv4 SDUs now use a minimal RLC-lite bearer segmentation/reassembly layer, and manual Open5GS end-to-end ping/curl validation passed)
 
 ## Completed Milestones
 
@@ -18,12 +18,16 @@ Last updated: 2026-04-08 (all staged A-I work completed; manual Open5GS end-to-e
 - [x] Stage I1: Re-ran the manual Open5GS demo and confirmed real UE-side `ping -c 4 8.8.8.8` echo replies.
 - [x] Stage I2: Re-ran the DNS-capable UE-side demo and confirmed real `ping -c 4 www.baidu.com` name resolution plus echo replies.
 - [x] Stage I3: Confirmed the runtime `NGAP` / `GTP-U` pcaps show both the outbound UE-originated traffic and the returned downlink path.
+- [x] Post-plan follow-up: moved follow-up UE/gNB NAS exchange onto connected-mode `DL_OBJ_DATA` / `UL_OBJ_DATA` with explicit `payload_kind=NAS`, keeping filesystem `DL_NAS` / `UL_NAS` only as a fallback path.
+- [x] Post-plan follow-up: added UE-side `out/rx/*.txt` exports mirroring gNB `out/tx/*.txt`, including `payload_kind` visibility for `GENERIC`, `IPV4`, and `NAS` bursts.
+- [x] Post-plan follow-up: added a minimal `RLC-lite` bearer segmentation/reassembly layer for larger IPv4 SDUs so HTTP-scale traffic can survive the current mock `PDSCH/PUSCH` `tbsize` limits.
 
 ## Current Problem Statement
 
-- The simulator now completes the sustained connected-mode `SR -> BSR -> repeated UL grant` loop for live UE-originated traffic, advertises a matching gNB N3 endpoint in `PDUSessionResourceSetupResponse`, binds the persistent gNB GTP-U socket on the standard local UDP/2152 endpoint, and receives the returned downlink GTP-U path from Open5GS.
+- The simulator now completes the sustained connected-mode `SR -> BSR -> repeated UL grant` loop for live UE-originated traffic, advertises a matching gNB N3 endpoint in `PDUSessionResourceSetupResponse`, binds the persistent gNB GTP-U socket on the standard local UDP/2152 endpoint, receives the returned downlink GTP-U path from Open5GS, and carries the follow-up NAS exchange on the same mock `PDSCH/PUSCH` data path used by later IP traffic.
 - The staged end-to-end goal is complete for the current local Open5GS topology:
   - on 2026-04-08, the manual re-run confirmed `ping -c 4 8.8.8.8` and `ping -c 4 www.baidu.com` both succeeded inside the UE namespace
+  - on the same date, `curl -I http://www.baidu.com` returned `HTTP/1.1 200 OK`, and `curl www.baidu.com` completed with a non-empty response body once the new `RLC-lite` bearer path was in place
   - the runtime `gnb_core_gtpu_runtime.pcap` captured the matching bidirectional `127.0.0.1:2152 <-> 127.0.0.7:2152` GTP-U traffic
   - the companion `ogstun` / `enp4s0` captures showed the same UE-originated ICMP and DNS traffic traversing the host data plane and returning successfully
 
@@ -60,5 +64,5 @@ Last updated: 2026-04-08 (all staged A-I work completed; manual Open5GS end-to-e
 ## Recommended Implementation Order
 
 1. Keep the current local Open5GS demo as the regression reference for future changes.
-2. If broader interoperability is needed, generalize the current minimal NAS/user-plane assumptions beyond the present Open5GS happy path.
+2. If broader interoperability is needed, generalize the current minimal NAS/user-plane assumptions beyond the present Open5GS happy path and decide whether `rlc_lite` should stay intentionally minimal or be replaced by a fuller RLC model.
 3. If CI automation becomes necessary later, add a privileged end-to-end harness around the existing manual Open5GS validation flow.

@@ -27,7 +27,7 @@ rf:
   rx_gain: 35.0
 
 core:
-  enabled: false
+  enabled: true
   amf_ip: "127.0.0.5"
   amf_port: 38412
   upf_port: 2152

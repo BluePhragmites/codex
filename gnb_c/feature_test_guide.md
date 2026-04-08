@@ -40,19 +40,21 @@
 
 运行结束后，可以在 `out/summary.json` 中看到提升后的 UE 上下文，以及内嵌的 `core_session` 基础状态。
 
-### 1.2 本地 JSON 目录现在只保留给控制面和回归
+### 1.2 本地 JSON 目录现在只保留给回退控制面和回归
 
 原先的 `sim.local_exchange_dir/ue_to_gnb/*.json` 方案没有完全删除，但它已经不再是主路径：
 
 - 对 radio 路径来说，它只保留为回归测试和兼容模式
-- 对 core bridge 来说，`sim.local_exchange_dir` 仍然用于：
+- 对 core bridge 来说，只有在没有启用 shared-slot 空口 NAS 承载时，`sim.local_exchange_dir` 才继续用于：
   - `ue_to_gnb_nas/*.json`
   - `gnb_to_ue/*.json`
 
 也就是说，现在的职责已经分开：
 
 - live radio loop: `shared_slot_path`
-- follow-up NAS event handoff: `local_exchange_dir`
+- follow-up NAS event handoff:
+  - 首选：`shared_slot_path` 上的 `DL_OBJ_DATA/UL_OBJ_DATA`
+  - 回退：`local_exchange_dir`
 
 ### 1.3 gNB -> AMF 的最小控制面桥接
 
@@ -62,8 +64,12 @@
 - 可以完成 `NGSetup`
 - 可以在 UE promote 后发送第一条 `InitialUEMessage`
 - 可以接收第一条 `DownlinkNASTransport`
-- 可以继续轮询 `ue_to_gnb_nas/*.json` 中的 `UL_NAS` 事件，并将其转发为 `UplinkNASTransport`
-- 可以把 AMF 返回的后续 `DL_NAS` 写入 `gnb_to_ue/*.json`
+- 在 shared-slot + `core.enabled=true` 时，会把后续 `DL_NAS` 直接排成 `DL_OBJ_DATA`
+  并通过 mock `PDSCH` 发给 UE
+- UE 的后续 NAS 回复会作为 `UL_OBJ_DATA` 通过 mock `PUSCH` 回到 gNB，再由 bridge
+  转发为 `UplinkNASTransport`
+- 只有在没有启用这条空口 NAS 承载时，bridge 才会继续轮询 `ue_to_gnb_nas/*.json`
+  和写入 `gnb_to_ue/*.json`
 
 ### 1.4 会话建立状态解析
 
@@ -91,12 +97,12 @@
 
 当前 control-plane bridge 不会在 `PDUSessionResourceSetupRequest` 之后停住：
 
-- 它会继续处理后续 slot 上的 `ue_to_gnb_nas/*.json`
+- 它会继续处理后续 slot 上来自 UE 的 follow-up NAS
 - 如果 AMF 在 session setup 之后继续发顶层 `DownlinkNASTransport`
-- 这些后续 `DL_NAS` 仍会继续写入 `gnb_to_ue/*.json`
+- 这些后续 `DL_NAS` 会继续被排入 live radio bearer，或者在回退模式下写入 `gnb_to_ue/*.json`
 - 已提取的 `ue_ipv4 / upf_ip / upf_teid / qfi` 会继续保留在 `core_session` 中
 
-另外，`ue_to_gnb_nas` 的时序语义现在也有明确覆盖：
+另外，回退模式下 `ue_to_gnb_nas` 的时序语义现在也有明确覆盖：
 
 - 早于当前 slot 的 stale `UL_NAS` 会被跳过
 - 晚于当前 slot 的 future `UL_NAS` 会保留到对应 slot 再发送
@@ -145,6 +151,7 @@
 - UE runtime 看到这个 `ue_ipv4` 后，会配置自己的 TUN 设备
 - 后续下行 `DL DATA` 会优先写入 TUN
 - UE 会从 TUN 里读出内核返回的 IPv4 包，并在下一次上行 payload grant 上发回 gNB
+- 当一个 IPv4 包大于当前 mock `PDSCH/PUSCH` 的 `tbsize` 时，bearer 现在会自动走最小 `RLC-lite` 分片/重组，而不是卡死在单个 grant 上
 - 如果没有启用 TUN，或者还没有拿到 `ue_ipv4`，则继续回退到 `ue_ip_stack_min`
 
 默认配置下：
@@ -161,6 +168,8 @@
 
 - `ip netns exec <ue_netns_name> ping -c 4 8.8.8.8`
 - `ip netns exec <ue_netns_name> ping -c 4 www.baidu.com`
+- `ip netns exec <ue_netns_name> curl -I --max-time 25 http://www.baidu.com`
+- `ip netns exec <ue_netns_name> curl --max-time 30 -sS www.baidu.com -o /tmp/miniue_curl_body.html`
 - 或者在 rootless 匿名 namespace 下使用：
   - `nsenter --preserve-credentials -S 0 -G 0 -U -n -t <ue_pid> ping -c 4 8.8.8.8`
   - `nsenter --preserve-credentials -S 0 -G 0 -U -n -m -t <ue_pid> ping -c 4 www.baidu.com`
@@ -174,7 +183,7 @@
 但注意这里的“已具备”指的是：
 
 - gNB/UE 代码路径已经实现
-- 仓库里已经提供示例 YAML，UE 也会自动跟随后续 `DL_NAS` 生成 happy-path `UL_NAS`
+- 仓库里已经提供示例 YAML，UE 也会自动跟随空口下发的后续 NAS 生成 happy-path NAS 回复
 - 端到端 `ping` 仍然属于手工验证，不属于当前自动化 `ctest`
 
 原因是：
@@ -195,7 +204,39 @@
 - 只要 `connected_ul_pending_bytes` 还大于 0，gNB 就会继续按 `DCI0_1 + UL DATA` 的模式串行发后续 grant
 - 下行 N3 包到达后，gNB 也不再依赖“偷偷补一把 UL grant”的 shortcut；回复路径回到正常的 `SR -> BSR -> repeated UL grant`
 
-### 1.11 已有的 Open5GS 外部验证工具
+### 1.11 NAS 现在也走 mock PDSCH / PUSCH 承载
+
+当前 follow-up NAS 已经不再只靠 `gnb_to_ue/*.json` 和 `ue_to_gnb_nas/*.json` 传递：
+
+- gNB 从 AMF 收到后续 `NAS-PDU` 后，会把它排成 `DL_OBJ_DATA`
+- shared-slot 下行摘要会额外带一个 `payload_kind`
+- 当 `payload_kind=NAS` 时，UE runtime 会把这个 `DL_OBJ_DATA` 当作 NAS，而不是 IPv4 负载
+- UE 生成的 `IdentityResponse / AuthenticationResponse / SecurityModeComplete / RegistrationComplete / PDUSessionEstablishmentRequest`
+  都会排进自己的 UL FIFO，并作为 `UL_OBJ_DATA` 在 mock `PUSCH` 上承载
+- gNB 在收到 `payload_kind=NAS` 的 `UL_OBJ_DATA` 后，会把它转发回 AMF 的 `UplinkNASTransport`
+
+这样一来，在 shared-slot + core 模式下：
+
+- follow-up NAS 走的是和后续用户面数据一样的 slot-driven 空口承载路径
+- `local_exchange_dir` 只保留为回退和独立 bridge 测试
+
+### 1.12 UE 上行对象现在也会导出到 `out/rx`
+
+现在除了 gNB 侧的 `out/tx/*.txt` 之外，live UE runtime 也会把自己真正发出的上行对象导出到：
+
+- `out/rx/slot_<abs_slot>_UL_OBJ_PRACH.txt`
+- `out/rx/slot_<abs_slot>_UL_OBJ_MSG3.txt`
+- `out/rx/slot_<abs_slot>_UL_OBJ_PUCCH_SR.txt`
+- `out/rx/slot_<abs_slot>_UL_OBJ_DATA.txt`
+
+这些文件会和 `out/tx/*.txt` 一样带上可读元数据，其中 `UL_OBJ_DATA` / `DL_OBJ_DATA`
+现在都会额外标出：
+
+- `payload_kind=GENERIC`
+- `payload_kind=IPV4`
+- `payload_kind=NAS`
+
+### 1.13 已有的 Open5GS 外部验证工具
 
 仓库里另外还有一个独立工具：
 
@@ -215,9 +256,10 @@
 
 ## 2. 当前限制
 
-当前 staged A-G 功能已经全部落地，但仍有这些实际限制：
+当前 staged A-I 和后续 `RLC-lite` bearer 补丁已经全部落地，但仍有这些实际限制：
 
 - `mini_ue_c` 只实现了面向 Open5GS happy-path 的最小 UE NAS 响应链路，不是通用完整 NAS 状态机
+- 当前只实现了最小 `RLC-lite` 分片/重组，不是完整的 3GPP RLC AM/UM
 - 当前的真实 `ping` 路径仍依赖手工 Open5GS 环境验证，而不是自动化测试
 - TUN 端到端演示依赖宿主机权限、`/dev/net/tun`、`ip` 命令和真实的 AMF/UPF
 - 如果要从 UE 侧访问公网，Open5GS 宿主机还必须为 UE 子网开启 IPv4 转发和 NAT 或等价路由
@@ -251,6 +293,8 @@ cd /home/hzy/codex/test2/codex/gnb_c
 - `test_integration_shared_slot_ue_runtime_auto_nas_session_setup`
 - `test_integration_shared_slot_ue_runtime_repeats_sr_for_pending_uplink_queue`
 - `test_integration_shared_slot_ue_runtime_consumes_uplink_queue_in_order`
+- `test_mini_ue_runtime_preserves_payload_kind_for_new_and_retx_grants`
+- `test_mini_ue_runtime_exports_ul_event_into_rx_dir`
 - `test_integration_core_bridge_prepares_initial_message`
 - `test_integration_core_bridge_relays_followup_ul_nas`
 - `test_integration_core_bridge_extracts_session_setup_state`
@@ -291,6 +335,9 @@ cd /home/hzy/codex/test2/codex/gnb_c
   - 校验 end-to-end UE 示例里的 `ue_tun_netns_name / ue_tun_add_default_route / ue_tun_dns_server_ipv4`
 - `test_shared_slot_link_round_trip`
   - 校验 shared-slot 下行摘要中的 `ue_ipv4` 字段可以稳定往返
+- `test_integration_shared_slot_ue_runtime_auto_nas_session_setup`
+  - 校验 follow-up NAS 已经走 `DL_OBJ_DATA/UL_OBJ_DATA`
+  - 校验 `out/tx` 和 `out/rx` 中都能看到 `payload_kind=NAS`
 
 当前没有放进 `ctest` 的内容是：
 
@@ -395,6 +442,7 @@ rm -rf out/local_exchange out/summary.json
 - 完成 `NGSetup`
 - 在 UE promote 后发送第一条 `InitialUEMessage`
 - 接收第一条 `DL_NAS`
+- 并在 shared-slot 模式下把它排成真正的 `DL_OBJ_DATA`
 
 ### 6.2 准备配置
 
@@ -426,25 +474,25 @@ wait $UE_PID
 `/tmp/mini_gnb_core.yml` 同时提供：
 
 - shared-slot radio 联动路径
-- `local_exchange_dir` 下的 `DL_NAS/UL_NAS` 控制面事件目录
+- 回退模式下 `local_exchange_dir` 的 `DL_NAS/UL_NAS` 控制面事件目录
 
 ### 6.4 预期结果
 
 如果 AMF 可达，当前应能看到：
 
-- `out/local_exchange/gnb_to_ue/seq_000001_gnb_DL_NAS.json`
+- `out/tx/slot_<abs_slot>_DL_OBJ_DATA.txt` 中出现 `payload_kind=NAS`
+- `out/rx/slot_<abs_slot>_UL_OBJ_DATA.txt` 中出现 UE 的 follow-up `payload_kind=NAS`
 - `out/summary.json` 中出现有效的 `ran_ue_ngap_id`
 - `out/summary.json` 中出现有效的 `amf_ue_ngap_id`
 
 可以直接检查：
 
 ```bash
-ls out/local_exchange/gnb_to_ue
-sed -n '1,240p' out/local_exchange/gnb_to_ue/seq_000001_gnb_DL_NAS.json
+grep -R "payload_kind=NAS" out/tx out/rx
 sed -n '1,240p' out/summary.json
 ```
 
-注意：当前这一步主要验证第一跳控制面闭环；完整 happy-path attach 会在后面的自动 NAS 测试和 Open5GS 手工验证里覆盖。
+注意：当前这一步主要验证第一跳控制面闭环；在 shared-slot 模式下，后续 NAS 默认优先走空口承载而不是 JSON 文件。完整 happy-path attach 会在后面的自动 NAS 测试和 Open5GS 手工验证里覆盖。
 
 ## 7. 测试 follow-up UL_NAS / DL_NAS 桥接
 
@@ -452,8 +500,9 @@ sed -n '1,240p' out/summary.json
 
 验证两件事：
 
-- gNB bridge 会继续轮询 `ue_to_gnb_nas/` 并将后续 UE NAS 转发给 AMF
-- live `mini_ue_c` 会根据 `gnb_to_ue/*.json` 中的 `DL_NAS` 自动生成后续 `UL_NAS`
+- gNB bridge 会继续接收后续 UE NAS 并转发给 AMF
+- live `mini_ue_c` 会根据 `DL_OBJ_DATA payload_kind=NAS` 自动生成后续 `UL_OBJ_DATA payload_kind=NAS`
+- 回退模式下，bridge 仍然支持 `ue_to_gnb_nas/` 和 `gnb_to_ue/*.json`
 
 ### 7.2 自动回归方式
 
@@ -652,7 +701,7 @@ cd /home/hzy/codex/test2/codex/gnb_c
 
 ### 10.3 准备运行目录
 
-现在 live `mini_ue_c` 会自己根据 `DL_NAS` 生成后续 `UL_NAS`，不再需要预置 seed 文件：
+现在 live `mini_ue_c` 会自己根据空口下发的 follow-up NAS 生成后续 NAS 回复，不再需要预置 seed 文件：
 
 ```bash
 cd /home/hzy/codex/test2/codex/gnb_c
@@ -707,6 +756,13 @@ ls -l out/gnb_core_ngap_runtime.pcap out/gnb_core_gtpu_runtime.pcap
 - `UE injected DL DATA into TUN ...`
 - `UE captured TUN uplink packet ...`
 
+同时也建议检查空口对象导出：
+
+```bash
+grep -R "payload_kind=NAS" out/tx out/rx
+grep -R "payload_kind=IPV4" out/tx out/rx
+```
+
 同时建议检查 runtime pcap：
 
 ```bash
@@ -741,6 +797,9 @@ iptables -t nat -A POSTROUTING -s 10.45.0.0/16 -o <host_uplink_if> -j MASQUERADE
 ```bash
 ip netns exec miniue-demo ping -c 4 8.8.8.8
 ip netns exec miniue-demo ping -c 4 www.baidu.com
+ip netns exec miniue-demo curl -I --max-time 25 http://www.baidu.com
+ip netns exec miniue-demo curl --max-time 30 -sS www.baidu.com -o /tmp/miniue_curl_body.html
+ip netns exec miniue-demo wc -c /tmp/miniue_curl_body.html
 ```
 
 如果当前用户不能把 namespace 发布到 `/var/run/netns`，改用 UE 日志里打印的 rootless 命令：
@@ -748,12 +807,15 @@ ip netns exec miniue-demo ping -c 4 www.baidu.com
 ```bash
 nsenter --preserve-credentials -S 0 -G 0 -U -n -t <ue_pid> ping -c 4 8.8.8.8
 nsenter --preserve-credentials -S 0 -G 0 -U -n -m -t <ue_pid> ping -c 4 www.baidu.com
+nsenter --preserve-credentials -S 0 -G 0 -U -n -m -t <ue_pid> curl -I --max-time 25 http://www.baidu.com
 ```
 
 建议按这个顺序排查：
 
 - 先测 `8.8.8.8`
 - 再测 `www.baidu.com`
+- 再测 `curl -I`
+- 最后测带正文的 `curl`
 
 如果第一个失败，问题通常在：
 
@@ -767,10 +829,18 @@ nsenter --preserve-credentials -S 0 -G 0 -U -n -m -t <ue_pid> ping -c 4 www.baid
 - 命名 namespace 模式下的 `/etc/netns/miniue-demo/resolv.conf` 不存在，或者匿名 namespace 模式下没有按 UE 日志提示使用 `nsenter ... -m`
 - DNS 服务器本身不可达
 
+如果两个 `ping` 都成功，但 `curl` 卡住，问题通常在：
+
+- 较大的 HTTP / DNS 数据包开始真正触发 bearer 分片路径，而不是基础连通性
+- gNB/UE 日志里没有出现 `Queued one DL IPv4 RLC-lite segment`、`Buffered one partial UL IPv4 RLC-lite segment` 或 `Reassembled one UL IPv4 SDU`
+- 当前回归到了“只够跑 ping，不够跑 `curl`”的旧状态
+
 2026-04-08 在当前宿主机上的手工复验结果是：
 
 - UE 侧 `ping -c 4 8.8.8.8` 实际收到了 `4/4` 回显
 - UE 侧 `ping -c 4 www.baidu.com` 完成了解析，并实际收到了 `4/4` 回显
+- `curl -I --max-time 25 http://www.baidu.com` 返回了 `HTTP/1.1 200 OK`
+- `curl --max-time 30 -sS www.baidu.com -o /tmp/miniue_curl_body.html` 成功写出了 `2381` 字节响应体
 - runtime `GTP-U` pcap 已经出现双向 `127.0.0.1:2152 <-> 127.0.0.7:2152` 流量
 - `ogstun` 和 `enp4s0` 抓包都能看到匹配的 ICMP / DNS 请求与返回包
 

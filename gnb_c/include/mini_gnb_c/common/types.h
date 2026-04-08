@@ -7,7 +7,7 @@
 
 #include "mini_gnb_c/core/core_session.h"
 
-#define MINI_GNB_C_MAX_PAYLOAD 512
+#define MINI_GNB_C_MAX_PAYLOAD 2048
 #define MINI_GNB_C_MAX_TEXT 128
 #define MINI_GNB_C_MAX_PATH 260
 #define MINI_GNB_C_MAX_EVENTS 128
@@ -61,6 +61,12 @@ typedef enum {
   MINI_GNB_C_UL_DATA_PURPOSE_BSR = 0,
   MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD = 1
 } mini_gnb_c_ul_data_purpose_t;
+
+typedef enum {
+  MINI_GNB_C_PAYLOAD_KIND_GENERIC = 0,
+  MINI_GNB_C_PAYLOAD_KIND_IPV4 = 1,
+  MINI_GNB_C_PAYLOAD_KIND_NAS = 2
+} mini_gnb_c_payload_kind_t;
 
 typedef struct {
   uint8_t bytes[MINI_GNB_C_MAX_PAYLOAD];
@@ -209,6 +215,7 @@ typedef struct {
   bool is_new_data;
   bool crc_ok_override_valid;
   bool crc_ok_override;
+  mini_gnb_c_payload_kind_t payload_kind;
   mini_gnb_c_buffer_t mac_pdu;
   mini_gnb_c_complexf_t samples[MINI_GNB_C_MAX_IQ_SAMPLES];
   mini_gnb_c_radio_status_t status;
@@ -278,6 +285,7 @@ typedef struct {
   uint8_t rv;
   uint8_t harq_id;
   mini_gnb_c_pdcch_dci_t pdcch;
+  mini_gnb_c_payload_kind_t payload_kind;
   mini_gnb_c_buffer_t payload;
 } mini_gnb_c_dl_grant_t;
 
@@ -293,6 +301,7 @@ typedef struct {
   uint16_t rnti;
   size_t payload_len;
   mini_gnb_c_pdcch_dci_t pdcch;
+  mini_gnb_c_payload_kind_t payload_kind;
   mini_gnb_c_buffer_t payload;
   uint16_t fft_size;
   uint16_t cp_length;
@@ -416,6 +425,7 @@ typedef struct {
   uint8_t harq_id;
   bool ndi;
   bool is_new_data;
+  mini_gnb_c_payload_kind_t payload_kind;
   mini_gnb_c_buffer_t payload;
 } mini_gnb_c_dl_data_schedule_request_t;
 
@@ -481,6 +491,7 @@ const char* mini_gnb_c_dl_object_type_to_string(mini_gnb_c_dl_object_type_t type
 const char* mini_gnb_c_ul_burst_type_to_string(mini_gnb_c_ul_burst_type_t type);
 const char* mini_gnb_c_dci_format_to_string(mini_gnb_c_dci_format_t format);
 const char* mini_gnb_c_ra_state_to_string(mini_gnb_c_ra_state_t state);
+const char* mini_gnb_c_payload_kind_to_string(mini_gnb_c_payload_kind_t kind);
 uint16_t mini_gnb_c_lookup_tbsize(uint16_t prb_len, uint8_t mcs);
 
 void mini_gnb_c_buffer_reset(mini_gnb_c_buffer_t* buffer);

@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +37,38 @@ static uint16_t mini_gnb_c_test_checksum16(const uint8_t* data, const size_t len
     sum = (sum & 0xffffu) + (sum >> 16u);
   }
   return (uint16_t)(~sum & 0xffffu);
+}
+
+static bool mini_gnb_c_directory_contains_text_pattern(const char* dir,
+                                                       const char* filename_fragment,
+                                                       const char* pattern) {
+  DIR* handle = NULL;
+  struct dirent* entry = NULL;
+
+  mini_gnb_c_require(dir != NULL && filename_fragment != NULL && pattern != NULL,
+                     "expected directory text pattern inputs");
+  handle = opendir(dir);
+  if (handle == NULL) {
+    return false;
+  }
+  while ((entry = readdir(handle)) != NULL) {
+    char path[MINI_GNB_C_MAX_PATH];
+    char* text = NULL;
+
+    if (entry->d_name[0] == '.' || strstr(entry->d_name, filename_fragment) == NULL ||
+        snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name) >= (int)sizeof(path)) {
+      continue;
+    }
+    text = mini_gnb_c_read_text_file(path);
+    if (text != NULL && strstr(text, pattern) != NULL) {
+      free(text);
+      closedir(handle);
+      return true;
+    }
+    free(text);
+  }
+  closedir(handle);
+  return false;
 }
 
 static void mini_gnb_c_build_test_icmp_echo_request(mini_gnb_c_buffer_t* packet,
@@ -798,6 +831,8 @@ void test_integration_shared_slot_ue_runtime_auto_nas_session_setup(void) {
   char output_dir[MINI_GNB_C_MAX_PATH];
   char shared_slot_path[MINI_GNB_C_MAX_PATH];
   char exchange_dir[MINI_GNB_C_MAX_PATH];
+  char rx_dir[MINI_GNB_C_MAX_PATH];
+  char tx_dir[MINI_GNB_C_MAX_PATH];
   char error_message[256];
   mini_gnb_c_config_t ue_config;
   mini_gnb_c_config_t gnb_config;
@@ -840,6 +875,7 @@ void test_integration_shared_slot_ue_runtime_auto_nas_session_setup(void) {
   gnb_config.sim.shared_slot_timeout_ms = 250u;
   ue_config.sim.total_slots = 64;
   gnb_config.sim.total_slots = 64;
+  ue_config.core.enabled = true;
   ue_config.sim.ue_tun_enabled = false;
   gnb_config.core.enabled = true;
   gnb_config.core.timeout_ms = 2500u;
@@ -879,6 +915,12 @@ void test_integration_shared_slot_ue_runtime_auto_nas_session_setup(void) {
   mini_gnb_c_require(mini_gnb_c_file_size(summary.ngap_trace_pcap_path) > 24u,
                      "expected NGAP trace pcap payloads");
   mini_gnb_c_require(fake_transport.sent_count == 9u, "expected live UE NAS uplinks plus NGAP acknowledgements");
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "rx", rx_dir, sizeof(rx_dir)) == 0, "expected rx dir");
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "tx", tx_dir, sizeof(tx_dir)) == 0, "expected tx dir");
+  mini_gnb_c_require(mini_gnb_c_directory_contains_text_pattern(rx_dir, "UL_OBJ_DATA", "payload_kind=NAS"),
+                     "expected UE out/rx export for NAS over PUSCH");
+  mini_gnb_c_require(mini_gnb_c_directory_contains_text_pattern(tx_dir, "DL_OBJ_DATA", "payload_kind=NAS"),
+                     "expected gNB out/tx export for NAS over PDSCH");
 
   mini_gnb_c_require(mini_gnb_c_ngap_extract_nas_pdu(fake_transport.sent_messages[2],
                                                      fake_transport.sent_lengths[2],
@@ -1586,6 +1628,7 @@ void test_integration_shared_slot_tun_uplink_reaches_n3(void) {
   ue_config.sim.ul_data_present = false;
   gnb_config.sim.ul_data_present = false;
   gnb_config.sim.slot_sleep_ms = 5u;
+  ue_config.core.enabled = true;
   gnb_config.core.enabled = true;
   gnb_config.core.timeout_ms = 2500u;
   gnb_config.core.ran_ue_ngap_id_base = 1u;

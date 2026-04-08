@@ -39,6 +39,7 @@ add_library(mini_gnb_c_lib
   src/ngap/ngap_runtime.c
   src/ngap/ngap_transport.c
   src/nas/nas_5gs_min.c
+  src/rlc/rlc_lite.c
   src/timing/slot_engine.c
   src/trace/pcap_trace.c
   src/n3/gtpu_tunnel.c
@@ -96,6 +97,7 @@ add_executable(mini_gnb_c_tests
   tests/test_ngap_runtime.c
   tests/test_pcap_trace.c
   tests/test_nas_5gs_min.c
+  tests/test_rlc_lite.c
   tests/test_ue_ip_stack_min.c
   tests/test_json_link.c
   tests/test_shared_slot_link.c

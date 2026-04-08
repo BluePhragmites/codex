@@ -231,6 +231,7 @@ static bool mini_gnb_c_try_receive_shared_slot_ul(mini_gnb_c_mock_radio_frontend
       out_burst->rnti = event.rnti;
       out_burst->snr_db = radio->sim.msg3_snr_db;
       out_burst->evm = radio->sim.msg3_evm;
+      out_burst->payload_kind = MINI_GNB_C_PAYLOAD_KIND_GENERIC;
       out_burst->mac_pdu = event.payload;
       return true;
     case MINI_GNB_C_UL_BURST_PUCCH_SR:
@@ -277,6 +278,7 @@ static bool mini_gnb_c_try_receive_shared_slot_ul(mini_gnb_c_mock_radio_frontend
       out_burst->tbsize = radio->harq_ul_data_tbsize[ul_data_index];
       out_burst->crc_ok_override_valid = true;
       out_burst->crc_ok_override = true;
+      out_burst->payload_kind = event.payload_kind;
       out_burst->mac_pdu = event.payload;
       radio->harq_ul_data_armed[ul_data_index] = false;
       return true;
@@ -690,6 +692,7 @@ static int mini_gnb_c_write_transport_text(const char* path,
           "prb_len=%u\n"
           "tbsize=%u\n"
           "payload_len=%zu\n"
+          "payload_kind=%s\n"
           "payload_hex=%s\n"
           "payload_text=%s\n"
           "fft_size=%u\n"
@@ -711,6 +714,7 @@ static int mini_gnb_c_write_transport_text(const char* path,
           patch->prb_len,
           tbsize,
           patch->payload.len,
+          mini_gnb_c_payload_kind_to_string(patch->payload_kind),
           payload_hex,
           payload_text,
           patch->fft_size,
@@ -1846,6 +1850,7 @@ void mini_gnb_c_mock_radio_frontend_submit_tx(mini_gnb_c_mock_radio_frontend_t* 
         case MINI_GNB_C_DL_OBJ_DATA:
           radio->shared_slot_summary.flags |= MINI_GNB_C_SHARED_SLOT_FLAG_DATA;
           radio->shared_slot_summary.dl_rnti = patch->rnti;
+          radio->shared_slot_summary.dl_data_kind = patch->payload_kind;
           radio->shared_slot_summary.dl_data_payload = patch->payload;
           break;
         case MINI_GNB_C_DL_OBJ_PDCCH:

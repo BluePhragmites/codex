@@ -181,6 +181,7 @@ void mini_gnb_c_initial_access_scheduler_queue_dl_data(mini_gnb_c_initial_access
   grant->prb_len = request->prb_len;
   grant->mcs = request->mcs;
   grant->harq_id = request->harq_id;
+  grant->payload_kind = request->payload_kind;
   grant->payload = request->payload;
   mini_gnb_c_assign_dl_pdcch(grant,
                              request->dci_format,

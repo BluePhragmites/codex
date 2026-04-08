@@ -19,6 +19,7 @@ typedef struct {
   int abs_slot;
   uint32_t flags;
   uint16_t dl_rnti;
+  mini_gnb_c_payload_kind_t dl_data_kind;
   bool ue_ipv4_valid;
   uint8_t ue_ipv4[4];
   bool has_pdcch;
@@ -41,6 +42,7 @@ typedef struct {
   uint8_t harq_id;
   bool ndi;
   bool is_new_data;
+  mini_gnb_c_payload_kind_t payload_kind;
   mini_gnb_c_buffer_t payload;
 } mini_gnb_c_shared_slot_ul_event_t;
 

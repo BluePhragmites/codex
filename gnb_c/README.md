@@ -134,6 +134,10 @@ The UE-side process now has both a reusable event template generator and a live 
   - learns the post-attach SR periodicity and offset from the gNB's Msg4 / `RRCSetup` payload
   - uses the RAR payload to derive the exact Msg3 absolute slot instead of relying on local timing guesses
   - polls `gnb_to_ue/*.json` for later `DL_NAS` messages and feeds them into the minimal UE NAS helper
+  - now keeps a small FIFO of pending uplink payloads instead of a single pending packet
+  - tracks UE-side uplink demand with `sr_pending`, `bsr_dirty`, and the last reported BSR byte count
+  - re-triggers `PUCCH_SR` on later valid SR occasions whenever that queue is still non-empty and no future UL grant is already available
+  - consumes queued UL payload grants in FIFO order while still keeping the last HARQ payload for retransmission reuse
   - now also inspects `DL_OBJ_DATA` payloads and, when they carry a minimal IPv4 `ICMP Echo Request`, stages a matching `Echo Reply` for the next granted UL data transmission
   - when `sim.ue_tun_enabled=true`, configures a local TUN interface from the downlink-learned
     `UE IPv4`, injects later downlink IP packets into that TUN device, and prefers packets
@@ -155,10 +159,14 @@ The UE-side process now has both a reusable event template generator and a live 
   - owns the optional live UE TUN device
   - can create that device inside an isolated user+network namespace when
     `sim.ue_tun_isolate_netns=true`, which is the default for the end-to-end demo
-  - can optionally publish that isolated namespace as `sim.ue_tun_netns_name`
-  - can install `default dev <ue_tun_name>` and write `/etc/netns/<name>/resolv.conf`
-    from `sim.ue_tun_dns_server_ipv4`, which makes outbound `ping 8.8.8.8` and
-    `ping www.baidu.com` practical from the UE side
+  - when the caller can publish `/var/run/netns/<name>`, can optionally expose that
+    isolated namespace as `sim.ue_tun_netns_name`
+  - when `/var/run/netns` is not writable, now falls back to an anonymous isolated
+    namespace and prints the correct rootless `nsenter --preserve-credentials -S 0 -G 0 -U -n ...`
+    command for later manual probing
+  - can install `default dev <ue_tun_name>` and either write `/etc/netns/<name>/resolv.conf`
+    or bind a private `/etc/resolv.conf` inside the anonymous namespace from
+    `sim.ue_tun_dns_server_ipv4`, which keeps name-based probes practical on rootless hosts
   - configures the learned `UE IPv4` and MTU with the host `ip` tool so the kernel
     networking stack can generate the real `ICMP Echo Reply`
 
@@ -185,6 +193,17 @@ That shared-slot loop completes the current local attach and connected-mode mock
 - post-attach `PUCCH_SR`
 - scheduled `BSR`
 - scheduled UL `DATA`
+
+For the live shared-slot path, connected-mode uplink scheduling is now sustained instead
+of one-shot:
+
+- the UE keeps a FIFO of pending uplink payloads and reports the real queued byte count
+  in its `BSR`
+- the gNB keeps per-UE `connected_ul_pending_bytes`, accepts later `PUCCH_SR`
+  occasions, and keeps issuing one `DCI0_1 + UL DATA` grant at a time until the
+  reported queue drains
+- `out/summary.json` now also exports `connected_ul_pending_bytes` and
+  `connected_ul_last_reported_bsr_bytes` for that gNB-side accounting state
 
 In that split-config mode, the gNB file is the source of truth for downlink-authored
 timing. The UE file no longer needs to duplicate the PDCCH/HARQ timing fields because
@@ -214,6 +233,20 @@ The live shared-slot loop is covered by the integration test:
   - forks `mini_ue_c`-equivalent shared-slot UE runtime in one process
   - runs `mini_gnb_c_sim` against the same shared slot register file
   - verifies PRACH, Msg3, SR, BSR, UL DATA, and the promoted UE summary state
+  - `test_integration_shared_slot_ue_runtime_repeats_sr_for_pending_uplink_queue`
+  - verifies that the UE re-sends `PUCCH_SR` on a later SR occasion when queued UL payloads still have no grant
+  - `test_integration_shared_slot_ue_runtime_consumes_uplink_queue_in_order`
+  - verifies that multiple queued UL payloads are consumed in FIFO order across successive grants
+  - `test_integration_slot_text_transport_continues_connected_ul_grants`
+  - verifies that one `BSR` can drive multiple sequential UL payload grants until the gNB-side pending-byte accounting reaches zero
+  - `test_integration_shared_slot_tun_uplink_reaches_n3`
+  - verifies that one real packet read from the UE TUN device is forwarded onto the persistent N3 socket
+- `tests/test_mini_ue_runtime.c`
+  - `test_mini_ue_runtime_uplink_queue_tracks_bytes_and_bsr_dirty`
+  - `test_mini_ue_runtime_update_uplink_state_rearms_sr_after_grant_consumption`
+  - `test_mini_ue_runtime_builds_bsr_from_current_queue_bytes`
+  - `test_mini_ue_runtime_skips_new_payload_grant_without_queue`
+  - verifies that UE-side BSR and new-data UL payload generation now reflect only the real queued bytes instead of falling back to synthetic payloads after the queue drains
 - `tests/test_shared_slot_link.c`
   - verifies the slot-0 boundary, the per-slot handshake, and the shutdown-side final UL consumption semantics of the shared register window
 
@@ -277,8 +310,11 @@ The simulator now also includes the first persistent N3 runtime slice:
 - after `PDUSessionResourceSetupRequest` populates `core_session.upf_ip`,
   `core_session.upf_teid`, `core_session.qfi`, and `core_session.ue_ipv4`, the
   simulator activates `n3/n3_user_plane`
-- that helper opens one non-blocking UDP socket, connects it to `core.upf_port`,
-  and keeps the endpoint alive across later slots instead of sending one-shot probe traffic
+- that helper resolves the gNB-side local IPv4 toward the chosen UPF, binds one
+  non-blocking UDP socket on the standard local GTP-U port `2152`, and keeps the
+  endpoint alive across later slots instead of sending one-shot probe traffic
+- the matching `PDUSessionResourceSetupResponse` now advertises that same gNB
+  N3 IPv4 plus the fixed downlink TEID used by the simulator-side downlink socket
 - each slot, `src/common/simulator.c` gives the helper a chance to poll one
   downlink GTP-U packet and emits a trace event when something arrives
 - `include/mini_gnb_c/n3/gtpu_tunnel.h`
@@ -287,9 +323,9 @@ The simulator now also includes the first persistent N3 runtime slice:
 - `src/common/simulator.c`
   - now forwards one valid uplink IPv4 `UL DATA` payload into the persistent N3 socket
   - now decapsulates one polled downlink GTP-U packet and re-queues its inner IPv4 payload as a `DL_OBJ_DATA` transmission for the UE
-  - in the unscripted live path, now auto-queues one follow-up UL payload grant after a
-    downlink N3 packet so the UE can return a TUN- or ICMP-generated reply without a
-    handcrafted schedule file
+  - in the unscripted live shared-slot path, no longer relies on a synthetic follow-up
+    UL grant after a downlink N3 packet; instead, the UE re-uses its configured SR
+    occasions and the gNB keeps the later `SR -> BSR -> repeated UL grant` loop running
   - accepts `sim.slot_sleep_ms` to add wall-clock pacing between slots for the live Open5GS demo
 - together with `ue/ue_ip_stack_min` and `ue/ue_tun`, the repository now has two user-plane modes:
   - fallback minimal mode:
@@ -386,9 +422,9 @@ Those example configs add:
 - `config/example_open5gs_end_to_end_ue.yml`
   - enables `sim.ue_tun_enabled=true`
   - keeps `sim.ue_tun_isolate_netns=true`, so the UE-side TUN device and kernel reply path stay isolated from the host network namespace
-  - publishes that namespace as `miniue-demo`
+  - requests publishing that namespace as `miniue-demo` when `/var/run/netns` is writable
   - installs a default route on the UE TUN device
-  - writes `/etc/netns/miniue-demo/resolv.conf` with `223.5.5.5` so name-based reachability checks can run through `ip netns exec`
+  - uses `223.5.5.5` for name-based reachability checks; on rootless hosts that now falls back to an anonymous namespace with a private bound `/etc/resolv.conf`
 - `examples/open5gs_ul_nas_seed/`
   - keeps optional canned follow-up `UL_NAS` fixtures for debugging or manual bridge experiments
 
@@ -404,14 +440,22 @@ tcpdump -ni ogstun icmp
 ```
 
 To originate traffic from the UE side instead of the host side, first make sure the
-Open5GS host has internet forwarding enabled for the UE subnet, then use the named
-UE namespace from the example config:
+Open5GS host has internet forwarding enabled for the UE subnet. If the UE namespace
+was published under `/var/run/netns`, use the named namespace:
 
 ```bash
 sysctl -w net.ipv4.ip_forward=1
 iptables -t nat -A POSTROUTING -s 10.45.0.0/16 -o <host_uplink_if> -j MASQUERADE
 ip netns exec miniue-demo ping -c 4 8.8.8.8
 ip netns exec miniue-demo ping -c 4 www.baidu.com
+```
+
+On rootless hosts where `/var/run/netns` is not writable, use the anonymous namespace
+fallback printed by the UE log:
+
+```bash
+nsenter --preserve-credentials -S 0 -G 0 -U -n -t <ue_pid> ping -c 4 8.8.8.8
+nsenter --preserve-credentials -S 0 -G 0 -U -n -m -t <ue_pid> ping -c 4 www.baidu.com
 ```
 
 For debugging, validate in this order:
@@ -423,7 +467,18 @@ That split is important because public-IP reachability and DNS are separate fail
 modes.
 
 With the default Open5GS data plane used during development, the learned UE address is
-typically `10.45.0.7`, but the runtime summary is the source of truth.
+usually in `10.45.0.0/16`, but the runtime summary and UE log are the source of truth.
+
+On the current host, the 2026-04-08 manual re-run completed end-to-end:
+
+- `nsenter --preserve-credentials -S 0 -G 0 -U -n -t <ue_pid> ping -c 4 8.8.8.8`
+  returned `4 received`
+- `nsenter --preserve-credentials -S 0 -G 0 -U -n -m -t <ue_pid> ping -c 4 www.baidu.com`
+  resolved `www.a.shifen.com` and also returned `4 received`
+- `out/gnb_core_gtpu_runtime.pcap` showed the matching bidirectional
+  `127.0.0.1:2152 <-> 127.0.0.7:2152` GTP-U traffic
+- companion `ogstun` and `enp4s0` captures showed the same ICMP and DNS traffic
+  traversing the Open5GS host path and returning successfully
 
 The generated trace pcaps are intended for later Wireshark inspection:
 

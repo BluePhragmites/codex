@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "mini_gnb_c/common/hex.h"
+#include "mini_gnb_c/n3/n3_user_plane.h"
 #include "mini_gnb_c/common/json_utils.h"
 #include "mini_gnb_c/link/json_link.h"
 #include "mini_gnb_c/ngap/ngap_runtime.h"
@@ -248,6 +249,9 @@ static int mini_gnb_c_gnb_core_bridge_send_ngap_response(mini_gnb_c_gnb_core_bri
   uint8_t response[MINI_GNB_C_CORE_BRIDGE_MAX_MESSAGE];
   size_t response_length = 0u;
   const char* label = NULL;
+  char local_n3_ip[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
+  const uint16_t resolved_upf_port =
+      bridge != NULL && bridge->config.upf_port != 0u ? bridge->config.upf_port : MINI_GNB_C_N3_GTPU_PORT;
 
   if (bridge == NULL || ue_context == NULL || !ue_context->core_session.amf_ue_ngap_id_valid ||
       !ue_context->core_session.ran_ue_ngap_id_valid) {
@@ -264,11 +268,18 @@ static int mini_gnb_c_gnb_core_bridge_send_ngap_response(mini_gnb_c_gnb_core_bri
     }
     label = "InitialContextSetupResponse";
   } else if (procedure_code == 0x1du) {
-    if (mini_gnb_c_ngap_build_pdu_session_resource_setup_response(ue_context->core_session.amf_ue_ngap_id,
-                                                                  ue_context->core_session.ran_ue_ngap_id,
-                                                                  response,
-                                                                  sizeof(response),
-                                                                  &response_length) != 0) {
+    if (mini_gnb_c_n3_user_plane_resolve_local_ipv4(ue_context->core_session.upf_ip,
+                                                    resolved_upf_port,
+                                                    local_n3_ip,
+                                                    sizeof(local_n3_ip)) != 0 ||
+        mini_gnb_c_ngap_build_pdu_session_resource_setup_response_with_tunnel(
+            ue_context->core_session.amf_ue_ngap_id,
+            ue_context->core_session.ran_ue_ngap_id,
+            local_n3_ip,
+            MINI_GNB_C_N3_DOWNLINK_TEID,
+            response,
+            sizeof(response),
+            &response_length) != 0) {
       return -1;
     }
     label = "PDUSessionResourceSetupResponse";

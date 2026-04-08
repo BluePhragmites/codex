@@ -76,6 +76,40 @@ static void mini_gnb_c_build_test_icmp_echo_request(mini_gnb_c_buffer_t* packet,
   packet->bytes[23] = (uint8_t)(checksum & 0xffu);
 }
 
+static void mini_gnb_c_set_test_icmp_sequence(mini_gnb_c_buffer_t* packet, const uint16_t sequence_number) {
+  uint16_t checksum = 0u;
+
+  mini_gnb_c_require(packet != NULL && packet->len >= 28u, "expected ICMP packet for sequence update");
+  packet->bytes[26] = (uint8_t)(sequence_number >> 8u);
+  packet->bytes[27] = (uint8_t)(sequence_number & 0xffu);
+  packet->bytes[22] = 0u;
+  packet->bytes[23] = 0u;
+  checksum = mini_gnb_c_test_checksum16(packet->bytes + 20u, packet->len - 20u);
+  packet->bytes[22] = (uint8_t)(checksum >> 8u);
+  packet->bytes[23] = (uint8_t)(checksum & 0xffu);
+}
+
+static void mini_gnb_c_build_test_msg4_rrc_setup(mini_gnb_c_buffer_t* payload,
+                                                 const int sr_period_slots,
+                                                 const int sr_offset_slot) {
+  char text[MINI_GNB_C_MAX_PAYLOAD];
+  int text_length = 0;
+
+  mini_gnb_c_require(payload != NULL, "expected Msg4 payload output");
+  text_length = snprintf(text,
+                         sizeof(text),
+                         "RRCSetup|sr_period_slots=%d|sr_offset_slot=%d",
+                         sr_period_slots,
+                         sr_offset_slot);
+  mini_gnb_c_require(text_length > 0 && text_length <= 255 && 10u + (size_t)text_length <= sizeof(payload->bytes),
+                     "expected Msg4 payload text");
+  mini_gnb_c_buffer_reset(payload);
+  payload->bytes[8] = 17u;
+  payload->bytes[9] = (uint8_t)text_length;
+  memcpy(payload->bytes + 10u, text, (size_t)text_length);
+  payload->len = 10u + (size_t)text_length;
+}
+
 static int mini_gnb_c_bind_udp_ipv4(const uint8_t ipv4[4], uint16_t* out_port) {
   struct sockaddr_in addr;
   socklen_t addr_len = sizeof(addr);
@@ -94,6 +128,55 @@ static int mini_gnb_c_bind_udp_ipv4(const uint8_t ipv4[4], uint16_t* out_port) {
   mini_gnb_c_require(getsockname(socket_fd, (struct sockaddr*)&addr, &addr_len) == 0, "expected UDP getsockname");
   *out_port = ntohs(addr.sin_port);
   return socket_fd;
+}
+
+static int mini_gnb_c_run_shell_command(const char* command) {
+  mini_gnb_c_require(command != NULL, "expected shell command");
+  return system(command);
+}
+
+static bool mini_gnb_c_wait_for_shell_success(const char* command,
+                                              const unsigned int attempts,
+                                              const unsigned int delay_ms) {
+  unsigned int attempt = 0u;
+
+  mini_gnb_c_require(command != NULL, "expected shell command wait");
+  for (attempt = 0u; attempt < attempts; ++attempt) {
+    if (mini_gnb_c_run_shell_command(command) == 0) {
+      return true;
+    }
+    if (delay_ms > 0u) {
+      struct timeval tv;
+
+      tv.tv_sec = (time_t)(delay_ms / 1000u);
+      tv.tv_usec = (suseconds_t)((delay_ms % 1000u) * 1000u);
+      (void)select(0, NULL, NULL, NULL, &tv);
+    }
+  }
+  return false;
+}
+
+static int mini_gnb_c_extract_test_pdu_session_setup_response_tunnel(const uint8_t* message,
+                                                                     size_t message_length,
+                                                                     uint8_t gnb_ipv4[4],
+                                                                     uint32_t* gnb_teid) {
+  size_t index = 0u;
+
+  mini_gnb_c_require(message != NULL && gnb_ipv4 != NULL && gnb_teid != NULL,
+                     "expected PDUSessionResourceSetupResponse tunnel extract arguments");
+  for (index = 0u; index + 17u <= message_length; ++index) {
+    if (message[index + 0u] != 0x00u || message[index + 1u] != 0x00u || message[index + 2u] != 0x01u ||
+        message[index + 3u] != 0x0du || message[index + 4u] != 0x00u || message[index + 5u] != 0x03u ||
+        message[index + 6u] != 0xe0u) {
+      continue;
+    }
+    memcpy(gnb_ipv4, message + index + 7u, 4u);
+    *gnb_teid = ((uint32_t)message[index + 11u] << 24u) | ((uint32_t)message[index + 12u] << 16u) |
+                ((uint32_t)message[index + 13u] << 8u) | (uint32_t)message[index + 14u];
+    return 0;
+  }
+
+  return -1;
 }
 
 static void mini_gnb_c_build_test_auth_request(uint8_t* nas_pdu, size_t* nas_pdu_length) {
@@ -1001,6 +1084,303 @@ void test_integration_shared_slot_ue_runtime_generates_icmp_reply_payload(void) 
   mini_gnb_c_shared_slot_link_close(&gnb_link);
 }
 
+void test_integration_shared_slot_ue_runtime_repeats_sr_for_pending_uplink_queue(void) {
+  static const uint8_t k_server_ipv4[4] = {10u, 45u, 0u, 1u};
+  static const uint8_t k_ue_ipv4[4] = {10u, 45u, 0u, 7u};
+  char ue_config_path[MINI_GNB_C_MAX_PATH];
+  char output_dir[MINI_GNB_C_MAX_PATH];
+  char shared_slot_path[MINI_GNB_C_MAX_PATH];
+  char error_message[256];
+  mini_gnb_c_config_t ue_config;
+  mini_gnb_c_shared_slot_link_t gnb_link;
+  mini_gnb_c_shared_slot_ul_event_t event;
+  mini_gnb_c_shared_slot_dl_summary_t summary;
+  mini_gnb_c_buffer_t request_packet;
+  mini_gnb_c_buffer_t msg4_payload;
+  pid_t child_pid = -1;
+  int status = 0;
+  bool saw_first_sr = false;
+  bool saw_second_sr = false;
+  int slot = 0;
+
+  mini_gnb_c_require(snprintf(ue_config_path,
+                              sizeof(ue_config_path),
+                              "%s/config/example_shared_slot_ue.yml",
+                              MINI_GNB_C_SOURCE_DIR) < (int)sizeof(ue_config_path),
+                     "expected UE shared-slot config path");
+  mini_gnb_c_require(mini_gnb_c_load_config(ue_config_path, &ue_config, error_message, sizeof(error_message)) == 0,
+                     "expected UE config to load");
+
+  mini_gnb_c_make_output_dir("test_shared_slot_repeated_sr", output_dir, sizeof(output_dir));
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "shared_slot_link.bin", shared_slot_path, sizeof(shared_slot_path)) ==
+                         0,
+                     "expected repeated-SR shared-slot link path");
+
+  (void)snprintf(ue_config.sim.shared_slot_path, sizeof(ue_config.sim.shared_slot_path), "%s", shared_slot_path);
+  ue_config.sim.shared_slot_timeout_ms = 250u;
+  ue_config.sim.total_slots = 18;
+  ue_config.sim.ul_data_present = false;
+  mini_gnb_c_disable_local_exchange(&ue_config);
+
+  mini_gnb_c_require(mini_gnb_c_shared_slot_link_open(&gnb_link, shared_slot_path, true) == 0,
+                     "expected gNB shared-slot open");
+  child_pid = fork();
+  mini_gnb_c_require(child_pid >= 0, "expected fork for repeated-SR test");
+  if (child_pid == 0) {
+    const int child_result = mini_gnb_c_run_shared_ue_runtime(&ue_config);
+    _exit(child_result == 0 ? 0 : 1);
+  }
+
+  mini_gnb_c_build_test_icmp_echo_request(&request_packet, k_server_ipv4, k_ue_ipv4);
+  mini_gnb_c_build_test_msg4_rrc_setup(&msg4_payload, 4, 2);
+  for (slot = 0; slot <= 15; ++slot) {
+    memset(&summary, 0, sizeof(summary));
+    memset(&event, 0, sizeof(event));
+
+    if (slot == 2) {
+      mini_gnb_c_require(mini_gnb_c_shared_slot_link_consume_ul(&gnb_link, slot, &event) == 1,
+                         "expected PRACH from UE runtime");
+      mini_gnb_c_require(event.type == MINI_GNB_C_UL_BURST_PRACH, "expected PRACH event type");
+    } else if (slot == 6) {
+      mini_gnb_c_require(mini_gnb_c_shared_slot_link_consume_ul(&gnb_link, slot, &event) == 1,
+                         "expected Msg3 from UE runtime");
+      mini_gnb_c_require(event.type == MINI_GNB_C_UL_BURST_MSG3, "expected Msg3 event type");
+      mini_gnb_c_require(event.rnti == 0x4601u, "expected Msg3 TC-RNTI");
+    } else if (slot == 10 || slot == 14) {
+      mini_gnb_c_require(mini_gnb_c_shared_slot_link_consume_ul(&gnb_link, slot, &event) == 1,
+                         "expected repeated SR from UE runtime");
+      mini_gnb_c_require(event.type == MINI_GNB_C_UL_BURST_PUCCH_SR, "expected repeated SR event type");
+      mini_gnb_c_require(event.rnti == 0x4601u, "expected repeated SR C-RNTI");
+      if (slot == 10) {
+        saw_first_sr = true;
+      } else {
+        saw_second_sr = true;
+      }
+    }
+
+    if (slot == 0) {
+      char sib1_text[MINI_GNB_C_MAX_PAYLOAD];
+
+      mini_gnb_c_require(snprintf(sib1_text,
+                                  sizeof(sib1_text),
+                                  "SIB1|prach_period_slots=8|prach_offset_slot=2|ra_resp_window=4|"
+                                  "prach_retry_delay_slots=4|dl_pdcch_delay_slots=%d|dl_time_indicator=%d|"
+                                  "dl_data_to_ul_ack_slots=%d|ul_grant_delay_slots=%d|ul_time_indicator=%d|"
+                                  "dl_harq_process_count=%d|ul_harq_process_count=%d",
+                                  ue_config.sim.post_msg4_dl_pdcch_delay_slots,
+                                  ue_config.sim.post_msg4_dl_time_indicator,
+                                  ue_config.sim.post_msg4_dl_data_to_ul_ack_slots,
+                                  ue_config.sim.post_msg4_ul_grant_delay_slots,
+                                  ue_config.sim.post_msg4_ul_time_indicator,
+                                  ue_config.sim.post_msg4_dl_harq_process_count,
+                                  ue_config.sim.post_msg4_ul_harq_process_count) < (int)sizeof(sib1_text),
+                         "expected SIB1 text");
+      summary.flags |= MINI_GNB_C_SHARED_SLOT_FLAG_SIB1;
+      mini_gnb_c_require(mini_gnb_c_buffer_set_text(&summary.sib1_payload, sib1_text) == 0,
+                         "expected SIB1 payload");
+    } else if (slot == 3) {
+      uint8_t rar_payload[12];
+
+      memset(rar_payload, 0, sizeof(rar_payload));
+      rar_payload[0] = ue_config.sim.preamble_id;
+      rar_payload[8] = 0x01u;
+      rar_payload[9] = 0x46u;
+      rar_payload[10] = 0x06u;
+      rar_payload[11] = 0x00u;
+      summary.flags |= MINI_GNB_C_SHARED_SLOT_FLAG_RAR;
+      summary.dl_rnti = 0x4601u;
+      mini_gnb_c_require(mini_gnb_c_buffer_set_bytes(&summary.rar_payload, rar_payload, sizeof(rar_payload)) == 0,
+                         "expected RAR payload");
+    } else if (slot == 7) {
+      summary.flags |= MINI_GNB_C_SHARED_SLOT_FLAG_MSG4;
+      summary.dl_rnti = 0x4601u;
+      summary.msg4_payload = msg4_payload;
+      summary.ue_ipv4_valid = true;
+      memcpy(summary.ue_ipv4, k_ue_ipv4, sizeof(summary.ue_ipv4));
+    } else if (slot == 8) {
+      summary.flags |= MINI_GNB_C_SHARED_SLOT_FLAG_DATA;
+      summary.dl_rnti = 0x4601u;
+      summary.dl_data_payload = request_packet;
+      summary.ue_ipv4_valid = true;
+      memcpy(summary.ue_ipv4, k_ue_ipv4, sizeof(summary.ue_ipv4));
+    }
+
+    mini_gnb_c_publish_shared_slot_and_wait(&gnb_link, &summary, slot);
+  }
+
+  mini_gnb_c_require(saw_first_sr, "expected first SR for queued uplink demand");
+  mini_gnb_c_require(saw_second_sr, "expected second SR when no grant followed the first");
+  mini_gnb_c_require(mini_gnb_c_shared_slot_link_mark_gnb_done(&gnb_link) == 0, "expected gNB done flag");
+  mini_gnb_c_require(waitpid(child_pid, &status, 0) == child_pid, "expected UE repeated-SR child completion");
+  mini_gnb_c_require(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                     "expected clean UE repeated-SR child exit");
+  mini_gnb_c_shared_slot_link_close(&gnb_link);
+}
+
+void test_integration_shared_slot_ue_runtime_consumes_uplink_queue_in_order(void) {
+  static const uint8_t k_server_ipv4[4] = {10u, 45u, 0u, 1u};
+  static const uint8_t k_ue_ipv4[4] = {10u, 45u, 0u, 7u};
+  char ue_config_path[MINI_GNB_C_MAX_PATH];
+  char output_dir[MINI_GNB_C_MAX_PATH];
+  char shared_slot_path[MINI_GNB_C_MAX_PATH];
+  char error_message[256];
+  mini_gnb_c_config_t ue_config;
+  mini_gnb_c_shared_slot_link_t gnb_link;
+  mini_gnb_c_shared_slot_ul_event_t event;
+  mini_gnb_c_shared_slot_dl_summary_t summary;
+  mini_gnb_c_buffer_t request_packet_1;
+  mini_gnb_c_buffer_t request_packet_2;
+  pid_t child_pid = -1;
+  int status = 0;
+  bool saw_first_ul_data = false;
+  bool saw_second_ul_data = false;
+  int slot = 0;
+
+  mini_gnb_c_require(snprintf(ue_config_path,
+                              sizeof(ue_config_path),
+                              "%s/config/example_shared_slot_ue.yml",
+                              MINI_GNB_C_SOURCE_DIR) < (int)sizeof(ue_config_path),
+                     "expected UE shared-slot config path");
+  mini_gnb_c_require(mini_gnb_c_load_config(ue_config_path, &ue_config, error_message, sizeof(error_message)) == 0,
+                     "expected UE config to load");
+
+  mini_gnb_c_make_output_dir("test_shared_slot_uplink_queue_order", output_dir, sizeof(output_dir));
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "shared_slot_link.bin", shared_slot_path, sizeof(shared_slot_path)) ==
+                         0,
+                     "expected queue-order shared-slot link path");
+
+  (void)snprintf(ue_config.sim.shared_slot_path, sizeof(ue_config.sim.shared_slot_path), "%s", shared_slot_path);
+  ue_config.sim.shared_slot_timeout_ms = 250u;
+  ue_config.sim.total_slots = 18;
+  ue_config.sim.ul_data_present = false;
+  mini_gnb_c_disable_local_exchange(&ue_config);
+
+  mini_gnb_c_require(mini_gnb_c_shared_slot_link_open(&gnb_link, shared_slot_path, true) == 0,
+                     "expected gNB shared-slot open");
+  child_pid = fork();
+  mini_gnb_c_require(child_pid >= 0, "expected fork for queue-order test");
+  if (child_pid == 0) {
+    const int child_result = mini_gnb_c_run_shared_ue_runtime(&ue_config);
+    _exit(child_result == 0 ? 0 : 1);
+  }
+
+  mini_gnb_c_build_test_icmp_echo_request(&request_packet_1, k_server_ipv4, k_ue_ipv4);
+  mini_gnb_c_build_test_icmp_echo_request(&request_packet_2, k_server_ipv4, k_ue_ipv4);
+  mini_gnb_c_set_test_icmp_sequence(&request_packet_1, 1u);
+  mini_gnb_c_set_test_icmp_sequence(&request_packet_2, 2u);
+
+  for (slot = 0; slot <= 13; ++slot) {
+    memset(&summary, 0, sizeof(summary));
+    memset(&event, 0, sizeof(event));
+
+    if (slot == 2) {
+      mini_gnb_c_require(mini_gnb_c_shared_slot_link_consume_ul(&gnb_link, slot, &event) == 1,
+                         "expected PRACH from UE runtime");
+      mini_gnb_c_require(event.type == MINI_GNB_C_UL_BURST_PRACH, "expected PRACH event type");
+    } else if (slot == 6) {
+      mini_gnb_c_require(mini_gnb_c_shared_slot_link_consume_ul(&gnb_link, slot, &event) == 1,
+                         "expected Msg3 from UE runtime");
+      mini_gnb_c_require(event.type == MINI_GNB_C_UL_BURST_MSG3, "expected Msg3 event type");
+    } else if (slot == 12 || slot == 13) {
+      mini_gnb_c_require(mini_gnb_c_shared_slot_link_consume_ul(&gnb_link, slot, &event) == 1,
+                         "expected queued UL DATA from UE runtime");
+      mini_gnb_c_require(event.type == MINI_GNB_C_UL_BURST_DATA, "expected UL DATA event type");
+      mini_gnb_c_require(event.rnti == 0x4601u, "expected UL DATA C-RNTI");
+      if (slot == 12) {
+        mini_gnb_c_require(event.payload.len == request_packet_1.len, "expected first queued payload length");
+        mini_gnb_c_require(event.payload.bytes[20] == 0u && event.payload.bytes[21] == 0u,
+                           "expected first queued ICMP echo reply");
+        mini_gnb_c_require(event.payload.bytes[26] == request_packet_1.bytes[26] &&
+                               event.payload.bytes[27] == request_packet_1.bytes[27],
+                           "expected first queued reply sequence");
+        saw_first_ul_data = true;
+      } else {
+        mini_gnb_c_require(event.payload.len == request_packet_2.len, "expected second queued payload length");
+        mini_gnb_c_require(event.payload.bytes[20] == 0u && event.payload.bytes[21] == 0u,
+                           "expected second queued ICMP echo reply");
+        mini_gnb_c_require(event.payload.bytes[26] == request_packet_2.bytes[26] &&
+                               event.payload.bytes[27] == request_packet_2.bytes[27],
+                           "expected second queued reply sequence");
+        saw_second_ul_data = true;
+      }
+    }
+
+    if (slot == 0) {
+      char sib1_text[MINI_GNB_C_MAX_PAYLOAD];
+
+      mini_gnb_c_require(snprintf(sib1_text,
+                                  sizeof(sib1_text),
+                                  "SIB1|prach_period_slots=8|prach_offset_slot=2|ra_resp_window=4|"
+                                  "prach_retry_delay_slots=4|dl_pdcch_delay_slots=%d|dl_time_indicator=%d|"
+                                  "dl_data_to_ul_ack_slots=%d|ul_grant_delay_slots=%d|ul_time_indicator=%d|"
+                                  "dl_harq_process_count=%d|ul_harq_process_count=%d",
+                                  ue_config.sim.post_msg4_dl_pdcch_delay_slots,
+                                  ue_config.sim.post_msg4_dl_time_indicator,
+                                  ue_config.sim.post_msg4_dl_data_to_ul_ack_slots,
+                                  ue_config.sim.post_msg4_ul_grant_delay_slots,
+                                  ue_config.sim.post_msg4_ul_time_indicator,
+                                  ue_config.sim.post_msg4_dl_harq_process_count,
+                                  ue_config.sim.post_msg4_ul_harq_process_count) < (int)sizeof(sib1_text),
+                         "expected SIB1 text");
+      summary.flags |= MINI_GNB_C_SHARED_SLOT_FLAG_SIB1;
+      mini_gnb_c_require(mini_gnb_c_buffer_set_text(&summary.sib1_payload, sib1_text) == 0,
+                         "expected SIB1 payload");
+    } else if (slot == 3) {
+      uint8_t rar_payload[12];
+
+      memset(rar_payload, 0, sizeof(rar_payload));
+      rar_payload[0] = ue_config.sim.preamble_id;
+      rar_payload[8] = 0x01u;
+      rar_payload[9] = 0x46u;
+      rar_payload[10] = 0x06u;
+      rar_payload[11] = 0x00u;
+      summary.flags |= MINI_GNB_C_SHARED_SLOT_FLAG_RAR;
+      summary.dl_rnti = 0x4601u;
+      mini_gnb_c_require(mini_gnb_c_buffer_set_bytes(&summary.rar_payload, rar_payload, sizeof(rar_payload)) == 0,
+                         "expected RAR payload");
+    } else if (slot == 7) {
+      summary.ue_ipv4_valid = true;
+      memcpy(summary.ue_ipv4, k_ue_ipv4, sizeof(summary.ue_ipv4));
+    } else if (slot == 8) {
+      summary.flags |= MINI_GNB_C_SHARED_SLOT_FLAG_DATA;
+      summary.dl_rnti = 0x4601u;
+      summary.dl_data_payload = request_packet_1;
+      summary.ue_ipv4_valid = true;
+      memcpy(summary.ue_ipv4, k_ue_ipv4, sizeof(summary.ue_ipv4));
+    } else if (slot == 9) {
+      summary.flags |= MINI_GNB_C_SHARED_SLOT_FLAG_DATA;
+      summary.dl_rnti = 0x4601u;
+      summary.dl_data_payload = request_packet_2;
+      summary.ue_ipv4_valid = true;
+      memcpy(summary.ue_ipv4, k_ue_ipv4, sizeof(summary.ue_ipv4));
+    } else if (slot == 10 || slot == 11) {
+      summary.flags |= MINI_GNB_C_SHARED_SLOT_FLAG_PDCCH;
+      summary.has_pdcch = true;
+      summary.pdcch.valid = true;
+      summary.pdcch.format = MINI_GNB_C_DCI_FORMAT_0_1;
+      summary.pdcch.rnti = 0x4601u;
+      summary.pdcch.scheduled_abs_slot = slot == 10 ? 12 : 13;
+      summary.pdcch.scheduled_ul_type = MINI_GNB_C_UL_BURST_DATA;
+      summary.pdcch.scheduled_ul_purpose = MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD;
+      summary.pdcch.harq_id = (uint8_t)(slot - 10);
+      summary.pdcch.ndi = true;
+      summary.pdcch.is_new_data = true;
+      summary.ue_ipv4_valid = true;
+      memcpy(summary.ue_ipv4, k_ue_ipv4, sizeof(summary.ue_ipv4));
+    }
+
+    mini_gnb_c_publish_shared_slot_and_wait(&gnb_link, &summary, slot);
+  }
+
+  mini_gnb_c_require(saw_first_ul_data, "expected first queued payload to be transmitted");
+  mini_gnb_c_require(saw_second_ul_data, "expected second queued payload to be transmitted");
+  mini_gnb_c_require(mini_gnb_c_shared_slot_link_mark_gnb_done(&gnb_link) == 0, "expected gNB done flag");
+  mini_gnb_c_require(waitpid(child_pid, &status, 0) == child_pid, "expected UE queue-order child completion");
+  mini_gnb_c_require(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                     "expected clean UE queue-order child exit");
+  mini_gnb_c_shared_slot_link_close(&gnb_link);
+}
+
 void test_integration_shared_slot_ue_runtime_tun_generates_icmp_reply_payload(void) {
   static const uint8_t k_server_ipv4[4] = {10u, 45u, 0u, 1u};
   static const uint8_t k_ue_ipv4[4] = {10u, 45u, 0u, 7u};
@@ -1140,6 +1520,171 @@ void test_integration_shared_slot_ue_runtime_tun_generates_icmp_reply_payload(vo
   mini_gnb_c_require(waitpid(child_pid, &status, 0) == child_pid, "expected UE TUN child completion");
   mini_gnb_c_require(WIFEXITED(status) && WEXITSTATUS(status) == 0, "expected clean UE TUN child exit");
   mini_gnb_c_shared_slot_link_close(&gnb_link);
+}
+
+void test_integration_shared_slot_tun_uplink_reaches_n3(void) {
+  static const uint8_t k_upf_ipv4[4] = {127u, 0u, 0u, 7u};
+  char gnb_config_path[MINI_GNB_C_MAX_PATH];
+  char ue_config_path[MINI_GNB_C_MAX_PATH];
+  char output_dir[MINI_GNB_C_MAX_PATH];
+  char shared_slot_path[MINI_GNB_C_MAX_PATH];
+  char exchange_dir[MINI_GNB_C_MAX_PATH];
+  char summary_path[MINI_GNB_C_MAX_PATH];
+  char ready_command[512];
+  char ping_command[512];
+  char error_message[256];
+  mini_gnb_c_config_t ue_config;
+  mini_gnb_c_config_t gnb_config;
+  mini_gnb_c_integration_fake_ngap_transport_t fake_transport;
+  uint8_t received_gtpu[MINI_GNB_C_N3_MAX_GTPU_PACKET];
+  uint8_t extracted_inner_packet[MINI_GNB_C_MAX_PAYLOAD];
+  size_t extracted_inner_packet_length = 0u;
+  uint16_t upf_port = 0u;
+  uint8_t extracted_qfi = 0u;
+  uint32_t extracted_teid = 0u;
+  struct timeval recv_timeout;
+  ssize_t received_length = -1;
+  int upf_socket_fd = -1;
+  pid_t ue_child_pid = -1;
+  pid_t gnb_child_pid = -1;
+  int ue_status = 0;
+  int gnb_status = 0;
+  char* summary_json = NULL;
+
+  mini_gnb_c_require(snprintf(gnb_config_path,
+                              sizeof(gnb_config_path),
+                              "%s/config/example_open5gs_end_to_end_gnb.yml",
+                              MINI_GNB_C_SOURCE_DIR) < (int)sizeof(gnb_config_path),
+                     "expected end-to-end gNB config path");
+  mini_gnb_c_require(snprintf(ue_config_path,
+                              sizeof(ue_config_path),
+                              "%s/config/example_open5gs_end_to_end_ue.yml",
+                              MINI_GNB_C_SOURCE_DIR) < (int)sizeof(ue_config_path),
+                     "expected end-to-end UE config path");
+  mini_gnb_c_require(mini_gnb_c_load_config(ue_config_path, &ue_config, error_message, sizeof(error_message)) == 0,
+                     "expected UE config to load");
+  mini_gnb_c_require(mini_gnb_c_load_config(gnb_config_path, &gnb_config, error_message, sizeof(error_message)) == 0,
+                     "expected gNB config to load");
+
+  mini_gnb_c_make_output_dir("test_shared_slot_tun_n3_forward", output_dir, sizeof(output_dir));
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "shared_slot_link.bin", shared_slot_path, sizeof(shared_slot_path)) ==
+                         0,
+                     "expected shared-slot link path");
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "local_exchange", exchange_dir, sizeof(exchange_dir)) == 0,
+                     "expected local exchange dir path");
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "summary.json", summary_path, sizeof(summary_path)) == 0,
+                     "expected summary path");
+
+  (void)snprintf(ue_config.sim.shared_slot_path, sizeof(ue_config.sim.shared_slot_path), "%s", shared_slot_path);
+  (void)snprintf(gnb_config.sim.shared_slot_path, sizeof(gnb_config.sim.shared_slot_path), "%s", shared_slot_path);
+  (void)snprintf(ue_config.sim.local_exchange_dir, sizeof(ue_config.sim.local_exchange_dir), "%s", exchange_dir);
+  (void)snprintf(gnb_config.sim.local_exchange_dir, sizeof(gnb_config.sim.local_exchange_dir), "%s", exchange_dir);
+  ue_config.sim.shared_slot_timeout_ms = 250u;
+  gnb_config.sim.shared_slot_timeout_ms = 250u;
+  ue_config.sim.total_slots = 500;
+  gnb_config.sim.total_slots = 500;
+  ue_config.sim.ul_data_present = false;
+  gnb_config.sim.ul_data_present = false;
+  gnb_config.sim.slot_sleep_ms = 5u;
+  gnb_config.core.enabled = true;
+  gnb_config.core.timeout_ms = 2500u;
+  gnb_config.core.ran_ue_ngap_id_base = 1u;
+  gnb_config.core.default_pdu_session_id = 1u;
+  mini_gnb_c_require(snprintf(ue_config.sim.ue_tun_name, sizeof(ue_config.sim.ue_tun_name), "%s", "miniuh2") <
+                         (int)sizeof(ue_config.sim.ue_tun_name),
+                     "expected UE TUN name");
+  ue_config.sim.ue_tun_netns_name[0] = '\0';
+
+  upf_socket_fd = mini_gnb_c_bind_udp_ipv4(k_upf_ipv4, &upf_port);
+  recv_timeout.tv_sec = 4;
+  recv_timeout.tv_usec = 0;
+  mini_gnb_c_require(setsockopt(upf_socket_fd,
+                                SOL_SOCKET,
+                                SO_RCVTIMEO,
+                                &recv_timeout,
+                                sizeof(recv_timeout)) == 0,
+                     "expected fake UPF receive timeout");
+  gnb_config.core.upf_port = upf_port;
+
+  ue_child_pid = fork();
+  mini_gnb_c_require(ue_child_pid >= 0, "expected fork for shared-slot TUN UE runtime");
+  if (ue_child_pid == 0) {
+    const int child_result = mini_gnb_c_run_shared_ue_runtime(&ue_config);
+    _exit(child_result == 0 ? 0 : 1);
+  }
+
+  gnb_child_pid = fork();
+  mini_gnb_c_require(gnb_child_pid >= 0, "expected fork for shared-slot TUN gNB runtime");
+  if (gnb_child_pid == 0) {
+    mini_gnb_c_simulator_t simulator;
+    mini_gnb_c_run_summary_t summary;
+
+    mini_gnb_c_prepare_integration_fake_amf_dialog_with_live_ue_nas(&fake_transport);
+    mini_gnb_c_simulator_init(&simulator, &gnb_config, output_dir);
+    mini_gnb_c_ngap_transport_set_ops(&simulator.core_bridge.transport,
+                                      &k_mini_gnb_c_integration_fake_transport_ops,
+                                      &fake_transport);
+    _exit(mini_gnb_c_simulator_run(&simulator, &summary) == 0 ? 0 : 1);
+  }
+
+  mini_gnb_c_require(snprintf(ready_command,
+                              sizeof(ready_command),
+                              "nsenter --preserve-credentials -S 0 -G 0 -U -n -t %ld sh -c "
+                              "'ip -4 addr show dev %s | grep -q \"10.45.0.7/\" && "
+                              "ip route show default | grep -q \"dev %s\"' >/dev/null 2>&1",
+                              (long)ue_child_pid,
+                              ue_config.sim.ue_tun_name,
+                              ue_config.sim.ue_tun_name) < (int)sizeof(ready_command),
+                     "expected TUN ready command");
+  mini_gnb_c_require(mini_gnb_c_wait_for_shell_success(ready_command, 120u, 50u),
+                     "expected UE TUN netns to become ready");
+
+  mini_gnb_c_require(snprintf(ping_command,
+                              sizeof(ping_command),
+                              "nsenter --preserve-credentials -S 0 -G 0 -U -n -t %ld "
+                              "ping -c 1 -W 1 8.8.8.8 >/dev/null 2>&1 || true",
+                              (long)ue_child_pid) < (int)sizeof(ping_command),
+                     "expected TUN ping command");
+  mini_gnb_c_require(mini_gnb_c_run_shell_command(ping_command) == 0, "expected ping command launch");
+
+  received_length = recv(upf_socket_fd, received_gtpu, sizeof(received_gtpu), 0);
+  mini_gnb_c_require(received_length > 0, "expected one TUN-originated uplink GTP-U packet on fake UPF");
+  mini_gnb_c_require(mini_gnb_c_gtpu_extract_gpdu(received_gtpu,
+                                                  (size_t)received_length,
+                                                  &extracted_teid,
+                                                  &extracted_qfi,
+                                                  extracted_inner_packet,
+                                                  sizeof(extracted_inner_packet),
+                                                  &extracted_inner_packet_length) == 0,
+                     "expected extracted TUN-originated GTP-U payload");
+  mini_gnb_c_require(extracted_teid == 0x0000ef26u, "expected TUN-originated forwarded TEID");
+  mini_gnb_c_require(extracted_qfi == 1u, "expected TUN-originated forwarded QFI");
+  mini_gnb_c_require(extracted_inner_packet_length >= 28u, "expected IPv4 ICMP payload length");
+  mini_gnb_c_require(extracted_inner_packet[0] == 0x45u, "expected IPv4 header from TUN uplink");
+  mini_gnb_c_require(extracted_inner_packet[9] == 1u, "expected ICMP protocol from TUN uplink");
+  mini_gnb_c_require(memcmp(extracted_inner_packet + 12u, (const uint8_t[4]){10u, 45u, 0u, 7u}, 4u) == 0,
+                     "expected UE IPv4 source on TUN uplink");
+  mini_gnb_c_require(memcmp(extracted_inner_packet + 16u, (const uint8_t[4]){8u, 8u, 8u, 8u}, 4u) == 0,
+                     "expected external IPv4 destination on TUN uplink");
+  mini_gnb_c_require(extracted_inner_packet[20] == 8u && extracted_inner_packet[21] == 0u,
+                     "expected ICMP echo request from TUN uplink");
+
+  mini_gnb_c_require(waitpid(gnb_child_pid, &gnb_status, 0) == gnb_child_pid, "expected gNB child completion");
+  mini_gnb_c_require(waitpid(ue_child_pid, &ue_status, 0) == ue_child_pid, "expected UE child completion");
+  mini_gnb_c_require(WIFEXITED(gnb_status) && WEXITSTATUS(gnb_status) == 0, "expected clean gNB child exit");
+  mini_gnb_c_require(WIFEXITED(ue_status) && WEXITSTATUS(ue_status) == 0, "expected clean UE child exit");
+
+  summary_json = mini_gnb_c_read_text_file(summary_path);
+  mini_gnb_c_require(summary_json != NULL, "expected shared-slot TUN N3 summary");
+  mini_gnb_c_require(strstr(summary_json, "\"ue_ipv4\":\"10.45.0.7\"") != NULL, "expected summary UE IPv4");
+  mini_gnb_c_require(strstr(summary_json, "\"uplink_nas_count\":6") != NULL, "expected summary live NAS flow");
+  mini_gnb_c_require(strstr(summary_json, "\"connected_ul_pending_bytes\":0") != NULL,
+                     "expected drained connected-mode pending bytes after TUN uplink");
+  mini_gnb_c_require(strstr(summary_json, "\"gtpu_trace_pcap_path\":\"") != NULL,
+                     "expected exported GTP-U trace path");
+
+  free(summary_json);
+  close(upf_socket_fd);
 }
 
 void test_integration_core_bridge_prepares_initial_message(void) {
@@ -1322,6 +1867,8 @@ void test_integration_core_bridge_extracts_session_setup_state(void) {
   mini_gnb_c_simulator_t simulator;
   mini_gnb_c_run_summary_t summary;
   mini_gnb_c_integration_fake_ngap_transport_t fake_transport;
+  uint8_t response_gnb_ipv4[4];
+  uint32_t response_gnb_teid = 0u;
   char* summary_json = NULL;
 
   mini_gnb_c_default_config_path(config_path, sizeof(config_path));
@@ -1399,11 +1946,26 @@ void test_integration_core_bridge_extracts_session_setup_state(void) {
   mini_gnb_c_require(fake_transport.sent_messages[6][0] == 0x20u &&
                          fake_transport.sent_messages[6][1] == 0x1du,
                      "expected PDUSessionResourceSetupResponse during simulator run");
+  mini_gnb_c_require(mini_gnb_c_extract_test_pdu_session_setup_response_tunnel(fake_transport.sent_messages[6],
+                                                                                fake_transport.sent_lengths[6],
+                                                                                response_gnb_ipv4,
+                                                                                &response_gnb_teid) == 0,
+                     "expected decoded gNB tunnel in PDUSessionResourceSetupResponse");
+  mini_gnb_c_require(memcmp(response_gnb_ipv4, (const uint8_t[4]){127u, 0u, 0u, 1u}, 4u) == 0,
+                     "expected loopback gNB N3 IPv4 in session setup response");
+  mini_gnb_c_require(response_gnb_teid == MINI_GNB_C_N3_DOWNLINK_TEID,
+                     "expected gNB downlink TEID in session setup response");
   mini_gnb_c_require(simulator.n3_user_plane.activation_count == 1u, "expected N3 user-plane activation");
   mini_gnb_c_require(simulator.n3_user_plane.last_activation_abs_slot == 9,
                      "expected N3 user-plane activation after session setup");
   mini_gnb_c_require(simulator.n3_user_plane.upf_port == config.core.upf_port,
                      "expected configured UPF port on N3 user-plane");
+  mini_gnb_c_require(strcmp(simulator.n3_user_plane.local_ip, "127.0.0.1") == 0,
+                     "expected loopback local N3 bind IPv4");
+  mini_gnb_c_require(simulator.n3_user_plane.local_port == MINI_GNB_C_N3_GTPU_PORT,
+                     "expected standard GTP-U bind port");
+  mini_gnb_c_require(simulator.n3_user_plane.downlink_teid == MINI_GNB_C_N3_DOWNLINK_TEID,
+                     "expected tracked gNB downlink TEID");
 
   summary_json = mini_gnb_c_read_text_file(summary.summary_path);
   mini_gnb_c_require(summary_json != NULL, "expected session setup core bridge summary");
@@ -1657,6 +2219,10 @@ void test_integration_core_bridge_forwards_ul_ipv4_to_n3(void) {
   mini_gnb_c_require(memcmp(extracted_inner_packet, inner_packet, inner_packet_length) == 0,
                      "expected forwarded inner IPv4 bytes");
   mini_gnb_c_require(simulator.n3_user_plane.uplink_gpdu_count >= 1u, "expected tracked uplink G-PDU count");
+  mini_gnb_c_require(strcmp(simulator.n3_user_plane.local_ip, "127.0.0.1") == 0,
+                     "expected loopback local N3 bind IPv4");
+  mini_gnb_c_require(simulator.n3_user_plane.local_port == MINI_GNB_C_N3_GTPU_PORT,
+                     "expected standard GTP-U bind port");
   mini_gnb_c_require(summary.gtpu_trace_pcap_path[0] != '\0', "expected exported GTP-U trace pcap path");
   mini_gnb_c_require(mini_gnb_c_path_exists(summary.gtpu_trace_pcap_path), "expected GTP-U trace pcap file");
   mini_gnb_c_require(mini_gnb_c_file_size(summary.gtpu_trace_pcap_path) > 24u,
@@ -1785,7 +2351,7 @@ void test_integration_slot_text_transport(void) {
                                        "crc_ok=true\n"
                                        "sample_count=96\n"
                                        "tbsize=16\n"
-                                       "payload_text=BSR|bytes=384\n");
+                                       "payload_text=BSR|bytes=12\n");
   mini_gnb_c_write_transport_text_file(ul_data_path,
                                        "direction=UL\n"
                                        "abs_slot=38\n"
@@ -1795,7 +2361,7 @@ void test_integration_slot_text_transport(void) {
                                        "evm=2.4\n"
                                        "crc_ok=true\n"
                                        "sample_count=128\n"
-                                       "tbsize=96\n"
+                                       "tbsize=64\n"
                                        "payload_text=UL_DATA_TEST\n");
 
   mini_gnb_c_simulator_init(&simulator, &config, output_dir);
@@ -1829,6 +2395,10 @@ void test_integration_slot_text_transport(void) {
   mini_gnb_c_require(summary.ue_contexts[0].large_ul_grant_abs_slot == 38,
                      "expected large UL grant to land at abs_slot 38");
   mini_gnb_c_require(summary.ue_contexts[0].ul_data_abs_slot == 38, "expected UL data slot after large grant");
+  mini_gnb_c_require(summary.ue_contexts[0].connected_ul_pending_bytes == 0,
+                     "expected connected-mode UL pending bytes to drain after one payload grant");
+  mini_gnb_c_require(summary.ue_contexts[0].connected_ul_last_reported_bsr_bytes == 12,
+                     "expected connected-mode UL accounting to keep the last BSR report");
   mini_gnb_c_require(mini_gnb_c_bytes_to_hex(summary.ra_context.contention_id48,
                                              6U,
                                              contention_id_hex,
@@ -1944,7 +2514,7 @@ void test_integration_slot_text_transport(void) {
                      "expected second UL grant to target data");
   mini_gnb_c_require(strstr(data_grant_pdcch_text, "scheduled_purpose=DATA") != NULL,
                      "expected second UL grant purpose to be data");
-  mini_gnb_c_require(strstr(data_grant_pdcch_text, "tbsize=96") != NULL,
+  mini_gnb_c_require(strstr(data_grant_pdcch_text, "tbsize=64") != NULL,
                      "expected large UL grant tbsize export");
   mini_gnb_c_require(strstr(data_grant_pdcch_text, "scheduled_abs_slot=38") != NULL,
                      "expected large grant to point at the UL payload slot");
@@ -1960,6 +2530,188 @@ void test_integration_slot_text_transport(void) {
   free(ssb_tx_text);
   free(msg4_pdcch_text);
   free(msg4_tx_text);
+}
+
+void test_integration_slot_text_transport_continues_connected_ul_grants(void) {
+  char config_path[MINI_GNB_C_MAX_PATH];
+  char output_dir[MINI_GNB_C_MAX_PATH];
+  char input_dir[MINI_GNB_C_MAX_PATH];
+  char prach_path[MINI_GNB_C_MAX_PATH];
+  char msg3_path[MINI_GNB_C_MAX_PATH];
+  char pucch_sr_path[MINI_GNB_C_MAX_PATH];
+  char bsr_path[MINI_GNB_C_MAX_PATH];
+  char ul_data_first_path[MINI_GNB_C_MAX_PATH];
+  char ul_data_second_path[MINI_GNB_C_MAX_PATH];
+  char tx_dir[MINI_GNB_C_MAX_PATH];
+  char second_data_grant_pdcch_path[MINI_GNB_C_MAX_PATH];
+  char error_message[256];
+  mini_gnb_c_config_t config;
+  mini_gnb_c_simulator_t simulator;
+  mini_gnb_c_run_summary_t summary;
+  char* second_data_grant_pdcch_text = NULL;
+  char* summary_json = NULL;
+
+  mini_gnb_c_default_config_path(config_path, sizeof(config_path));
+  mini_gnb_c_require(mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) == 0,
+                     "expected config to load");
+  mini_gnb_c_disable_local_exchange(&config);
+
+  config.sim.total_slots = 45;
+  config.sim.msg3_present = false;
+  config.sim.prach_retry_delay_slots = -1;
+  config.broadcast.prach_period_slots = 1;
+  config.broadcast.prach_offset_slot = 0;
+  config.sim.post_msg4_traffic_enabled = true;
+  config.sim.post_msg4_dl_pdcch_delay_slots = 1;
+  config.sim.post_msg4_dl_time_indicator = 1;
+  config.sim.post_msg4_dl_data_to_ul_ack_slots = 1;
+  config.sim.post_msg4_ul_grant_delay_slots = 1;
+  config.sim.post_msg4_ul_time_indicator = 2;
+  config.sim.ul_data_present = false;
+
+  mini_gnb_c_make_output_dir("test_integration_slot_text_continuous_ul_c", output_dir, sizeof(output_dir));
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "input", input_dir, sizeof(input_dir)) == 0,
+                     "expected input directory path");
+  mini_gnb_c_reset_test_dir(input_dir);
+  mini_gnb_c_require(snprintf(config.sim.ul_input_dir,
+                              sizeof(config.sim.ul_input_dir),
+                              "%s",
+                              input_dir) < (int)sizeof(config.sim.ul_input_dir),
+                     "expected input directory to fit in config");
+  mini_gnb_c_require(snprintf(prach_path,
+                              sizeof(prach_path),
+                              "%s/slot_20_UL_OBJ_PRACH.txt",
+                              input_dir) < (int)sizeof(prach_path),
+                     "expected PRACH text path");
+  mini_gnb_c_require(snprintf(msg3_path,
+                              sizeof(msg3_path),
+                              "%s/slot_24_UL_OBJ_MSG3.txt",
+                              input_dir) < (int)sizeof(msg3_path),
+                     "expected Msg3 text path");
+  mini_gnb_c_require(snprintf(pucch_sr_path,
+                              sizeof(pucch_sr_path),
+                              "%s/slot_32_UL_OBJ_PUCCH_SR.txt",
+                              input_dir) < (int)sizeof(pucch_sr_path),
+                     "expected PUCCH SR text path");
+  mini_gnb_c_require(snprintf(bsr_path,
+                              sizeof(bsr_path),
+                              "%s/slot_35_UL_OBJ_DATA.txt",
+                              input_dir) < (int)sizeof(bsr_path),
+                     "expected UL BSR text path");
+  mini_gnb_c_require(snprintf(ul_data_first_path,
+                              sizeof(ul_data_first_path),
+                              "%s/slot_38_UL_OBJ_DATA.txt",
+                              input_dir) < (int)sizeof(ul_data_first_path),
+                     "expected first UL data text path");
+  mini_gnb_c_require(snprintf(ul_data_second_path,
+                              sizeof(ul_data_second_path),
+                              "%s/slot_41_UL_OBJ_DATA.txt",
+                              input_dir) < (int)sizeof(ul_data_second_path),
+                     "expected second UL data text path");
+
+  mini_gnb_c_write_transport_text_file(prach_path,
+                                       "direction=UL\n"
+                                       "abs_slot=20\n"
+                                       "type=UL_OBJ_PRACH\n"
+                                       "preamble_id=31\n"
+                                       "ta_est=7\n"
+                                       "peak_metric=14.5\n"
+                                       "sample_count=64\n");
+  mini_gnb_c_write_transport_text_file(msg3_path,
+                                       "direction=UL\n"
+                                       "abs_slot=24\n"
+                                       "type=UL_OBJ_MSG3\n"
+                                       "rnti=17921\n"
+                                       "snr_db=17.5\n"
+                                       "evm=1.7\n"
+                                       "crc_ok=true\n"
+                                       "sample_count=96\n"
+                                       "payload_hex=020201460110DEADBEEFCAFE05020102030405060708\n");
+  mini_gnb_c_write_transport_text_file(pucch_sr_path,
+                                       "direction=UL\n"
+                                       "abs_slot=32\n"
+                                       "type=UL_OBJ_PUCCH_SR\n"
+                                       "rnti=17921\n"
+                                       "snr_db=13.2\n"
+                                       "crc_ok=true\n"
+                                       "sample_count=72\n");
+  mini_gnb_c_write_transport_text_file(bsr_path,
+                                       "direction=UL\n"
+                                       "abs_slot=35\n"
+                                       "type=UL_OBJ_DATA\n"
+                                       "rnti=17921\n"
+                                       "snr_db=14.4\n"
+                                       "evm=1.3\n"
+                                       "crc_ok=true\n"
+                                       "sample_count=96\n"
+                                       "tbsize=16\n"
+                                       "payload_text=BSR|bytes=24\n");
+  mini_gnb_c_write_transport_text_file(ul_data_first_path,
+                                       "direction=UL\n"
+                                       "abs_slot=38\n"
+                                       "type=UL_OBJ_DATA\n"
+                                       "rnti=17921\n"
+                                       "snr_db=15.1\n"
+                                       "evm=2.4\n"
+                                       "crc_ok=true\n"
+                                       "sample_count=128\n"
+                                       "tbsize=64\n"
+                                       "payload_text=UL_PAYLOAD_A\n");
+  mini_gnb_c_write_transport_text_file(ul_data_second_path,
+                                       "direction=UL\n"
+                                       "abs_slot=41\n"
+                                       "type=UL_OBJ_DATA\n"
+                                       "rnti=17921\n"
+                                       "snr_db=15.0\n"
+                                       "evm=2.1\n"
+                                       "crc_ok=true\n"
+                                       "sample_count=128\n"
+                                       "tbsize=64\n"
+                                       "payload_text=UL_PAYLOAD_B\n");
+
+  mini_gnb_c_simulator_init(&simulator, &config, output_dir);
+  mini_gnb_c_require(mini_gnb_c_simulator_run(&simulator, &summary) == 0, "expected simulator run");
+
+  mini_gnb_c_require(summary.counters.pucch_sr_detect_ok == 1U, "expected one text-driven PUCCH SR");
+  mini_gnb_c_require(summary.counters.ul_bsr_rx_ok == 1U, "expected one text-driven BSR");
+  mini_gnb_c_require(summary.counters.ul_data_rx_ok == 2U, "expected two connected-mode UL payload bursts");
+  mini_gnb_c_require(summary.ue_count == 1U, "expected one promoted UE context");
+  mini_gnb_c_require(summary.ue_contexts[0].ul_bsr_buffer_size_bytes == 24,
+                     "expected stored BSR bytes to match both queued payloads");
+  mini_gnb_c_require(summary.ue_contexts[0].connected_ul_last_reported_bsr_bytes == 24,
+                     "expected connected-mode accounting to remember the last BSR");
+  mini_gnb_c_require(summary.ue_contexts[0].connected_ul_pending_bytes == 0,
+                     "expected connected-mode accounting to drain after two payload grants");
+  mini_gnb_c_require(summary.ue_contexts[0].large_ul_grant_abs_slot == 41,
+                     "expected the last connected-mode UL grant to target abs_slot 41");
+  mini_gnb_c_require(summary.ue_contexts[0].ul_data_abs_slot == 41,
+                     "expected the last UL payload to land at abs_slot 41");
+
+  mini_gnb_c_require(mini_gnb_c_join_path(output_dir, "tx", tx_dir, sizeof(tx_dir)) == 0,
+                     "expected tx directory path");
+  mini_gnb_c_require(snprintf(second_data_grant_pdcch_path,
+                              sizeof(second_data_grant_pdcch_path),
+                              "%s/slot_39_DL_OBJ_PDCCH_DCI0_1_rnti_17921_DATA.txt",
+                              tx_dir) < (int)sizeof(second_data_grant_pdcch_path),
+                     "expected second connected UL grant PDCCH path");
+  second_data_grant_pdcch_text = mini_gnb_c_read_text_file(second_data_grant_pdcch_path);
+  mini_gnb_c_require(second_data_grant_pdcch_text != NULL, "expected second connected UL grant export");
+  mini_gnb_c_require(strstr(second_data_grant_pdcch_text, "scheduled_abs_slot=41") != NULL,
+                     "expected second connected UL grant to target abs_slot 41");
+  mini_gnb_c_require(strstr(second_data_grant_pdcch_text, "tbsize=64") != NULL,
+                     "expected second connected UL grant tbsize export");
+  mini_gnb_c_require(strstr(second_data_grant_pdcch_text, "ndi=false") != NULL,
+                     "expected second connected UL grant NDI to toggle after the first payload");
+
+  summary_json = mini_gnb_c_read_text_file(summary.summary_path);
+  mini_gnb_c_require(summary_json != NULL, "expected summary JSON export");
+  mini_gnb_c_require(strstr(summary_json, "\"connected_ul_pending_bytes\":0") != NULL,
+                     "expected summary JSON to show drained connected-mode pending bytes");
+  mini_gnb_c_require(strstr(summary_json, "\"connected_ul_last_reported_bsr_bytes\":24") != NULL,
+                     "expected summary JSON to show the last BSR report");
+
+  free(summary_json);
+  free(second_data_grant_pdcch_text);
 }
 
 void test_integration_msg3_missing_retries_prach(void) {

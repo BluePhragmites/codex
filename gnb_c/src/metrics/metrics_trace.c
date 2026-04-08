@@ -271,6 +271,7 @@ static void mini_gnb_c_write_ue_contexts_json(FILE* file,
             "\"traffic_plan_scheduled\":%s,\"dl_data_sent\":%s,\"dl_data_abs_slot\":%d,"
             "\"pucch_sr_detected\":%s,\"pucch_sr_abs_slot\":%d,"
             "\"ul_bsr_received\":%s,\"ul_bsr_abs_slot\":%d,\"ul_bsr_buffer_size_bytes\":%d,"
+            "\"connected_ul_pending_bytes\":%d,\"connected_ul_last_reported_bsr_bytes\":%d,"
             "\"small_ul_grant_abs_slot\":%d,\"large_ul_grant_abs_slot\":%d,"
             "\"ul_data_received\":%s,\"ul_data_abs_slot\":%d}",
             ue_contexts[i].create_abs_slot,
@@ -284,6 +285,8 @@ static void mini_gnb_c_write_ue_contexts_json(FILE* file,
             ue_contexts[i].ul_bsr_received ? "true" : "false",
             ue_contexts[i].ul_bsr_abs_slot,
             ue_contexts[i].ul_bsr_buffer_size_bytes,
+            ue_contexts[i].connected_ul_pending_bytes,
+            ue_contexts[i].connected_ul_last_reported_bsr_bytes,
             ue_contexts[i].small_ul_grant_abs_slot,
             ue_contexts[i].large_ul_grant_abs_slot,
             ue_contexts[i].ul_data_received ? "true" : "false",

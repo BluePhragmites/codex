@@ -44,6 +44,13 @@ int mini_gnb_c_ngap_build_pdu_session_resource_setup_response(uint16_t amf_ue_ng
                                                               uint8_t* message,
                                                               size_t message_capacity,
                                                               size_t* message_length);
+int mini_gnb_c_ngap_build_pdu_session_resource_setup_response_with_tunnel(uint16_t amf_ue_ngap_id,
+                                                                          uint16_t ran_ue_ngap_id,
+                                                                          const char* gnb_n3_ip,
+                                                                          uint32_t gnb_n3_teid,
+                                                                          uint8_t* message,
+                                                                          size_t message_capacity,
+                                                                          size_t* message_length);
 
 int mini_gnb_c_ngap_extract_amf_ue_ngap_id(const uint8_t* message,
                                            size_t message_length,

@@ -9,13 +9,18 @@
 #include "mini_gnb_c/trace/pcap_trace.h"
 
 #define MINI_GNB_C_N3_MAX_GTPU_PACKET 4096u
+#define MINI_GNB_C_N3_GTPU_PORT 2152u
+#define MINI_GNB_C_N3_DOWNLINK_TEID 0x00000001u
 
 typedef struct {
   int socket_fd;
   bool ready;
   mini_gnb_c_core_session_t session;
   char upf_ip[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
+  char local_ip[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
   uint16_t upf_port;
+  uint16_t local_port;
+  uint32_t downlink_teid;
   uint64_t activation_count;
   uint64_t uplink_gpdu_count;
   uint64_t downlink_gpdu_count;
@@ -29,6 +34,10 @@ void mini_gnb_c_n3_user_plane_init(mini_gnb_c_n3_user_plane_t* user_plane);
 int mini_gnb_c_n3_user_plane_set_gtpu_trace_path(mini_gnb_c_n3_user_plane_t* user_plane, const char* path);
 const char* mini_gnb_c_n3_user_plane_get_gtpu_trace_path(const mini_gnb_c_n3_user_plane_t* user_plane);
 void mini_gnb_c_n3_user_plane_close(mini_gnb_c_n3_user_plane_t* user_plane);
+int mini_gnb_c_n3_user_plane_resolve_local_ipv4(const char* upf_ip,
+                                                uint16_t upf_port,
+                                                char* local_ip,
+                                                size_t local_ip_size);
 int mini_gnb_c_n3_user_plane_activate(mini_gnb_c_n3_user_plane_t* user_plane,
                                       const mini_gnb_c_core_session_t* session,
                                       uint16_t upf_port,

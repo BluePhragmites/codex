@@ -49,8 +49,15 @@ static int mini_gnb_c_n3_user_plane_open_socket(mini_gnb_c_n3_user_plane_t* user
 
   memset(&bind_addr, 0, sizeof(bind_addr));
   bind_addr.sin_family = AF_INET;
-  bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  bind_addr.sin_port = htons(0u);
+  bind_addr.sin_port = htons(user_plane->local_port);
+  if (user_plane->local_ip[0] != '\0') {
+    if (inet_pton(AF_INET, user_plane->local_ip, &bind_addr.sin_addr) != 1) {
+      close(socket_fd);
+      return -1;
+    }
+  } else {
+    bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  }
   if (bind(socket_fd, (const struct sockaddr*)&bind_addr, sizeof(bind_addr)) != 0) {
     close(socket_fd);
     return -1;
@@ -83,6 +90,45 @@ static int mini_gnb_c_n3_user_plane_connect(mini_gnb_c_n3_user_plane_t* user_pla
     return -1;
   }
   return 0;
+}
+
+int mini_gnb_c_n3_user_plane_resolve_local_ipv4(const char* upf_ip,
+                                                uint16_t upf_port,
+                                                char* local_ip,
+                                                size_t local_ip_size) {
+  struct sockaddr_in upf_addr;
+  struct sockaddr_in local_addr;
+  socklen_t local_addr_length = sizeof(local_addr);
+  int socket_fd = -1;
+  int result = -1;
+
+  if (upf_ip == NULL || upf_ip[0] == '\0' || upf_port == 0u || local_ip == NULL || local_ip_size == 0u) {
+    return -1;
+  }
+
+  socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
+  if (socket_fd < 0) {
+    return -1;
+  }
+
+  memset(&upf_addr, 0, sizeof(upf_addr));
+  upf_addr.sin_family = AF_INET;
+  upf_addr.sin_port = htons(upf_port);
+  if (inet_pton(AF_INET, upf_ip, &upf_addr.sin_addr) != 1) {
+    close(socket_fd);
+    return -1;
+  }
+  if (connect(socket_fd, (const struct sockaddr*)&upf_addr, sizeof(upf_addr)) != 0) {
+    close(socket_fd);
+    return -1;
+  }
+  if (getsockname(socket_fd, (struct sockaddr*)&local_addr, &local_addr_length) == 0 &&
+      inet_ntop(AF_INET, &local_addr.sin_addr, local_ip, (socklen_t)local_ip_size) != NULL) {
+    result = 0;
+  }
+
+  close(socket_fd);
+  return result;
 }
 
 void mini_gnb_c_n3_user_plane_init(mini_gnb_c_n3_user_plane_t* user_plane) {
@@ -134,13 +180,21 @@ int mini_gnb_c_n3_user_plane_activate(mini_gnb_c_n3_user_plane_t* user_plane,
     return -1;
   }
 
-  if (mini_gnb_c_n3_user_plane_open_socket(user_plane) != 0) {
+  user_plane->session = *session;
+  user_plane->upf_port = upf_port;
+  user_plane->local_port = MINI_GNB_C_N3_GTPU_PORT;
+  user_plane->downlink_teid = MINI_GNB_C_N3_DOWNLINK_TEID;
+  (void)snprintf(user_plane->upf_ip, sizeof(user_plane->upf_ip), "%s", session->upf_ip);
+  if (mini_gnb_c_n3_user_plane_resolve_local_ipv4(user_plane->upf_ip,
+                                                  user_plane->upf_port,
+                                                  user_plane->local_ip,
+                                                  sizeof(user_plane->local_ip)) != 0) {
     return -1;
   }
 
-  user_plane->session = *session;
-  user_plane->upf_port = upf_port;
-  (void)snprintf(user_plane->upf_ip, sizeof(user_plane->upf_ip), "%s", session->upf_ip);
+  if (mini_gnb_c_n3_user_plane_open_socket(user_plane) != 0) {
+    return -1;
+  }
   if (mini_gnb_c_n3_user_plane_connect(user_plane) != 0) {
     return -1;
   }

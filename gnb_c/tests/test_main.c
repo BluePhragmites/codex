@@ -34,6 +34,10 @@ void test_shared_slot_link_round_trip(void);
 void test_shared_slot_link_handles_slot_zero_and_shutdown_boundaries(void);
 void test_mini_ue_fsm_generates_default_event_sequence(void);
 void test_mini_ue_fsm_skips_connected_traffic_when_disabled(void);
+void test_mini_ue_runtime_uplink_queue_tracks_bytes_and_bsr_dirty(void);
+void test_mini_ue_runtime_update_uplink_state_rearms_sr_after_grant_consumption(void);
+void test_mini_ue_runtime_builds_bsr_from_current_queue_bytes(void);
+void test_mini_ue_runtime_skips_new_payload_grant_without_queue(void);
 void test_ra_manager_flow(void);
 void test_ra_timeout(void);
 void test_mac_rrc_and_msg4_contention_identity(void);
@@ -43,12 +47,16 @@ void test_integration_local_exchange_ue_plan(void);
 void test_integration_shared_slot_ue_runtime(void);
 void test_integration_shared_slot_ue_runtime_auto_nas_session_setup(void);
 void test_integration_shared_slot_ue_runtime_generates_icmp_reply_payload(void);
+void test_integration_shared_slot_ue_runtime_repeats_sr_for_pending_uplink_queue(void);
+void test_integration_shared_slot_ue_runtime_consumes_uplink_queue_in_order(void);
+void test_integration_shared_slot_tun_uplink_reaches_n3(void);
 void test_integration_core_bridge_prepares_initial_message(void);
 void test_integration_core_bridge_relays_followup_ul_nas(void);
 void test_integration_core_bridge_extracts_session_setup_state(void);
 void test_integration_core_bridge_relays_post_session_nas(void);
 void test_integration_core_bridge_forwards_ul_ipv4_to_n3(void);
 void test_integration_slot_text_transport(void);
+void test_integration_slot_text_transport_continues_connected_ul_grants(void);
 void test_integration_msg3_missing_retries_prach(void);
 void test_integration_msg3_rnti_mismatch_rejected_after_retry(void);
 void test_integration_scripted_schedule_files(void);
@@ -100,6 +108,14 @@ int main(void) {
       {"test_mini_ue_fsm_generates_default_event_sequence", test_mini_ue_fsm_generates_default_event_sequence},
       {"test_mini_ue_fsm_skips_connected_traffic_when_disabled",
        test_mini_ue_fsm_skips_connected_traffic_when_disabled},
+      {"test_mini_ue_runtime_uplink_queue_tracks_bytes_and_bsr_dirty",
+       test_mini_ue_runtime_uplink_queue_tracks_bytes_and_bsr_dirty},
+      {"test_mini_ue_runtime_update_uplink_state_rearms_sr_after_grant_consumption",
+       test_mini_ue_runtime_update_uplink_state_rearms_sr_after_grant_consumption},
+      {"test_mini_ue_runtime_builds_bsr_from_current_queue_bytes",
+       test_mini_ue_runtime_builds_bsr_from_current_queue_bytes},
+      {"test_mini_ue_runtime_skips_new_payload_grant_without_queue",
+       test_mini_ue_runtime_skips_new_payload_grant_without_queue},
       {"test_ra_manager_flow", test_ra_manager_flow},
       {"test_ra_timeout", test_ra_timeout},
       {"test_mac_rrc_and_msg4_contention_identity", test_mac_rrc_and_msg4_contention_identity},
@@ -111,6 +127,11 @@ int main(void) {
        test_integration_shared_slot_ue_runtime_auto_nas_session_setup},
       {"test_integration_shared_slot_ue_runtime_generates_icmp_reply_payload",
        test_integration_shared_slot_ue_runtime_generates_icmp_reply_payload},
+      {"test_integration_shared_slot_ue_runtime_repeats_sr_for_pending_uplink_queue",
+       test_integration_shared_slot_ue_runtime_repeats_sr_for_pending_uplink_queue},
+      {"test_integration_shared_slot_ue_runtime_consumes_uplink_queue_in_order",
+       test_integration_shared_slot_ue_runtime_consumes_uplink_queue_in_order},
+      {"test_integration_shared_slot_tun_uplink_reaches_n3", test_integration_shared_slot_tun_uplink_reaches_n3},
       {"test_integration_core_bridge_prepares_initial_message", test_integration_core_bridge_prepares_initial_message},
       {"test_integration_core_bridge_relays_followup_ul_nas", test_integration_core_bridge_relays_followup_ul_nas},
       {"test_integration_core_bridge_extracts_session_setup_state",
@@ -120,6 +141,8 @@ int main(void) {
       {"test_integration_core_bridge_forwards_ul_ipv4_to_n3",
        test_integration_core_bridge_forwards_ul_ipv4_to_n3},
       {"test_integration_slot_text_transport", test_integration_slot_text_transport},
+      {"test_integration_slot_text_transport_continues_connected_ul_grants",
+       test_integration_slot_text_transport_continues_connected_ul_grants},
       {"test_integration_msg3_missing_retries_prach", test_integration_msg3_missing_retries_prach},
       {"test_integration_msg3_rnti_mismatch_rejected_after_retry",
        test_integration_msg3_rnti_mismatch_rejected_after_retry},

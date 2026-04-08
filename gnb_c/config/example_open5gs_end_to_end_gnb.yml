@@ -43,7 +43,7 @@ broadcast:
   prach_offset_slot: 2
 
 sim:
-  total_slots: 1200
+  total_slots: 2000
   slots_per_frame: 10
   slot_sleep_ms: 10
   msg3_delay_slots: 4

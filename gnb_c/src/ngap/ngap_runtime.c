@@ -41,7 +41,7 @@ static const uint8_t k_mini_gnb_c_ngap_ng_setup_request[] = {
 };
 static const uint8_t k_mini_gnb_c_ngap_rrc_establishment_cause_mo_signalling[] = {0x18u};
 static const uint8_t k_mini_gnb_c_ngap_ue_context_request_requested[] = {0x00u};
-static const uint8_t k_mini_gnb_c_ngap_pdu_session_resource_setup_response_list[] = {
+static const uint8_t k_mini_gnb_c_ngap_pdu_session_resource_setup_response_list_template[] = {
     0x00, 0x00, 0x01, 0x0d, 0x00, 0x03, 0xe0, 0x7f, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
     0x01, 0x00, 0x01,
 };
@@ -61,6 +61,13 @@ static uint32_t mini_gnb_c_ngap_read_u32_be(const uint8_t* bytes) {
 static void mini_gnb_c_ngap_write_u16_be(uint16_t value, uint8_t out[2]) {
   out[0] = (uint8_t)(value >> 8u);
   out[1] = (uint8_t)(value & 0xffu);
+}
+
+static void mini_gnb_c_ngap_write_u32_be(uint32_t value, uint8_t out[4]) {
+  out[0] = (uint8_t)(value >> 24u);
+  out[1] = (uint8_t)((value >> 16u) & 0xffu);
+  out[2] = (uint8_t)((value >> 8u) & 0xffu);
+  out[3] = (uint8_t)(value & 0xffu);
 }
 
 static int mini_gnb_c_ngap_decode_compact_length(const uint8_t* bytes,
@@ -132,6 +139,30 @@ static int mini_gnb_c_ngap_build_octet_string_value(const uint8_t* octets,
 
   memcpy(encoded_value + length_field_size, octets, octets_length);
   *encoded_value_length_out = length_field_size + octets_length;
+  return 0;
+}
+
+static int mini_gnb_c_ngap_build_pdu_session_resource_setup_response_list(const char* gnb_n3_ip,
+                                                                          uint32_t gnb_n3_teid,
+                                                                          uint8_t* encoded_value,
+                                                                          size_t encoded_value_capacity,
+                                                                          size_t* encoded_value_length_out) {
+  struct in_addr gnb_addr;
+
+  if (gnb_n3_ip == NULL || encoded_value == NULL || encoded_value_length_out == NULL ||
+      encoded_value_capacity < sizeof(k_mini_gnb_c_ngap_pdu_session_resource_setup_response_list_template)) {
+    return -1;
+  }
+  if (inet_pton(AF_INET, gnb_n3_ip, &gnb_addr) != 1) {
+    return -1;
+  }
+
+  memcpy(encoded_value,
+         k_mini_gnb_c_ngap_pdu_session_resource_setup_response_list_template,
+         sizeof(k_mini_gnb_c_ngap_pdu_session_resource_setup_response_list_template));
+  memcpy(encoded_value + 7u, &gnb_addr.s_addr, 4u);
+  mini_gnb_c_ngap_write_u32_be(gnb_n3_teid, encoded_value + 11u);
+  *encoded_value_length_out = sizeof(k_mini_gnb_c_ngap_pdu_session_resource_setup_response_list_template);
   return 0;
 }
 
@@ -693,26 +724,53 @@ int mini_gnb_c_ngap_build_pdu_session_resource_setup_response(uint16_t amf_ue_ng
                                                               uint8_t* message,
                                                               size_t message_capacity,
                                                               size_t* message_length) {
+  return mini_gnb_c_ngap_build_pdu_session_resource_setup_response_with_tunnel(amf_ue_ngap_id,
+                                                                               ran_ue_ngap_id,
+                                                                               "127.0.0.1",
+                                                                               0x00000001u,
+                                                                               message,
+                                                                               message_capacity,
+                                                                               message_length);
+}
+
+int mini_gnb_c_ngap_build_pdu_session_resource_setup_response_with_tunnel(uint16_t amf_ue_ngap_id,
+                                                                          uint16_t ran_ue_ngap_id,
+                                                                          const char* gnb_n3_ip,
+                                                                          uint32_t gnb_n3_teid,
+                                                                          uint8_t* message,
+                                                                          size_t message_capacity,
+                                                                          size_t* message_length) {
   uint8_t amf_ue_ngap_id_bytes[2];
   uint8_t ran_ue_ngap_id_bytes[2];
+  uint8_t response_list[64];
+  size_t response_list_length = 0u;
   const mini_gnb_c_ngap_build_ie_t ies[] = {
       {0x000au, 0x40u, amf_ue_ngap_id_bytes, sizeof(amf_ue_ngap_id_bytes)},
       {0x0055u, 0x40u, ran_ue_ngap_id_bytes, sizeof(ran_ue_ngap_id_bytes)},
-      {0x004bu, 0x40u, k_mini_gnb_c_ngap_pdu_session_resource_setup_response_list,
-       sizeof(k_mini_gnb_c_ngap_pdu_session_resource_setup_response_list)},
+      {0x004bu, 0x40u, response_list, 0u},
   };
+  mini_gnb_c_ngap_build_ie_t working_ies[sizeof(ies) / sizeof(ies[0])];
 
-  if (message == NULL || message_length == NULL) {
+  if (message == NULL || message_length == NULL || gnb_n3_ip == NULL) {
+    return -1;
+  }
+  if (mini_gnb_c_ngap_build_pdu_session_resource_setup_response_list(gnb_n3_ip,
+                                                                     gnb_n3_teid,
+                                                                     response_list,
+                                                                     sizeof(response_list),
+                                                                     &response_list_length) != 0) {
     return -1;
   }
 
   mini_gnb_c_ngap_write_u16_be(amf_ue_ngap_id, amf_ue_ngap_id_bytes);
   mini_gnb_c_ngap_write_u16_be(ran_ue_ngap_id, ran_ue_ngap_id_bytes);
+  memcpy(working_ies, ies, sizeof(working_ies));
+  working_ies[2].value_length = response_list_length;
   return mini_gnb_c_ngap_build_message(0x20u,
                                        0x1du,
                                        0x00u,
-                                       ies,
-                                       sizeof(ies) / sizeof(ies[0]),
+                                       working_ies,
+                                       sizeof(working_ies) / sizeof(working_ies[0]),
                                        message,
                                        message_capacity,
                                        message_length);

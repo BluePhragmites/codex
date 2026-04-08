@@ -150,16 +150,20 @@
 默认配置下：
 
 - `sim.ue_tun_isolate_netns=true`
-- UE 会在隔离的 user+network namespace 中创建 `miniue0`
+- UE 会在隔离的 namespace 中创建 `miniue0`
 - 这样不会污染宿主机默认网络命名空间
-- 如果再配置 `sim.ue_tun_netns_name`，UE 会把这个隔离 namespace 发布到 `/var/run/netns/<name>`
+- 如果再配置 `sim.ue_tun_netns_name` 且宿主机允许写 `/var/run/netns`，UE 会把这个隔离 namespace 发布到 `/var/run/netns/<name>`
+- 如果 `/var/run/netns` 不可写，UE 现在会继续使用匿名隔离 namespace，并在日志里打印可直接复用的 rootless `nsenter --preserve-credentials -S 0 -G 0 -U -n ...` 命令
 - 如果再配置 `sim.ue_tun_add_default_route=true`，UE 会在拿到核心网分配 IP 后安装 `default dev <ue_tun_name>`
-- 如果再配置 `sim.ue_tun_dns_server_ipv4`，UE 会写 `/etc/netns/<name>/resolv.conf`
+- 如果再配置 `sim.ue_tun_dns_server_ipv4`，UE 会写 `/etc/netns/<name>/resolv.conf`，或者在匿名 namespace 内部绑定一份私有 `/etc/resolv.conf`
 
 这意味着当前不仅可以做“服务器侧 ping UE IP”，也可以做“UE 侧主动发公网流量”的手工验证：
 
 - `ip netns exec <ue_netns_name> ping -c 4 8.8.8.8`
 - `ip netns exec <ue_netns_name> ping -c 4 www.baidu.com`
+- 或者在 rootless 匿名 namespace 下使用：
+  - `nsenter --preserve-credentials -S 0 -G 0 -U -n -t <ue_pid> ping -c 4 8.8.8.8`
+  - `nsenter --preserve-credentials -S 0 -G 0 -U -n -m -t <ue_pid> ping -c 4 www.baidu.com`
 
 ### 1.9 当前可执行的端到端 ping 路径
 
@@ -178,7 +182,20 @@
 - `mini_ue_c` 只有最小 happy-path UE NAS 逻辑，不是通用完整 NAS 栈
 - TUN 依赖宿主机 `/dev/net/tun`、`ip` 命令和真实 Open5GS 环境
 
-### 1.10 已有的 Open5GS 外部验证工具
+### 1.10 持续连接态上行调度
+
+当前已经完成 Stage F + Stage G 的持续连接态上行调度闭环：
+
+- UE runtime 会把 post-Msg4 默认 payload、ICMP reply 和可选 TUN 读包都放进同一个小 FIFO
+- UE 在队列非空且没有未来 UL grant 时，会在后续合法 SR occasion 上继续发 `PUCCH_SR`
+- gNB 在 `out/summary.json` 的 UE 上下文里维护：
+  - `connected_ul_pending_bytes`
+  - `connected_ul_last_reported_bsr_bytes`
+- gNB 收到有效 `BSR` 后，不再只发一把 payload grant 就停住
+- 只要 `connected_ul_pending_bytes` 还大于 0，gNB 就会继续按 `DCI0_1 + UL DATA` 的模式串行发后续 grant
+- 下行 N3 包到达后，gNB 也不再依赖“偷偷补一把 UL grant”的 shortcut；回复路径回到正常的 `SR -> BSR -> repeated UL grant`
+
+### 1.11 已有的 Open5GS 外部验证工具
 
 仓库里另外还有一个独立工具：
 
@@ -198,7 +215,7 @@
 
 ## 2. 当前限制
 
-当前 staged A-E 功能已经全部落地，但仍有这些实际限制：
+当前 staged A-G 功能已经全部落地，但仍有这些实际限制：
 
 - `mini_ue_c` 只实现了面向 Open5GS happy-path 的最小 UE NAS 响应链路，不是通用完整 NAS 状态机
 - 当前的真实 `ping` 路径仍依赖手工 Open5GS 环境验证，而不是自动化测试
@@ -232,10 +249,14 @@ cd /home/hzy/codex/test2/codex/gnb_c
 - `test_shared_slot_link_handles_slot_zero_and_shutdown_boundaries`
 - `test_integration_shared_slot_ue_runtime`
 - `test_integration_shared_slot_ue_runtime_auto_nas_session_setup`
+- `test_integration_shared_slot_ue_runtime_repeats_sr_for_pending_uplink_queue`
+- `test_integration_shared_slot_ue_runtime_consumes_uplink_queue_in_order`
 - `test_integration_core_bridge_prepares_initial_message`
 - `test_integration_core_bridge_relays_followup_ul_nas`
 - `test_integration_core_bridge_extracts_session_setup_state`
 - `test_integration_core_bridge_relays_post_session_nas`
+- `test_integration_slot_text_transport`
+- `test_integration_slot_text_transport_continues_connected_ul_grants`
 - `test_gnb_core_bridge_prepares_initial_ue_message`
 - `test_gnb_core_bridge_relays_followup_uplink_nas`
 - `test_gnb_core_bridge_parses_session_setup_state`
@@ -247,6 +268,20 @@ cd /home/hzy/codex/test2/codex/gnb_c
 - `test_ue_ip_stack_min_ignores_non_ipv4_payload`
 - `test_integration_shared_slot_ue_runtime_generates_icmp_reply_payload`
 - `test_integration_core_bridge_forwards_ul_ipv4_to_n3`
+- `test_integration_shared_slot_tun_uplink_reaches_n3`
+- `test_mini_ue_runtime_uplink_queue_tracks_bytes_and_bsr_dirty`
+- `test_mini_ue_runtime_update_uplink_state_rearms_sr_after_grant_consumption`
+- `test_mini_ue_runtime_builds_bsr_from_current_queue_bytes`
+- `test_mini_ue_runtime_skips_new_payload_grant_without_queue`
+
+其中和持续 UE-originated 上行最直接相关的 Stage F/G 自动覆盖主要是：
+
+- `test_integration_shared_slot_ue_runtime_repeats_sr_for_pending_uplink_queue`
+  - 校验 UE 在没有拿到 grant 时，会在后续 SR occasion 重发 `PUCCH_SR`
+- `test_integration_shared_slot_ue_runtime_consumes_uplink_queue_in_order`
+  - 校验 UE 队列里的多个 payload 会按 FIFO 顺序消耗
+- `test_integration_slot_text_transport_continues_connected_ul_grants`
+  - 校验 gNB 会根据一次 `BSR` 持续发后续 payload grants，直到 `connected_ul_pending_bytes=0`
 
 其中新增的 Stage E 相关自动覆盖主要是：
 
@@ -259,10 +294,9 @@ cd /home/hzy/codex/test2/codex/gnb_c
 
 当前没有放进 `ctest` 的内容是：
 
-- 真实 TUN 建立和 namespace 交互
 - 真实 Open5GS 端到端 `ping`
 
-这些仍然保留为手工验证，因为它们依赖运行环境。
+这些仍然保留为手工验证，因为它们依赖运行环境。TUN 建立、匿名 namespace 进入和 “TUN 读包 -> N3” 这条链路现在已经有自动化覆盖。
 
 ## 4. 测试本地 UE <-> gNB shared-slot 闭环
 
@@ -600,6 +634,7 @@ cd /home/hzy/codex/test2/codex/gnb_c
 - 下行 GTP-U inner IPv4 被注入 UE TUN
 - UE 内核协议栈返回 `ICMP Echo Reply`
 - UE 从 TUN 读回上行 IPv4 负载并经 gNB/N3 发回 UPF
+- 对返回流量，gNB 走的是正常的 `SR -> BSR -> repeated UL grant` 路径，而不是旧的一次性补 grant shortcut
 
 ### 10.2 环境前提
 
@@ -708,6 +743,13 @@ ip netns exec miniue-demo ping -c 4 8.8.8.8
 ip netns exec miniue-demo ping -c 4 www.baidu.com
 ```
 
+如果当前用户不能把 namespace 发布到 `/var/run/netns`，改用 UE 日志里打印的 rootless 命令：
+
+```bash
+nsenter --preserve-credentials -S 0 -G 0 -U -n -t <ue_pid> ping -c 4 8.8.8.8
+nsenter --preserve-credentials -S 0 -G 0 -U -n -m -t <ue_pid> ping -c 4 www.baidu.com
+```
+
 建议按这个顺序排查：
 
 - 先测 `8.8.8.8`
@@ -722,8 +764,15 @@ ip netns exec miniue-demo ping -c 4 www.baidu.com
 如果第一个成功、第二个失败，问题通常在：
 
 - `sim.ue_tun_dns_server_ipv4` 没配置
-- `/etc/netns/miniue-demo/resolv.conf` 不存在
+- 命名 namespace 模式下的 `/etc/netns/miniue-demo/resolv.conf` 不存在，或者匿名 namespace 模式下没有按 UE 日志提示使用 `nsenter ... -m`
 - DNS 服务器本身不可达
+
+2026-04-08 在当前宿主机上的手工复验结果是：
+
+- UE 侧 `ping -c 4 8.8.8.8` 实际收到了 `4/4` 回显
+- UE 侧 `ping -c 4 www.baidu.com` 完成了解析，并实际收到了 `4/4` 回显
+- runtime `GTP-U` pcap 已经出现双向 `127.0.0.1:2152 <-> 127.0.0.7:2152` 流量
+- `ogstun` 和 `enp4s0` 抓包都能看到匹配的 ICMP / DNS 请求与返回包
 
 ### 10.8 辅助观测命令
 
@@ -735,10 +784,19 @@ ip netns exec miniue-demo ip route
 cat /etc/netns/miniue-demo/resolv.conf
 ```
 
+或者在 rootless 匿名 namespace 模式下：
+
+```bash
+nsenter --preserve-credentials -S 0 -G 0 -U -n -m -t <ue_pid> ip addr
+nsenter --preserve-credentials -S 0 -G 0 -U -n -m -t <ue_pid> ip route
+nsenter --preserve-credentials -S 0 -G 0 -U -n -m -t <ue_pid> cat /etc/resolv.conf
+```
+
 期望现象：
 
 - `ogstun` 收发计数增加
 - `tcpdump` 能看到 `Echo Request / Echo Reply`
+- `out/gnb_core_gtpu_runtime.pcap` 能看到同一次业务的双向 GTP-U
 - `summary.json` 中保留有效的 session state
 
 ### 10.8 结束进程

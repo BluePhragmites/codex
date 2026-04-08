@@ -12,13 +12,16 @@ typedef struct {
   bool opened;
   bool configured;
   bool isolate_netns;
+  bool mount_ns_isolated;
   bool default_route_enabled;
   bool default_route_configured;
   bool netns_published;
   bool dns_configured;
+  bool dns_bind_mounted;
   char ifname[MINI_GNB_C_MAX_TEXT];
   char netns_name[MINI_GNB_C_MAX_TEXT];
   char dns_server_ipv4[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
+  char dns_bind_source_path[MINI_GNB_C_MAX_PATH];
   uint16_t mtu;
   uint8_t prefix_len;
   uint8_t local_ipv4[4];

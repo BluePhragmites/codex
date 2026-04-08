@@ -140,6 +140,10 @@ On top of those transports, the UE side now has two layers:
   - learns post-Msg4 DL/UL `time_indicator`, DL ACK timing, and HARQ pool sizes from `SIB1`
   - learns the exact Msg3 absolute slot from `RAR`
   - learns SR periodicity and offset from `Msg4` / `RRCSetup`
+  - keeps a small FIFO of pending UL payloads gathered from the built-in post-Msg4 payload, UE-side ICMP replies, and optional TUN reads
+  - tracks UE-side uplink demand with `sr_pending`, `bsr_dirty`, and one last reported BSR byte count
+  - re-sends `PUCCH_SR` on later valid SR occasions whenever queued payloads still exist and no future UL grant is already pending
+  - consumes new UL payload grants from that FIFO in order while retaining the HARQ payload cache for retransmissions
   - polls the local `gnb_to_ue/` exchange directory for later `DL_NAS` messages and feeds them into the minimal UE NAS helper
   - now feeds `DL_OBJ_DATA` payloads into a minimal UE-side IPv4/ICMP helper so one downlink `ICMP Echo Request` can become the next granted uplink data payload
   - can also configure an optional TUN interface from the learned `UE IPv4`, inject downlink IP packets into that TUN device, and source later uplink payloads from the TUN read path
@@ -155,9 +159,11 @@ On top of those transports, the UE side now has two layers:
   - stores one pending uplink reply payload for the next granted `UL_BURST_DATA`
 - `ue/ue_tun`
   - owns the optional live UE TUN device
-  - can create and configure that device inside an isolated user+network namespace
-  - can publish that namespace under `/var/run/netns/<name>` when `sim.ue_tun_netns_name` is configured
-  - can install a default route on the UE TUN device and write `/etc/netns/<name>/resolv.conf` for DNS lookups
+  - can create and configure that device inside an isolated namespace
+  - on rootless hosts, now enters an isolated user+network+mount namespace so the UE can still own the TUN device and a private `/etc/resolv.conf`
+  - can publish that namespace under `/var/run/netns/<name>` when `sim.ue_tun_netns_name` is configured and the host allows that bind mount
+  - otherwise falls back to an anonymous namespace and later manual access through `nsenter --preserve-credentials -S 0 -G 0 -U -n ...`
+  - can install a default route on the UE TUN device and either write `/etc/netns/<name>/resolv.conf` or bind a private `/etc/resolv.conf` for DNS lookups
   - lets the kernel stack generate the reply traffic instead of relying only on the synthetic `ue_ip_stack_min` path
 - `apps/mini_ue_c.c`
   - loads the YAML config
@@ -173,6 +179,10 @@ That live shared-slot path is now connected end-to-end inside the simulator:
   - publishes that summary at the end of the slot and waits for the UE to acknowledge the same slot through the UE-written progress register
   - now stages the learned `UE IPv4` into later slot summaries so the UE runtime can configure its TUN path from downlink-visible state
   - keeps the existing slot-input text transport and JSON event transport as lower-priority fallbacks for tests and manual bring-up
+- `common/simulator`
+  - now keeps per-UE `connected_ul_pending_bytes` and `connected_ul_last_reported_bsr_bytes` in `mini_gnb_c_ue_context_t`
+  - re-arms later SR occasions for the live shared-slot and slot-input paths instead of treating `PUCCH_SR` as a one-shot event
+  - after a valid `BSR`, now issues sequential payload grants and decrements the pending-byte accounting on each successful `UL DATA` until the queue drains
 
 So the current primary local bring-up path is:
 
@@ -182,6 +192,7 @@ So the current primary local bring-up path is:
 4. `radio/mock_radio_frontend` publishes the gNB's DL slot summary at the end of the slot and waits for the UE acknowledgement
 5. `ue/mini_ue_runtime` observes the published slot, schedules the next future UL burst when the DL state allows it, then advances the UE progress register
 6. `tests/test_integration.c:test_integration_shared_slot_ue_runtime()` verifies the full PRACH, Msg3, SR, BSR, and UL DATA path with both processes running against the same shared slot register file
+7. `tests/test_integration.c:test_integration_slot_text_transport_continues_connected_ul_grants()` verifies that one `BSR` can drive multiple sequential payload grants until the gNB-side pending-byte accounting reaches zero
 
 The old filesystem-backed `ue_to_gnb/*.json` loop still exists as a fallback regression path, but it is no longer the preferred architecture for the radio interaction.
 
@@ -255,9 +266,11 @@ The Stage D and Stage E user-plane slices are now present:
 
 - once `core_session` contains the parsed UPF tunnel state, the simulator activates one persistent UDP socket through `n3/n3_user_plane`
 - that socket stays connected to `core.upf_port` and can:
+  - resolve the gNB-side local IPv4 toward the current UPF and bind on the standard local UDP/2152 GTP-U port
   - encapsulate one inner packet into a session G-PDU
   - expose the local UDP endpoint for tests and diagnostics
   - poll one downlink GTP-U packet without blocking the slot loop
+- the simulator-side `PDUSessionResourceSetupResponse` now advertises that same gNB N3 IPv4 together with the fixed downlink TEID used by the persistent socket
 - `n3/gtpu_tunnel` extracts the inner IPv4 payload from one downlink G-PDU
 - `ue/mini_ue_runtime` now has two ways to turn that downlink IP packet into later uplink traffic:
   - fallback synthetic mode through `ue/ue_ip_stack_min`
@@ -267,11 +280,13 @@ The Stage D and Stage E user-plane slices are now present:
   - live kernel-stack mode through `ue/ue_tun`
     - configures a TUN interface once the gNB has learned and staged the `UE IPv4`
     - installs `default dev <ue_tun_name>` so the UE namespace can originate outbound traffic
-    - can expose the UE namespace through `ip netns exec <name> ...`
+    - can expose the UE namespace through `ip netns exec <name> ...` when the named namespace is publishable
+    - otherwise exposes the same namespace through the printed rootless `nsenter --preserve-credentials -S 0 -G 0 -U -n ...` fallback
     - can provide per-namespace DNS for name-based probes such as `ping www.baidu.com`
     - injects the downlink IP packet into that TUN device
     - reads the later kernel-generated reply back from the same TUN interface
-- in the unscripted live path, `src/common/simulator.c` auto-queues one follow-up UL payload grant after a downlink N3 packet so the UE can return either synthetic or TUN-sourced data without a handcrafted schedule file
+- in the unscripted live shared-slot path, `src/common/simulator.c` no longer relies on a synthetic follow-up UL payload grant after a downlink N3 packet; the UE returns to its configured SR occasions and the gNB continues the later `SR -> BSR -> repeated UL grant` loop from there
+- in that same path, `src/ue/mini_ue_runtime.c` now reports only the real queued byte count in `BSR` and no longer fabricates a new UL payload when the queue has already drained
 - `sim.slot_sleep_ms` exists purely as a pragmatic pacing knob for the live manual demo; it does not change the logical slot ordering, only the wall-clock delay between slot iterations
 
 This gives the current prototype two concrete user-plane topologies:
@@ -286,10 +301,14 @@ The architecture still does not yet include:
 - a full generic UE NAS/session state machine beyond the current Open5GS happy path
 - an automated CI-style end-to-end `ping` test; the full TUN path is still a manual validation workflow
 
-The outbound-internet demo also depends on the host-side Open5GS environment:
+The outbound-internet demo still depends on the host-side Open5GS environment:
 
 - the host must enable IPv4 forwarding
 - the host must NAT or otherwise route the UE subnet toward the public network
+- on the current host, the 2026-04-08 manual re-run completed end-to-end:
+  - UE-originated ICMP and DNS requests left over runtime GTP-U
+  - the matching downlink return path came back over `127.0.0.7:2152 -> 127.0.0.1:2152`
+  - the UE namespace received real ping replies for both `8.8.8.8` and `www.baidu.com`
 
 So `ngap_probe` is not part of the radio simulator loop. It is a protocol bring-up
 tool that shares the same repository because it validates the external Open5GS

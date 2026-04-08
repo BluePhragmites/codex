@@ -11,6 +11,8 @@
 #include "mini_gnb_c/ue/ue_ip_stack_min.h"
 #include "mini_gnb_c/ue/ue_tun.h"
 
+#define MINI_GNB_C_MINI_UE_UL_QUEUE_CAPACITY 8u
+
 typedef struct {
   bool valid;
   uint16_t rnti;
@@ -27,6 +29,12 @@ typedef struct {
   mini_gnb_c_ul_data_purpose_t last_purpose;
   mini_gnb_c_buffer_t last_payload;
 } mini_gnb_c_mini_ue_ul_harq_state_t;
+
+typedef struct {
+  bool valid;
+  mini_gnb_c_buffer_t payload;
+  int accounted_bytes;
+} mini_gnb_c_mini_ue_ul_payload_entry_t;
 
 typedef struct {
   mini_gnb_c_sim_config_t sim;
@@ -52,14 +60,22 @@ typedef struct {
   bool sr_cfg_valid;
   int sr_period_slots;
   int sr_offset_slot;
-  bool sr_scheduled;
+  bool sr_pending;
+  bool bsr_dirty;
+  int last_reported_buffer_size_bytes;
+  int pending_sr_abs_slot;
+  int pending_bsr_grant_abs_slot;
+  int pending_payload_grant_abs_slot;
+  bool default_post_attach_payload_seeded;
   mini_gnb_c_mini_ue_dl_harq_wait_t dl_harq_wait[MINI_GNB_C_MAX_HARQ_PROCESSES];
   mini_gnb_c_mini_ue_ul_harq_state_t ul_harq[MINI_GNB_C_MAX_HARQ_PROCESSES];
+  mini_gnb_c_mini_ue_ul_payload_entry_t ul_payload_queue[MINI_GNB_C_MINI_UE_UL_QUEUE_CAPACITY];
+  size_t ul_payload_queue_head;
+  size_t ul_payload_queue_count;
+  int ul_payload_queue_bytes;
   mini_gnb_c_ue_ip_stack_min_t ip_stack;
   mini_gnb_c_nas_5gs_min_ue_t nas_5gs;
   mini_gnb_c_ue_tun_t tun;
-  bool pending_tun_uplink_valid;
-  mini_gnb_c_buffer_t pending_tun_uplink_packet;
   bool tun_network_ready_announced;
 } mini_gnb_c_mini_ue_runtime_t;
 
@@ -136,6 +152,121 @@ static int mini_gnb_c_schedule_ul_event(mini_gnb_c_mini_ue_runtime_t* runtime,
   return 0;
 }
 
+static bool mini_gnb_c_mini_ue_runtime_has_payload_demand(const mini_gnb_c_mini_ue_runtime_t* runtime) {
+  return runtime != NULL && runtime->ul_payload_queue_count > 0u;
+}
+
+static bool mini_gnb_c_mini_ue_runtime_has_future_ul_grant(const mini_gnb_c_mini_ue_runtime_t* runtime,
+                                                           const int current_slot) {
+  if (runtime == NULL) {
+    return false;
+  }
+
+  return runtime->pending_bsr_grant_abs_slot > current_slot ||
+         runtime->pending_payload_grant_abs_slot > current_slot;
+}
+
+static int mini_gnb_c_mini_ue_runtime_current_bsr_bytes(const mini_gnb_c_mini_ue_runtime_t* runtime) {
+  if (runtime == NULL) {
+    return 0;
+  }
+  return runtime->ul_payload_queue_bytes;
+}
+
+static int mini_gnb_c_mini_ue_runtime_enqueue_ul_payload(mini_gnb_c_mini_ue_runtime_t* runtime,
+                                                         const mini_gnb_c_buffer_t* payload,
+                                                         int accounted_bytes,
+                                                         const char* source,
+                                                         const int current_slot) {
+  mini_gnb_c_mini_ue_ul_payload_entry_t* entry = NULL;
+  size_t tail_index = 0u;
+
+  if (runtime == NULL || payload == NULL || payload->len == 0u) {
+    return -1;
+  }
+  if (runtime->ul_payload_queue_count >= MINI_GNB_C_MINI_UE_UL_QUEUE_CAPACITY) {
+    fprintf(stderr, "UE UL payload queue full; dropping %s packet at abs_slot=%d\n", source, current_slot);
+    return 1;
+  }
+
+  tail_index =
+      (runtime->ul_payload_queue_head + runtime->ul_payload_queue_count) % MINI_GNB_C_MINI_UE_UL_QUEUE_CAPACITY;
+  entry = &runtime->ul_payload_queue[tail_index];
+  memset(entry, 0, sizeof(*entry));
+  entry->valid = true;
+  entry->payload = *payload;
+  entry->accounted_bytes = accounted_bytes > (int)payload->len ? accounted_bytes : (int)payload->len;
+  runtime->ul_payload_queue_bytes += entry->accounted_bytes;
+  ++runtime->ul_payload_queue_count;
+  runtime->bsr_dirty = true;
+  runtime->sr_pending = true;
+  printf("UE queued %s payload at abs_slot=%d len=%zu accounted_bytes=%d queue_len=%zu\n",
+         source != NULL ? source : "UL",
+         current_slot,
+         payload->len,
+         entry->accounted_bytes,
+         runtime->ul_payload_queue_count);
+  fflush(stdout);
+  return 0;
+}
+
+static int mini_gnb_c_mini_ue_runtime_pop_ul_payload(mini_gnb_c_mini_ue_runtime_t* runtime,
+                                                     mini_gnb_c_buffer_t* out_payload) {
+  mini_gnb_c_mini_ue_ul_payload_entry_t* entry = NULL;
+
+  if (runtime == NULL || out_payload == NULL || runtime->ul_payload_queue_count == 0u) {
+    return -1;
+  }
+
+  entry = &runtime->ul_payload_queue[runtime->ul_payload_queue_head];
+  if (!entry->valid) {
+    return -1;
+  }
+
+  *out_payload = entry->payload;
+  runtime->ul_payload_queue_bytes -= entry->accounted_bytes;
+  if (runtime->ul_payload_queue_bytes < 0) {
+    runtime->ul_payload_queue_bytes = 0;
+  }
+  memset(entry, 0, sizeof(*entry));
+  runtime->ul_payload_queue_head =
+      (runtime->ul_payload_queue_head + 1u) % MINI_GNB_C_MINI_UE_UL_QUEUE_CAPACITY;
+  --runtime->ul_payload_queue_count;
+  runtime->bsr_dirty = runtime->ul_payload_queue_bytes != runtime->last_reported_buffer_size_bytes;
+  return 0;
+}
+
+static void mini_gnb_c_mini_ue_runtime_update_uplink_state(mini_gnb_c_mini_ue_runtime_t* runtime,
+                                                           const int current_slot) {
+  if (runtime == NULL) {
+    return;
+  }
+
+  if (runtime->pending_sr_abs_slot >= 0 && current_slot >= runtime->pending_sr_abs_slot) {
+    runtime->pending_sr_abs_slot = -1;
+  }
+  if (runtime->pending_bsr_grant_abs_slot >= 0 && current_slot >= runtime->pending_bsr_grant_abs_slot) {
+    runtime->pending_bsr_grant_abs_slot = -1;
+  }
+  if (runtime->pending_payload_grant_abs_slot >= 0 && current_slot >= runtime->pending_payload_grant_abs_slot) {
+    runtime->pending_payload_grant_abs_slot = -1;
+  }
+
+  if (!mini_gnb_c_mini_ue_runtime_has_payload_demand(runtime)) {
+    runtime->sr_pending = false;
+    runtime->bsr_dirty = false;
+    runtime->last_reported_buffer_size_bytes = 0;
+    return;
+  }
+
+  if (runtime->ul_payload_queue_bytes != runtime->last_reported_buffer_size_bytes) {
+    runtime->bsr_dirty = true;
+  }
+  if (!mini_gnb_c_mini_ue_runtime_has_future_ul_grant(runtime, current_slot)) {
+    runtime->sr_pending = true;
+  }
+}
+
 static void mini_gnb_c_mini_ue_build_msg3_mac_pdu(const mini_gnb_c_sim_config_t* sim,
                                                   const uint16_t tc_rnti,
                                                   mini_gnb_c_buffer_t* out_mac_pdu) {
@@ -178,7 +309,6 @@ static void mini_gnb_c_mini_ue_build_msg3_mac_pdu(const mini_gnb_c_sim_config_t*
 static void mini_gnb_c_mini_ue_build_ul_payload(const mini_gnb_c_sim_config_t* sim,
                                                 const mini_gnb_c_ul_data_purpose_t purpose,
                                                 mini_gnb_c_buffer_t* out_payload) {
-  char bsr_text[MINI_GNB_C_MAX_TEXT];
   size_t ul_data_len = 0u;
 
   if (sim == NULL || out_payload == NULL) {
@@ -187,10 +317,6 @@ static void mini_gnb_c_mini_ue_build_ul_payload(const mini_gnb_c_sim_config_t* s
 
   mini_gnb_c_buffer_reset(out_payload);
   if (purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR) {
-    if (snprintf(bsr_text, sizeof(bsr_text), "BSR|bytes=%d", sim->ul_bsr_buffer_size_bytes) >= (int)sizeof(bsr_text)) {
-      return;
-    }
-    (void)mini_gnb_c_buffer_set_text(out_payload, bsr_text);
     return;
   }
 
@@ -206,15 +332,12 @@ static void mini_gnb_c_mini_ue_build_harq_ul_payload(mini_gnb_c_mini_ue_runtime_
                                                      const bool is_new_data,
                                                      const mini_gnb_c_ul_data_purpose_t purpose,
                                                      mini_gnb_c_buffer_t* out_payload,
-                                                     bool* used_pending_tun_payload,
-                                                     bool* used_pending_ip_payload) {
+                                                     bool* consumed_queued_payload) {
   mini_gnb_c_mini_ue_ul_harq_state_t* harq_state = NULL;
+  char bsr_text[MINI_GNB_C_MAX_TEXT];
 
-  if (used_pending_tun_payload != NULL) {
-    *used_pending_tun_payload = false;
-  }
-  if (used_pending_ip_payload != NULL) {
-    *used_pending_ip_payload = false;
+  if (consumed_queued_payload != NULL) {
+    *consumed_queued_payload = false;
   }
   if (runtime == NULL || out_payload == NULL || harq_id >= MINI_GNB_C_MAX_HARQ_PROCESSES) {
     return;
@@ -226,20 +349,27 @@ static void mini_gnb_c_mini_ue_build_harq_ul_payload(mini_gnb_c_mini_ue_runtime_
     return;
   }
 
-  if (is_new_data && purpose == MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD && runtime->pending_tun_uplink_valid) {
-    *out_payload = runtime->pending_tun_uplink_packet;
-    if (used_pending_tun_payload != NULL) {
-      *used_pending_tun_payload = true;
+  if (purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR) {
+    if (snprintf(bsr_text,
+                 sizeof(bsr_text),
+                 "BSR|bytes=%d",
+                 mini_gnb_c_mini_ue_runtime_current_bsr_bytes(runtime)) >= (int)sizeof(bsr_text)) {
+      mini_gnb_c_buffer_reset(out_payload);
+    } else {
+      (void)mini_gnb_c_buffer_set_text(out_payload, bsr_text);
     }
-  } else if (is_new_data && purpose == MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD &&
-      mini_gnb_c_ue_ip_stack_min_copy_pending_uplink(&runtime->ip_stack, out_payload) == 0) {
-    if (used_pending_ip_payload != NULL) {
-      *used_pending_ip_payload = true;
+  } else if (is_new_data && mini_gnb_c_mini_ue_runtime_pop_ul_payload(runtime, out_payload) == 0) {
+    if (consumed_queued_payload != NULL) {
+      *consumed_queued_payload = true;
     }
   } else {
-    mini_gnb_c_mini_ue_build_ul_payload(&runtime->sim, purpose, out_payload);
+    mini_gnb_c_buffer_reset(out_payload);
+    if (is_new_data) {
+      harq_state->valid = false;
+      return;
+    }
   }
-  harq_state->valid = true;
+  harq_state->valid = out_payload->len > 0u;
   harq_state->last_ndi = ndi;
   harq_state->last_purpose = purpose;
   harq_state->last_payload = *out_payload;
@@ -322,13 +452,35 @@ static int mini_gnb_c_parse_msg4_payload(mini_gnb_c_mini_ue_runtime_t* runtime,
   return 0;
 }
 
+static void mini_gnb_c_mini_ue_runtime_seed_post_attach_payload(mini_gnb_c_mini_ue_runtime_t* runtime,
+                                                                const int current_slot) {
+  mini_gnb_c_buffer_t payload;
+
+  if (runtime == NULL || runtime->default_post_attach_payload_seeded || !runtime->sim.post_msg4_traffic_enabled ||
+      !runtime->sim.ul_data_present) {
+    return;
+  }
+
+  mini_gnb_c_mini_ue_build_ul_payload(&runtime->sim, MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD, &payload);
+  if (payload.len == 0u) {
+    return;
+  }
+
+  if (mini_gnb_c_mini_ue_runtime_enqueue_ul_payload(runtime,
+                                                    &payload,
+                                                    (int)payload.len,
+                                                    "post-Msg4 default",
+                                                    current_slot) == 0) {
+    runtime->default_post_attach_payload_seeded = true;
+  }
+}
+
 static void mini_gnb_c_mini_ue_runtime_schedule_granted_ul(mini_gnb_c_mini_ue_runtime_t* runtime,
                                                            const mini_gnb_c_pdcch_dci_t* pdcch,
                                                            const int current_slot) {
   mini_gnb_c_shared_slot_ul_event_t ul_event;
   const int harq_id = mini_gnb_c_clamp_harq_id((int)pdcch->harq_id, runtime->ul_harq_process_count);
-  bool used_pending_tun_payload = false;
-  bool used_pending_ip_payload = false;
+  bool consumed_queued_payload = false;
 
   if (runtime == NULL || pdcch == NULL || pdcch->scheduled_ul_type != MINI_GNB_C_UL_BURST_DATA ||
       runtime->tc_rnti == 0u || pdcch->rnti != runtime->tc_rnti || pdcch->scheduled_abs_slot <= current_slot) {
@@ -350,16 +502,27 @@ static void mini_gnb_c_mini_ue_runtime_schedule_granted_ul(mini_gnb_c_mini_ue_ru
                                            ul_event.is_new_data,
                                            ul_event.purpose,
                                            &ul_event.payload,
-                                           &used_pending_tun_payload,
-                                           &used_pending_ip_payload);
+                                           &consumed_queued_payload);
+  if (ul_event.purpose == MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD && ul_event.payload.len == 0u) {
+    return;
+  }
   if (mini_gnb_c_schedule_ul_event(runtime, &ul_event) != 0) {
     return;
   }
-  if (used_pending_tun_payload) {
-    runtime->pending_tun_uplink_valid = false;
+  if (ul_event.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR) {
+    runtime->pending_bsr_grant_abs_slot = ul_event.abs_slot;
+    runtime->last_reported_buffer_size_bytes = mini_gnb_c_mini_ue_runtime_current_bsr_bytes(runtime);
+    runtime->bsr_dirty = false;
+    runtime->sr_pending = false;
   }
-  if (used_pending_ip_payload) {
-    mini_gnb_c_ue_ip_stack_min_mark_uplink_consumed(&runtime->ip_stack);
+  if (ul_event.purpose == MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD) {
+    if (runtime->pending_payload_grant_abs_slot < ul_event.abs_slot) {
+      runtime->pending_payload_grant_abs_slot = ul_event.abs_slot;
+    }
+    runtime->sr_pending = false;
+    if (!consumed_queued_payload) {
+      runtime->bsr_dirty = runtime->ul_payload_queue_bytes != runtime->last_reported_buffer_size_bytes;
+    }
   }
 
   printf("UE scheduled %s for abs_slot=%d via DCI harq_id=%u ndi=%s is_new_data=%s\n",
@@ -442,6 +605,7 @@ static void mini_gnb_c_mini_ue_runtime_observe_dl(mini_gnb_c_mini_ue_runtime_t* 
                                                   const mini_gnb_c_shared_slot_dl_summary_t* dl_summary,
                                                   const int current_slot) {
   int ip_handle_result = 0;
+  mini_gnb_c_buffer_t pending_reply;
 
   if (runtime == NULL || dl_summary == NULL) {
     return;
@@ -480,8 +644,15 @@ static void mini_gnb_c_mini_ue_runtime_observe_dl(mini_gnb_c_mini_ue_runtime_t* 
                  netns_name);
         }
       } else if (runtime->tun.isolate_netns && !runtime->tun_network_ready_announced) {
-        printf("UE is running in an anonymous isolated netns; use `nsenter -n -t %ld ping -c 4 8.8.8.8`\n",
+        printf("UE is running in an anonymous isolated namespace; use "
+               "`nsenter --preserve-credentials -S 0 -G 0 -U -n -t %ld ping -c 4 8.8.8.8`\n",
                (long)getpid());
+        if (runtime->tun.dns_configured && runtime->tun.mount_ns_isolated) {
+          printf("UE bound /etc/resolv.conf inside the anonymous namespace with DNS %s; use "
+                 "`nsenter --preserve-credentials -S 0 -G 0 -U -n -m -t %ld ping -c 4 www.baidu.com`\n",
+                 runtime->tun.dns_server_ipv4,
+                 (long)getpid());
+        }
       }
       runtime->tun_network_ready_announced = true;
       fflush(stdout);
@@ -494,7 +665,9 @@ static void mini_gnb_c_mini_ue_runtime_observe_dl(mini_gnb_c_mini_ue_runtime_t* 
     (void)mini_gnb_c_parse_rar_payload(runtime, &dl_summary->rar_payload);
   }
   if ((dl_summary->flags & MINI_GNB_C_SHARED_SLOT_FLAG_MSG4) != 0u && dl_summary->dl_rnti == runtime->tc_rnti) {
-    (void)mini_gnb_c_parse_msg4_payload(runtime, &dl_summary->msg4_payload);
+    if (mini_gnb_c_parse_msg4_payload(runtime, &dl_summary->msg4_payload) == 0) {
+      mini_gnb_c_mini_ue_runtime_seed_post_attach_payload(runtime, current_slot);
+    }
   }
   if (dl_summary->has_pdcch) {
     mini_gnb_c_mini_ue_runtime_schedule_granted_ul(runtime, &dl_summary->pdcch, current_slot);
@@ -510,8 +683,16 @@ static void mini_gnb_c_mini_ue_runtime_observe_dl(mini_gnb_c_mini_ue_runtime_t* 
     } else {
       ip_handle_result = mini_gnb_c_ue_ip_stack_min_handle_downlink(&runtime->ip_stack, &dl_summary->dl_data_payload);
       if (ip_handle_result > 0) {
-        printf("UE generated ICMP echo reply from DL DATA for abs_slot=%d\n", current_slot);
-        fflush(stdout);
+        if (mini_gnb_c_ue_ip_stack_min_copy_pending_uplink(&runtime->ip_stack, &pending_reply) == 0 &&
+            mini_gnb_c_mini_ue_runtime_enqueue_ul_payload(runtime,
+                                                          &pending_reply,
+                                                          (int)pending_reply.len,
+                                                          "ICMP reply",
+                                                          current_slot) == 0) {
+          mini_gnb_c_ue_ip_stack_min_mark_uplink_consumed(&runtime->ip_stack);
+          printf("UE generated ICMP echo reply from DL DATA for abs_slot=%d\n", current_slot);
+          fflush(stdout);
+        }
       }
     }
     mini_gnb_c_mini_ue_runtime_schedule_dl_ack(runtime, current_slot, dl_summary->dl_rnti);
@@ -522,20 +703,24 @@ static void mini_gnb_c_mini_ue_runtime_poll_tun(mini_gnb_c_mini_ue_runtime_t* ru
   uint8_t packet[MINI_GNB_C_MAX_PAYLOAD];
   size_t packet_length = 0u;
   int read_result = 0;
+  mini_gnb_c_buffer_t queued_packet;
 
-  if (runtime == NULL || !runtime->tun.opened || !runtime->tun.configured || runtime->pending_tun_uplink_valid) {
+  if (runtime == NULL || !runtime->tun.opened || !runtime->tun.configured ||
+      runtime->ul_payload_queue_count >= MINI_GNB_C_MINI_UE_UL_QUEUE_CAPACITY) {
     return;
   }
 
   read_result = mini_gnb_c_ue_tun_read_packet(&runtime->tun, packet, sizeof(packet), &packet_length);
   if (read_result != 0 || !mini_gnb_c_ue_ip_stack_min_is_ipv4_packet(packet, packet_length) ||
-      mini_gnb_c_buffer_set_bytes(&runtime->pending_tun_uplink_packet, packet, packet_length) != 0) {
+      mini_gnb_c_buffer_set_bytes(&queued_packet, packet, packet_length) != 0) {
     return;
   }
 
-  runtime->pending_tun_uplink_valid = true;
-  printf("UE read one IPv4 packet from TUN at abs_slot=%d len=%zu\n", current_slot, packet_length);
-  fflush(stdout);
+  (void)mini_gnb_c_mini_ue_runtime_enqueue_ul_payload(runtime,
+                                                      &queued_packet,
+                                                      (int)packet_length,
+                                                      "TUN",
+                                                      current_slot);
 }
 
 static void mini_gnb_c_mini_ue_runtime_update_retry_state(mini_gnb_c_mini_ue_runtime_t* runtime,
@@ -622,7 +807,9 @@ static int mini_gnb_c_mini_ue_runtime_schedule_sr(mini_gnb_c_mini_ue_runtime_t* 
   mini_gnb_c_shared_slot_ul_event_t ul_event;
   int target_abs_slot = 0;
 
-  if (runtime == NULL || !runtime->sr_cfg_valid || runtime->sr_scheduled || runtime->tc_rnti == 0u) {
+  if (runtime == NULL || !runtime->sr_cfg_valid || !runtime->sr_pending || runtime->tc_rnti == 0u ||
+      runtime->pending_sr_abs_slot > current_slot ||
+      mini_gnb_c_mini_ue_runtime_has_future_ul_grant(runtime, current_slot)) {
     return 0;
   }
 
@@ -642,7 +829,8 @@ static int mini_gnb_c_mini_ue_runtime_schedule_sr(mini_gnb_c_mini_ue_runtime_t* 
     return 0;
   }
 
-  runtime->sr_scheduled = true;
+  runtime->pending_sr_abs_slot = ul_event.abs_slot;
+  runtime->sr_pending = false;
   printf("UE scheduled PUCCH_SR for abs_slot=%d\n", ul_event.abs_slot);
   fflush(stdout);
   return 1;
@@ -685,6 +873,10 @@ int mini_gnb_c_run_shared_ue_runtime(const mini_gnb_c_config_t* config) {
   runtime.earliest_next_prach_abs_slot = -1;
   runtime.last_prach_abs_slot = -1;
   runtime.msg3_abs_slot = -1;
+  runtime.last_reported_buffer_size_bytes = 0;
+  runtime.pending_sr_abs_slot = -1;
+  runtime.pending_bsr_grant_abs_slot = -1;
+  runtime.pending_payload_grant_abs_slot = -1;
   mini_gnb_c_ue_ip_stack_min_init(&runtime.ip_stack);
   mini_gnb_c_nas_5gs_min_ue_init(&runtime.nas_5gs);
   mini_gnb_c_ue_tun_init(&runtime.tun);
@@ -726,6 +918,7 @@ int mini_gnb_c_run_shared_ue_runtime(const mini_gnb_c_config_t* config) {
       return -1;
     }
     mini_gnb_c_mini_ue_runtime_poll_tun(&runtime, current_slot);
+    mini_gnb_c_mini_ue_runtime_update_uplink_state(&runtime, current_slot);
     if (mini_gnb_c_mini_ue_runtime_schedule_ready_event(&runtime, current_slot) < 0) {
       mini_gnb_c_ue_tun_close(&runtime.tun);
       mini_gnb_c_shared_slot_link_close(&runtime.link);

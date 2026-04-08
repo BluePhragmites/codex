@@ -36,6 +36,8 @@ mini_gnb_c_ue_context_t* mini_gnb_c_ue_context_store_promote(
   context.ul_bsr_received = false;
   context.ul_bsr_abs_slot = -1;
   context.ul_bsr_buffer_size_bytes = 0;
+  context.connected_ul_pending_bytes = 0;
+  context.connected_ul_last_reported_bsr_bytes = 0;
   context.small_ul_grant_abs_slot = -1;
   context.large_ul_grant_abs_slot = -1;
   context.ul_data_received = false;

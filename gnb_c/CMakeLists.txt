@@ -100,6 +100,7 @@ add_executable(mini_gnb_c_tests
   tests/test_json_link.c
   tests/test_shared_slot_link.c
   tests/test_mini_ue_fsm.c
+  tests/test_mini_ue_runtime.c
   tests/test_ra_manager.c
   tests/test_mac_rrc.c
   tests/test_integration.c

@@ -349,6 +349,8 @@ typedef struct {
   bool ul_bsr_received;
   int ul_bsr_abs_slot;
   int ul_bsr_buffer_size_bytes;
+  int connected_ul_pending_bytes;
+  int connected_ul_last_reported_bsr_bytes;
   int small_ul_grant_abs_slot;
   int large_ul_grant_abs_slot;
   bool ul_data_received;

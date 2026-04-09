@@ -80,6 +80,56 @@ static void mini_gnb_c_json_write_string(FILE* file, const char* text) {
   fputc('"', file);
 }
 
+static void mini_gnb_c_write_json_uint_or_null(FILE* file, bool valid, uint32_t value) {
+  if (valid) {
+    fprintf(file, "%u", value);
+  } else {
+    fputs("null", file);
+  }
+}
+
+static void mini_gnb_c_write_json_string_or_null(FILE* file, const char* text, bool valid) {
+  if (valid && text != NULL && text[0] != '\0') {
+    mini_gnb_c_json_write_string(file, text);
+  } else {
+    fputs("null", file);
+  }
+}
+
+static void mini_gnb_c_write_core_session_json(FILE* file, const mini_gnb_c_core_session_t* session) {
+  char ue_ipv4_text[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
+
+  if (file == NULL || session == NULL) {
+    fputs("null", file);
+    return;
+  }
+
+  fputs("{\"c_rnti\":", file);
+  fprintf(file, "%u", session->c_rnti);
+  fputs(",\"ran_ue_ngap_id\":", file);
+  mini_gnb_c_write_json_uint_or_null(file, session->ran_ue_ngap_id_valid, session->ran_ue_ngap_id);
+  fputs(",\"amf_ue_ngap_id\":", file);
+  mini_gnb_c_write_json_uint_or_null(file, session->amf_ue_ngap_id_valid, session->amf_ue_ngap_id);
+  fputs(",\"pdu_session_id\":", file);
+  mini_gnb_c_write_json_uint_or_null(file, session->pdu_session_id_valid, session->pdu_session_id);
+  fputs(",\"upf_ip\":", file);
+  mini_gnb_c_write_json_string_or_null(file, session->upf_ip, session->upf_tunnel_valid);
+  fputs(",\"upf_teid\":", file);
+  mini_gnb_c_write_json_uint_or_null(file, session->upf_tunnel_valid, session->upf_teid);
+  fputs(",\"qfi\":", file);
+  mini_gnb_c_write_json_uint_or_null(file, session->qfi_valid, session->qfi);
+  fputs(",\"ue_ipv4\":", file);
+  if (mini_gnb_c_core_session_format_ue_ipv4(session, ue_ipv4_text, sizeof(ue_ipv4_text)) == 0) {
+    mini_gnb_c_json_write_string(file, ue_ipv4_text);
+  } else {
+    fputs("null", file);
+  }
+  fprintf(file,
+          ",\"uplink_nas_count\":%u,\"downlink_nas_count\":%u}",
+          session->uplink_nas_count,
+          session->downlink_nas_count);
+}
+
 static void mini_gnb_c_write_trace_json(FILE* file, const mini_gnb_c_metrics_trace_t* metrics) {
   size_t i = 0;
 
@@ -214,10 +264,14 @@ static void mini_gnb_c_write_ue_contexts_json(FILE* file,
             ue_contexts[i].c_rnti);
     mini_gnb_c_json_write_string(file, contention_id_hex);
     fprintf(file,
+            ",\"core_session\":");
+    mini_gnb_c_write_core_session_json(file, &ue_contexts[i].core_session);
+    fprintf(file,
             ",\"create_abs_slot\":%d,\"rrc_setup_sent\":%s,\"sent_abs_slot\":%d,"
             "\"traffic_plan_scheduled\":%s,\"dl_data_sent\":%s,\"dl_data_abs_slot\":%d,"
             "\"pucch_sr_detected\":%s,\"pucch_sr_abs_slot\":%d,"
             "\"ul_bsr_received\":%s,\"ul_bsr_abs_slot\":%d,\"ul_bsr_buffer_size_bytes\":%d,"
+            "\"connected_ul_pending_bytes\":%d,\"connected_ul_last_reported_bsr_bytes\":%d,"
             "\"small_ul_grant_abs_slot\":%d,\"large_ul_grant_abs_slot\":%d,"
             "\"ul_data_received\":%s,\"ul_data_abs_slot\":%d}",
             ue_contexts[i].create_abs_slot,
@@ -231,6 +285,8 @@ static void mini_gnb_c_write_ue_contexts_json(FILE* file,
             ue_contexts[i].ul_bsr_received ? "true" : "false",
             ue_contexts[i].ul_bsr_abs_slot,
             ue_contexts[i].ul_bsr_buffer_size_bytes,
+            ue_contexts[i].connected_ul_pending_bytes,
+            ue_contexts[i].connected_ul_last_reported_bsr_bytes,
             ue_contexts[i].small_ul_grant_abs_slot,
             ue_contexts[i].large_ul_grant_abs_slot,
             ue_contexts[i].ul_data_received ? "true" : "false",
@@ -252,7 +308,9 @@ static int mini_gnb_c_write_summary_json(const char* path,
                                          int64_t last_hw_time_ns,
                                          const char* trace_path,
                                          const char* metrics_path,
-                                         const char* summary_path) {
+                                         const char* summary_path,
+                                         const char* ngap_trace_pcap_path,
+                                         const char* gtpu_trace_pcap_path) {
   FILE* file = fopen(path, "wb");
   if (file == NULL) {
     return -1;
@@ -273,6 +331,10 @@ static int mini_gnb_c_write_summary_json(const char* path,
   mini_gnb_c_json_write_string(file, metrics_path);
   fputs(",\"summary_path\":", file);
   mini_gnb_c_json_write_string(file, summary_path);
+  fputs(",\"ngap_trace_pcap_path\":", file);
+  mini_gnb_c_json_write_string(file, ngap_trace_pcap_path != NULL ? ngap_trace_pcap_path : "");
+  fputs(",\"gtpu_trace_pcap_path\":", file);
+  mini_gnb_c_json_write_string(file, gtpu_trace_pcap_path != NULL ? gtpu_trace_pcap_path : "");
   fputs("}\n", file);
 
   fclose(file);
@@ -389,6 +451,8 @@ int mini_gnb_c_metrics_trace_flush(const mini_gnb_c_metrics_trace_t* metrics,
                                    size_t ue_count,
                                    uint64_t tx_burst_count,
                                    int64_t last_hw_time_ns,
+                                   const char* ngap_trace_pcap_path,
+                                   const char* gtpu_trace_pcap_path,
                                    mini_gnb_c_run_summary_t* out_summary) {
   char trace_path[MINI_GNB_C_MAX_PATH];
   char metrics_path[MINI_GNB_C_MAX_PATH];
@@ -438,7 +502,9 @@ int mini_gnb_c_metrics_trace_flush(const mini_gnb_c_metrics_trace_t* metrics,
                                     last_hw_time_ns,
                                     trace_path,
                                     metrics_path,
-                                    summary_path) != 0) {
+                                    summary_path,
+                                    ngap_trace_pcap_path,
+                                    gtpu_trace_pcap_path) != 0) {
     return -1;
   }
 
@@ -457,5 +523,11 @@ int mini_gnb_c_metrics_trace_flush(const mini_gnb_c_metrics_trace_t* metrics,
   mini_gnb_c_copy_string(out_summary->trace_path, sizeof(out_summary->trace_path), trace_path);
   mini_gnb_c_copy_string(out_summary->metrics_path, sizeof(out_summary->metrics_path), metrics_path);
   mini_gnb_c_copy_string(out_summary->summary_path, sizeof(out_summary->summary_path), summary_path);
+  mini_gnb_c_copy_string(out_summary->ngap_trace_pcap_path,
+                         sizeof(out_summary->ngap_trace_pcap_path),
+                         ngap_trace_pcap_path != NULL ? ngap_trace_pcap_path : "");
+  mini_gnb_c_copy_string(out_summary->gtpu_trace_pcap_path,
+                         sizeof(out_summary->gtpu_trace_pcap_path),
+                         gtpu_trace_pcap_path != NULL ? gtpu_trace_pcap_path : "");
   return 0;
 }

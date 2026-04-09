@@ -23,6 +23,8 @@ mini_gnb_c_ue_context_t* mini_gnb_c_ue_context_store_promote(
   context.tc_rnti = ra_context->tc_rnti;
   context.c_rnti = ra_context->tc_rnti;
   memcpy(context.contention_id48, request_info->contention_id48, 6U);
+  mini_gnb_c_core_session_reset(&context.core_session);
+  mini_gnb_c_core_session_set_c_rnti(&context.core_session, context.c_rnti);
   context.create_abs_slot = create_abs_slot;
   context.rrc_setup_sent = false;
   context.sent_abs_slot = -1;
@@ -34,6 +36,8 @@ mini_gnb_c_ue_context_t* mini_gnb_c_ue_context_store_promote(
   context.ul_bsr_received = false;
   context.ul_bsr_abs_slot = -1;
   context.ul_bsr_buffer_size_bytes = 0;
+  context.connected_ul_pending_bytes = 0;
+  context.connected_ul_last_reported_bsr_bytes = 0;
   context.small_ul_grant_abs_slot = -1;
   context.large_ul_grant_abs_slot = -1;
   context.ul_data_received = false;

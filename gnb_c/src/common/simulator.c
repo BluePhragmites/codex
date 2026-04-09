@@ -4,11 +4,225 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <poll.h>
+
 #include "mini_gnb_c/common/hex.h"
 #include "mini_gnb_c/common/json_utils.h"
+#include "mini_gnb_c/n3/gtpu_tunnel.h"
+#include "mini_gnb_c/rlc/rlc_lite.h"
+#include "mini_gnb_c/ue/ue_ip_stack_min.h"
 
 static const char* mini_gnb_c_bool_string(bool value) {
   return value ? "true" : "false";
+}
+
+typedef struct {
+  bool waiting_ack;
+  uint16_t rnti;
+  int pdcch_abs_slot;
+  int pdsch_abs_slot;
+  int ack_abs_slot;
+  uint8_t harq_id;
+  bool ndi;
+  mini_gnb_c_payload_kind_t payload_kind;
+  mini_gnb_c_buffer_t payload;
+} mini_gnb_c_simulator_dl_harq_state_t;
+
+typedef struct {
+  bool waiting_pusch;
+  uint16_t rnti;
+  int pdcch_abs_slot;
+  int pusch_abs_slot;
+  uint16_t prb_start;
+  uint16_t prb_len;
+  uint8_t mcs;
+  mini_gnb_c_ul_data_purpose_t purpose;
+  uint8_t harq_id;
+  bool ndi;
+} mini_gnb_c_simulator_ul_harq_state_t;
+
+typedef struct {
+  bool active;
+  uint16_t c_rnti;
+  uint16_t sdu_id;
+  size_t offset;
+  mini_gnb_c_buffer_t payload;
+} mini_gnb_c_simulator_dl_ipv4_state_t;
+
+static void mini_gnb_c_queue_connected_dl_data(mini_gnb_c_simulator_t* simulator,
+                                               mini_gnb_c_ue_context_t* ue_context,
+                                               mini_gnb_c_simulator_dl_harq_state_t* dl_harq_states,
+                                               int trigger_abs_slot,
+                                               const mini_gnb_c_buffer_t* payload,
+                                               mini_gnb_c_payload_kind_t payload_kind);
+static void mini_gnb_c_queue_connected_ul_grant(mini_gnb_c_simulator_t* simulator,
+                                                mini_gnb_c_ue_context_t* ue_context,
+                                                mini_gnb_c_simulator_ul_harq_state_t* ul_harq_states,
+                                                int trigger_abs_slot,
+                                                mini_gnb_c_ul_data_purpose_t purpose,
+                                                uint16_t prb_start,
+                                                uint16_t prb_len,
+                                                uint8_t mcs);
+static mini_gnb_c_ue_context_t* mini_gnb_c_find_ue_context(mini_gnb_c_ue_context_store_t* store, uint16_t rnti);
+static int mini_gnb_c_find_free_dl_harq_process(mini_gnb_c_simulator_dl_harq_state_t* states,
+                                                int configured_count);
+static int mini_gnb_c_clamp_configured_harq_count(int configured_count);
+
+static bool mini_gnb_c_has_waiting_connected_dl_harq(const mini_gnb_c_simulator_t* simulator,
+                                                     const mini_gnb_c_simulator_dl_harq_state_t* dl_harq_states,
+                                                     const uint16_t c_rnti) {
+  const int harq_count =
+      simulator != NULL ? mini_gnb_c_clamp_configured_harq_count(simulator->config.sim.post_msg4_dl_harq_process_count)
+                        : 0;
+  int i = 0;
+
+  if (simulator == NULL || dl_harq_states == NULL || c_rnti == 0u) {
+    return false;
+  }
+  for (i = 0; i < harq_count; ++i) {
+    if (dl_harq_states[i].waiting_ack && dl_harq_states[i].rnti == c_rnti) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static uint16_t mini_gnb_c_connected_dl_tbsize_bytes(void) {
+  return mini_gnb_c_lookup_tbsize(24U, 9U);
+}
+
+static void mini_gnb_c_stage_connected_dl_ipv4_segment(mini_gnb_c_simulator_t* simulator,
+                                                       mini_gnb_c_ue_context_t* ue_context,
+                                                       mini_gnb_c_simulator_dl_harq_state_t* dl_harq_states,
+                                                       mini_gnb_c_simulator_dl_ipv4_state_t* dl_ip_state,
+                                                       const int abs_slot) {
+  mini_gnb_c_buffer_t segment;
+  size_t consumed_bytes = 0u;
+  bool is_last = false;
+
+  if (simulator == NULL || ue_context == NULL || dl_harq_states == NULL || dl_ip_state == NULL || !dl_ip_state->active ||
+      simulator->config.sim.scripted_schedule_dir[0] != '\0' || simulator->config.sim.scripted_pdcch_dir[0] != '\0' ||
+      dl_ip_state->c_rnti != ue_context->c_rnti ||
+      (simulator->core_bridge.radio_nas_transport_enabled && simulator->core_bridge.pending_downlink_nas_valid) ||
+      mini_gnb_c_has_waiting_connected_dl_harq(simulator, dl_harq_states, ue_context->c_rnti) ||
+      mini_gnb_c_find_free_dl_harq_process(dl_harq_states, simulator->config.sim.post_msg4_dl_harq_process_count) < 0) {
+    return;
+  }
+
+  if (dl_ip_state->offset == 0u && dl_ip_state->payload.len <= mini_gnb_c_connected_dl_tbsize_bytes()) {
+    mini_gnb_c_queue_connected_dl_data(simulator,
+                                       ue_context,
+                                       dl_harq_states,
+                                       abs_slot,
+                                       &dl_ip_state->payload,
+                                       MINI_GNB_C_PAYLOAD_KIND_IPV4);
+    mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                   "n3_user_plane",
+                                   "Queued one unsegmented downlink IPv4 payload onto the radio scheduler.",
+                                   abs_slot,
+                                   "c_rnti=%u,sdu_id=%u,payload_length=%zu",
+                                   ue_context->c_rnti,
+                                   dl_ip_state->sdu_id,
+                                   dl_ip_state->payload.len);
+    memset(dl_ip_state, 0, sizeof(*dl_ip_state));
+    return;
+  }
+
+  if (mini_gnb_c_rlc_lite_build_segment(dl_ip_state->sdu_id,
+                                        dl_ip_state->payload.bytes,
+                                        dl_ip_state->payload.len,
+                                        dl_ip_state->offset,
+                                        mini_gnb_c_connected_dl_tbsize_bytes(),
+                                        &segment,
+                                        &consumed_bytes,
+                                        &is_last) != 0 ||
+      consumed_bytes == 0u) {
+    mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                   "n3_user_plane",
+                                   "Failed to build a DL IPv4 RLC-lite segment.",
+                                   abs_slot,
+                                   "c_rnti=%u,sdu_id=%u,payload_length=%zu,offset=%zu",
+                                   ue_context->c_rnti,
+                                   dl_ip_state->sdu_id,
+                                   dl_ip_state->payload.len,
+                                   dl_ip_state->offset);
+    dl_ip_state->active = false;
+    return;
+  }
+
+  mini_gnb_c_queue_connected_dl_data(simulator,
+                                     ue_context,
+                                     dl_harq_states,
+                                     abs_slot,
+                                     &segment,
+                                     MINI_GNB_C_PAYLOAD_KIND_IPV4);
+  dl_ip_state->offset += consumed_bytes;
+  mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                 "n3_user_plane",
+                                 "Queued one DL IPv4 RLC-lite segment onto the radio scheduler.",
+                                 abs_slot,
+                                 "c_rnti=%u,sdu_id=%u,segment_length=%zu,consumed_bytes=%zu,offset=%zu,total_length=%zu,is_last=%s",
+                                 ue_context->c_rnti,
+                                 dl_ip_state->sdu_id,
+                                 segment.len,
+                                 consumed_bytes,
+                                 dl_ip_state->offset,
+                                 dl_ip_state->payload.len,
+                                 mini_gnb_c_bool_string(is_last));
+  if (is_last || dl_ip_state->offset >= dl_ip_state->payload.len) {
+    memset(dl_ip_state, 0, sizeof(*dl_ip_state));
+  }
+}
+
+static void mini_gnb_c_stage_shared_slot_user_plane(mini_gnb_c_simulator_t* simulator) {
+  const mini_gnb_c_ue_context_t* ue_context = NULL;
+  const uint8_t* ue_ipv4 = NULL;
+  bool ue_ipv4_valid = false;
+
+  if (simulator == NULL) {
+    return;
+  }
+
+  if (simulator->ue_store.count > 0u) {
+    ue_context = &simulator->ue_store.contexts[0];
+    ue_ipv4_valid = ue_context->core_session.ue_ipv4_valid;
+    ue_ipv4 = ue_ipv4_valid ? ue_context->core_session.ue_ipv4 : NULL;
+  }
+  mini_gnb_c_mock_radio_frontend_stage_ue_ipv4(&simulator->radio, ue_ipv4, ue_ipv4_valid);
+}
+
+static void mini_gnb_c_stage_radio_nas_downlink(mini_gnb_c_simulator_t* simulator,
+                                                mini_gnb_c_simulator_dl_harq_state_t* dl_harq_states,
+                                                const int abs_slot) {
+  mini_gnb_c_ue_context_t* ue_context = NULL;
+  mini_gnb_c_buffer_t nas_pdu;
+  uint16_t c_rnti = 0u;
+
+  if (simulator == NULL || dl_harq_states == NULL || !simulator->core_bridge.radio_nas_transport_enabled ||
+      !simulator->core_bridge.pending_downlink_nas_valid || simulator->ue_store.count == 0u ||
+      mini_gnb_c_find_free_dl_harq_process(dl_harq_states, simulator->config.sim.post_msg4_dl_harq_process_count) < 0) {
+    return;
+  }
+  if (mini_gnb_c_gnb_core_bridge_take_pending_downlink_nas(&simulator->core_bridge, &c_rnti, &nas_pdu) != 1) {
+    return;
+  }
+  ue_context = mini_gnb_c_find_ue_context(&simulator->ue_store, c_rnti);
+  if (ue_context == NULL) {
+    return;
+  }
+  mini_gnb_c_queue_connected_dl_data(simulator,
+                                     ue_context,
+                                     dl_harq_states,
+                                     abs_slot,
+                                     &nas_pdu,
+                                     MINI_GNB_C_PAYLOAD_KIND_NAS);
+  mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                 "gnb_core_bridge",
+                                 "Queued one downlink NAS PDU onto connected-mode PDSCH.",
+                                 abs_slot,
+                                 "c_rnti=%u,nas_length=%zu",
+                                 ue_context->c_rnti,
+                                 nas_pdu.len);
 }
 
 static void mini_gnb_c_join_lcid_sequence(const mini_gnb_c_mac_ul_parse_result_t* mac_result,
@@ -89,6 +303,204 @@ static uint16_t mini_gnb_c_select_large_ul_prb_len(const int buffer_size_bytes) 
   return (uint16_t)prb_len;
 }
 
+static int mini_gnb_c_clamp_configured_harq_count(const int configured_count) {
+  if (configured_count <= 0) {
+    return 1;
+  }
+  if (configured_count > MINI_GNB_C_MAX_HARQ_PROCESSES) {
+    return MINI_GNB_C_MAX_HARQ_PROCESSES;
+  }
+  return configured_count;
+}
+
+static int mini_gnb_c_find_free_dl_harq_process(mini_gnb_c_simulator_dl_harq_state_t* states,
+                                                const int configured_count) {
+  const int harq_count = mini_gnb_c_clamp_configured_harq_count(configured_count);
+  int i = 0;
+
+  if (states == NULL) {
+    return -1;
+  }
+  for (i = 0; i < harq_count; ++i) {
+    if (!states[i].waiting_ack) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+static int mini_gnb_c_find_free_ul_harq_process(mini_gnb_c_simulator_ul_harq_state_t* states,
+                                                const int configured_count) {
+  const int harq_count = mini_gnb_c_clamp_configured_harq_count(configured_count);
+  int i = 0;
+
+  if (states == NULL) {
+    return -1;
+  }
+  for (i = 0; i < harq_count; ++i) {
+    if (!states[i].waiting_pusch) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+static bool mini_gnb_c_connected_ul_is_runtime_driven(const mini_gnb_c_simulator_t* simulator) {
+  return simulator != NULL &&
+         (simulator->config.sim.shared_slot_path[0] != '\0' || simulator->config.sim.ul_input_dir[0] != '\0');
+}
+
+static bool mini_gnb_c_has_waiting_connected_ul_grant(
+    const mini_gnb_c_simulator_t* simulator,
+    const mini_gnb_c_simulator_ul_harq_state_t* ul_harq_states,
+    const uint16_t c_rnti,
+    const bool match_purpose,
+    const mini_gnb_c_ul_data_purpose_t purpose) {
+  const int harq_count =
+      simulator != NULL ? mini_gnb_c_clamp_configured_harq_count(simulator->config.sim.post_msg4_ul_harq_process_count)
+                        : 0;
+  int i = 0;
+
+  if (simulator == NULL || ul_harq_states == NULL || c_rnti == 0u) {
+    return false;
+  }
+
+  for (i = 0; i < harq_count; ++i) {
+    if (!ul_harq_states[i].waiting_pusch || ul_harq_states[i].rnti != c_rnti) {
+      continue;
+    }
+    if (!match_purpose || ul_harq_states[i].purpose == purpose) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void mini_gnb_c_sync_n3_user_plane(mini_gnb_c_simulator_t* simulator,
+                                          mini_gnb_c_simulator_dl_harq_state_t* dl_harq_states,
+                                          mini_gnb_c_simulator_ul_harq_state_t* ul_harq_states,
+                                          mini_gnb_c_simulator_dl_ipv4_state_t* dl_ip_state,
+                                          uint16_t* next_dl_sdu_id,
+                                          const int abs_slot) {
+  mini_gnb_c_ue_context_t* ue_context = NULL;
+  uint8_t packet[MINI_GNB_C_N3_MAX_GTPU_PACKET];
+  uint8_t inner_packet[MINI_GNB_C_MAX_PAYLOAD];
+  size_t packet_length = 0u;
+  size_t inner_packet_length = 0u;
+  char local_ip[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
+  uint16_t local_port = 0u;
+  bool needs_activation = false;
+  mini_gnb_c_buffer_t payload;
+  uint32_t teid = 0u;
+  uint8_t qfi = 0u;
+
+  if (simulator == NULL || dl_harq_states == NULL || ul_harq_states == NULL || dl_ip_state == NULL ||
+      next_dl_sdu_id == NULL || simulator->ue_store.count == 0u) {
+    return;
+  }
+
+  ue_context = &simulator->ue_store.contexts[0];
+  if (!mini_gnb_c_core_session_has_user_plane(&ue_context->core_session)) {
+    return;
+  }
+  needs_activation = !mini_gnb_c_n3_user_plane_is_ready(&simulator->n3_user_plane) ||
+                     strcmp(simulator->n3_user_plane.upf_ip, ue_context->core_session.upf_ip) != 0 ||
+                     simulator->n3_user_plane.session.upf_teid != ue_context->core_session.upf_teid ||
+                     simulator->n3_user_plane.upf_port != simulator->config.core.upf_port;
+
+  if (needs_activation) {
+    if (mini_gnb_c_n3_user_plane_activate(&simulator->n3_user_plane,
+                                          &ue_context->core_session,
+                                          simulator->config.core.upf_port,
+                                          abs_slot) != 0) {
+      mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                     "n3_user_plane",
+                                     "Failed to activate persistent N3 user-plane socket.",
+                                     abs_slot,
+                                     "c_rnti=%u,upf=%s:%u,teid=0x%08x",
+                                     ue_context->c_rnti,
+                                     ue_context->core_session.upf_ip,
+                                     simulator->config.core.upf_port,
+                                     ue_context->core_session.upf_teid);
+      return;
+    }
+    if (mini_gnb_c_n3_user_plane_get_local_endpoint(&simulator->n3_user_plane,
+                                                    local_ip,
+                                                    sizeof(local_ip),
+                                                    &local_port) != 0) {
+      (void)snprintf(local_ip, sizeof(local_ip), "%s", "(unknown)");
+      local_port = 0u;
+    }
+    mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                   "n3_user_plane",
+                                   "Activated persistent N3 user-plane socket.",
+                                   abs_slot,
+                                   "c_rnti=%u,local=%s:%u,upf=%s:%u,teid=0x%08x,qfi=%u",
+                                   ue_context->c_rnti,
+                                   local_ip,
+                                   local_port,
+                                   ue_context->core_session.upf_ip,
+                                   simulator->config.core.upf_port,
+                                   ue_context->core_session.upf_teid,
+                                   ue_context->core_session.qfi);
+  }
+
+  if (!dl_ip_state->active &&
+      mini_gnb_c_n3_user_plane_poll_downlink(&simulator->n3_user_plane, packet, sizeof(packet), &packet_length) > 0) {
+    if (mini_gnb_c_gtpu_extract_gpdu(packet,
+                                     packet_length,
+                                     &teid,
+                                     &qfi,
+                                     inner_packet,
+                                     sizeof(inner_packet),
+                                     &inner_packet_length) != 0) {
+      mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                     "n3_user_plane",
+                                     "Ignored malformed downlink GTP-U packet on the persistent N3 socket.",
+                                     abs_slot,
+                                     "c_rnti=%u,packet_length=%zu",
+                                     ue_context->c_rnti,
+                                     packet_length);
+      return;
+    }
+    mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                   "n3_user_plane",
+                                   "Polled one downlink GTP-U packet on the persistent N3 socket.",
+                                   abs_slot,
+                                   "c_rnti=%u,packet_length=%zu,teid=0x%08x,qfi=%u,downlink_gpdu_count=%llu",
+                                   ue_context->c_rnti,
+                                   packet_length,
+                                   teid,
+                                   qfi,
+                                   (unsigned long long)simulator->n3_user_plane.downlink_gpdu_count);
+    if (!mini_gnb_c_ue_ip_stack_min_is_ipv4_packet(inner_packet, inner_packet_length) ||
+        mini_gnb_c_buffer_set_bytes(&payload, inner_packet, inner_packet_length) != 0) {
+      mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                     "n3_user_plane",
+                                     "Ignored downlink GTP-U packet because the inner payload is not a supported IPv4 packet.",
+                                     abs_slot,
+                                     "c_rnti=%u,inner_packet_length=%zu",
+                                     ue_context->c_rnti,
+                                     inner_packet_length);
+      return;
+    }
+    memset(dl_ip_state, 0, sizeof(*dl_ip_state));
+    dl_ip_state->active = true;
+    dl_ip_state->c_rnti = ue_context->c_rnti;
+    dl_ip_state->sdu_id = (*next_dl_sdu_id)++;
+    dl_ip_state->payload = payload;
+    mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                   "n3_user_plane",
+                                   "Buffered one downlink IPv4 payload from N3 for segmented radio delivery.",
+                                   abs_slot,
+                                   "c_rnti=%u,sdu_id=%u,inner_packet_length=%zu",
+                                   ue_context->c_rnti,
+                                   dl_ip_state->sdu_id,
+                                   inner_packet_length);
+  }
+  mini_gnb_c_stage_connected_dl_ipv4_segment(simulator, ue_context, dl_harq_states, dl_ip_state, abs_slot);
+}
+
 static bool mini_gnb_c_path_is_absolute(const char* path) {
   if (path == NULL || path[0] == '\0') {
     return false;
@@ -99,7 +511,7 @@ static bool mini_gnb_c_path_is_absolute(const char* path) {
   return strlen(path) > 1U && path[1] == ':';
 }
 
-static void mini_gnb_c_resolve_optional_dir_in_place(char* path, const size_t path_size) {
+static void mini_gnb_c_resolve_optional_path_in_place(char* path, const size_t path_size) {
   char resolved[MINI_GNB_C_MAX_PATH];
 
   if (path == NULL || path_size == 0U || path[0] == '\0' || mini_gnb_c_path_is_absolute(path)) {
@@ -108,6 +520,44 @@ static void mini_gnb_c_resolve_optional_dir_in_place(char* path, const size_t pa
 
   if (mini_gnb_c_join_path(MINI_GNB_C_SOURCE_DIR, path, resolved, sizeof(resolved)) == 0) {
     (void)snprintf(path, path_size, "%s", resolved);
+  }
+}
+
+static void mini_gnb_c_resolve_optional_dir_in_place(char* path, const size_t path_size) {
+  mini_gnb_c_resolve_optional_path_in_place(path, path_size);
+}
+
+static void mini_gnb_c_configure_core_trace_paths(mini_gnb_c_simulator_t* simulator, const char* output_dir) {
+  char default_ngap_path[MINI_GNB_C_MAX_PATH];
+  char default_gtpu_path[MINI_GNB_C_MAX_PATH];
+
+  if (simulator == NULL || output_dir == NULL || !simulator->config.core.enabled) {
+    return;
+  }
+
+  mini_gnb_c_resolve_optional_path_in_place(simulator->config.core.ngap_trace_pcap,
+                                            sizeof(simulator->config.core.ngap_trace_pcap));
+  mini_gnb_c_resolve_optional_path_in_place(simulator->config.core.gtpu_trace_pcap,
+                                            sizeof(simulator->config.core.gtpu_trace_pcap));
+  if (simulator->config.core.ngap_trace_pcap[0] == '\0' &&
+      mini_gnb_c_join_path(output_dir,
+                           "gnb_core_ngap_runtime.pcap",
+                           default_ngap_path,
+                           sizeof(default_ngap_path)) == 0) {
+    (void)snprintf(simulator->config.core.ngap_trace_pcap,
+                   sizeof(simulator->config.core.ngap_trace_pcap),
+                   "%s",
+                   default_ngap_path);
+  }
+  if (simulator->config.core.gtpu_trace_pcap[0] == '\0' &&
+      mini_gnb_c_join_path(output_dir,
+                           "gnb_core_gtpu_runtime.pcap",
+                           default_gtpu_path,
+                           sizeof(default_gtpu_path)) == 0) {
+    (void)snprintf(simulator->config.core.gtpu_trace_pcap,
+                   sizeof(simulator->config.core.gtpu_trace_pcap),
+                   "%s",
+                   default_gtpu_path);
   }
 }
 
@@ -390,6 +840,9 @@ static void mini_gnb_c_arm_scripted_ul_data(mini_gnb_c_simulator_t* simulator,
   armed_ul_grant.mcs = request->mcs;
   armed_ul_grant.k2 = request->k2;
   armed_ul_grant.purpose = request->purpose;
+  armed_ul_grant.harq_id = request->harq_id;
+  armed_ul_grant.ndi = request->ndi;
+  armed_ul_grant.is_new_data = request->is_new_data;
   mini_gnb_c_mock_radio_frontend_arm_ul_data(&simulator->radio, &armed_ul_grant);
 }
 
@@ -432,13 +885,20 @@ static void mini_gnb_c_process_scripted_dl_schedule(mini_gnb_c_simulator_t* simu
 
   request.c_rnti = rnti;
   request.abs_slot = slot->abs_slot;
+  request.pdcch_abs_slot = request.abs_slot;
   request.prb_start = 52U;
   request.prb_len = 24U;
   request.mcs = 9U;
   request.dci_format = MINI_GNB_C_DCI_FORMAT_1_1;
+  request.time_indicator = 0;
+  request.dl_data_to_ul_ack = 1;
+  request.harq_id = 0u;
+  request.ndi = true;
+  request.is_new_data = true;
 
   if (mini_gnb_c_extract_transport_int(text, "abs_slot", &int_value) == 0) {
     request.abs_slot = int_value;
+    request.pdcch_abs_slot = request.abs_slot;
   }
   if (mini_gnb_c_extract_transport_int(text, "prb_start", &int_value) == 0 && int_value >= 0) {
     request.prb_start = (uint16_t)int_value;
@@ -515,6 +975,9 @@ static void mini_gnb_c_process_scripted_ul_schedule(mini_gnb_c_simulator_t* simu
   request.pdcch_abs_slot = slot->abs_slot;
   request.k2 = 2U;
   request.purpose = mini_gnb_c_parse_ul_purpose(text, MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD);
+  request.harq_id = 0u;
+  request.ndi = true;
+  request.is_new_data = true;
   request.prb_start = request.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? 60U : 48U;
   request.prb_len = request.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? 8U : 24U;
   request.mcs = request.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? 4U : 8U;
@@ -598,14 +1061,28 @@ static void mini_gnb_c_process_scripted_pdcch_dl(mini_gnb_c_simulator_t* simulat
   }
 
   request.c_rnti = rnti;
+  request.pdcch_abs_slot = slot->abs_slot;
   request.abs_slot = slot->abs_slot;
   request.prb_start = 52U;
   request.prb_len = 24U;
   request.mcs = 9U;
   request.dci_format = mini_gnb_c_parse_dci_format(text, "dci_format", MINI_GNB_C_DCI_FORMAT_1_1);
+  request.time_indicator = 0;
+  request.dl_data_to_ul_ack = 1;
+  request.harq_id = 0u;
+  request.ndi = true;
+  request.is_new_data = true;
 
   if (mini_gnb_c_extract_transport_int(text, "scheduled_abs_slot", &int_value) == 0) {
     request.abs_slot = int_value;
+    request.time_indicator = request.abs_slot - request.pdcch_abs_slot;
+  }
+  if (mini_gnb_c_extract_transport_int(text, "time_indicator", &int_value) == 0) {
+    request.time_indicator = int_value;
+    request.abs_slot = request.pdcch_abs_slot + request.time_indicator;
+  }
+  if (mini_gnb_c_extract_transport_int(text, "dl_data_to_ul_ack", &int_value) == 0 && int_value >= 0) {
+    request.dl_data_to_ul_ack = int_value;
   }
   if (mini_gnb_c_extract_transport_int(text, "scheduled_prb_start", &int_value) == 0 && int_value >= 0) {
     request.prb_start = (uint16_t)int_value;
@@ -681,6 +1158,9 @@ static void mini_gnb_c_process_scripted_pdcch_ul(mini_gnb_c_simulator_t* simulat
   request.pdcch_abs_slot = slot->abs_slot;
   request.k2 = 2U;
   request.purpose = mini_gnb_c_parse_ul_purpose(text, MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD);
+  request.harq_id = 0u;
+  request.ndi = true;
+  request.is_new_data = true;
   request.prb_start = request.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? 60U : 48U;
   request.prb_len = request.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? 8U : 24U;
   request.mcs = request.purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR ? 4U : 8U;
@@ -734,6 +1214,7 @@ static void mini_gnb_c_process_scripted_slot_controls(mini_gnb_c_simulator_t* si
 
 static void mini_gnb_c_queue_connected_ul_grant(mini_gnb_c_simulator_t* simulator,
                                                 mini_gnb_c_ue_context_t* ue_context,
+                                                mini_gnb_c_simulator_ul_harq_state_t* ul_harq_states,
                                                 int trigger_abs_slot,
                                                 mini_gnb_c_ul_data_purpose_t purpose,
                                                 uint16_t prb_start,
@@ -741,27 +1222,57 @@ static void mini_gnb_c_queue_connected_ul_grant(mini_gnb_c_simulator_t* simulato
                                                 uint8_t mcs) {
   mini_gnb_c_ul_data_schedule_request_t request;
   mini_gnb_c_ul_data_grant_t armed_ul_grant;
+  int harq_id = -1;
 
-  if (simulator == NULL || ue_context == NULL) {
+  if (simulator == NULL || ue_context == NULL || ul_harq_states == NULL) {
+    return;
+  }
+  harq_id = mini_gnb_c_find_free_ul_harq_process(ul_harq_states, simulator->config.sim.post_msg4_ul_harq_process_count);
+  if (harq_id < 0) {
+    mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                   "connected_scheduler",
+                                   "No free UL HARQ process for new UL grant.",
+                                   trigger_abs_slot,
+                                   "c_rnti=%u,purpose=%s",
+                                   ue_context->c_rnti,
+                                   mini_gnb_c_ul_data_purpose_string(purpose));
     return;
   }
 
   memset(&request, 0, sizeof(request));
   request.c_rnti = ue_context->c_rnti;
-  request.pdcch_abs_slot = trigger_abs_slot + 1;
-  request.k2 = (uint8_t)simulator->config.sim.post_msg4_ul_data_k2;
-  request.abs_slot = request.pdcch_abs_slot + simulator->config.sim.post_msg4_ul_data_k2;
+  request.pdcch_abs_slot = trigger_abs_slot + simulator->config.sim.post_msg4_ul_grant_delay_slots;
+  request.k2 = (uint8_t)simulator->config.sim.post_msg4_ul_time_indicator;
+  request.abs_slot = request.pdcch_abs_slot + simulator->config.sim.post_msg4_ul_time_indicator;
   request.prb_start = prb_start;
   request.prb_len = prb_len;
   request.mcs = mcs;
   request.purpose = purpose;
+  request.harq_id = (uint8_t)harq_id;
+  request.ndi = ul_harq_states[harq_id].ndi;
+  request.is_new_data = true;
   mini_gnb_c_initial_access_scheduler_queue_ul_data_grant(&simulator->scheduler, &request, &simulator->metrics);
 
   memset(&armed_ul_grant, 0, sizeof(armed_ul_grant));
   armed_ul_grant.c_rnti = request.c_rnti;
   armed_ul_grant.abs_slot = request.abs_slot;
+  armed_ul_grant.prb_start = request.prb_start;
+  armed_ul_grant.prb_len = request.prb_len;
+  armed_ul_grant.mcs = request.mcs;
   armed_ul_grant.purpose = request.purpose;
+  armed_ul_grant.harq_id = request.harq_id;
+  armed_ul_grant.ndi = request.ndi;
+  armed_ul_grant.is_new_data = request.is_new_data;
   mini_gnb_c_mock_radio_frontend_arm_ul_data(&simulator->radio, &armed_ul_grant);
+  ul_harq_states[harq_id].waiting_pusch = true;
+  ul_harq_states[harq_id].rnti = request.c_rnti;
+  ul_harq_states[harq_id].pdcch_abs_slot = request.pdcch_abs_slot;
+  ul_harq_states[harq_id].pusch_abs_slot = request.abs_slot;
+  ul_harq_states[harq_id].prb_start = request.prb_start;
+  ul_harq_states[harq_id].prb_len = request.prb_len;
+  ul_harq_states[harq_id].mcs = request.mcs;
+  ul_harq_states[harq_id].purpose = request.purpose;
+  ul_harq_states[harq_id].harq_id = request.harq_id;
 
   if (purpose == MINI_GNB_C_UL_DATA_PURPOSE_BSR) {
     ue_context->small_ul_grant_abs_slot = request.abs_slot;
@@ -770,46 +1281,287 @@ static void mini_gnb_c_queue_connected_ul_grant(mini_gnb_c_simulator_t* simulato
   }
 }
 
-static void mini_gnb_c_schedule_post_msg4_traffic(mini_gnb_c_simulator_t* simulator,
-                                                  mini_gnb_c_ue_context_t* ue_context,
-                                                  int msg4_abs_slot) {
-  mini_gnb_c_dl_data_schedule_request_t dl_request;
-  char payload_text[MINI_GNB_C_MAX_TEXT];
-  int sr_abs_slot = 0;
+static bool mini_gnb_c_try_queue_connected_bsr_grant(mini_gnb_c_simulator_t* simulator,
+                                                     mini_gnb_c_ue_context_t* ue_context,
+                                                     mini_gnb_c_simulator_ul_harq_state_t* ul_harq_states,
+                                                     const int trigger_abs_slot) {
+  if (simulator == NULL || ue_context == NULL || ul_harq_states == NULL ||
+      simulator->config.sim.scripted_schedule_dir[0] != '\0' ||
+      simulator->config.sim.scripted_pdcch_dir[0] != '\0' ||
+      mini_gnb_c_has_waiting_connected_ul_grant(simulator, ul_harq_states, ue_context->c_rnti, false,
+                                                MINI_GNB_C_UL_DATA_PURPOSE_BSR)) {
+    return false;
+  }
 
-  if (simulator == NULL || ue_context == NULL || ue_context->traffic_plan_scheduled ||
-      !simulator->config.sim.post_msg4_traffic_enabled || simulator->config.sim.scripted_schedule_dir[0] != '\0' ||
-      simulator->config.sim.scripted_pdcch_dir[0] != '\0') {
+  mini_gnb_c_queue_connected_ul_grant(simulator,
+                                      ue_context,
+                                      ul_harq_states,
+                                      trigger_abs_slot,
+                                      MINI_GNB_C_UL_DATA_PURPOSE_BSR,
+                                      60U,
+                                      8U,
+                                      4U);
+  return true;
+}
+
+static bool mini_gnb_c_try_queue_connected_payload_grant(mini_gnb_c_simulator_t* simulator,
+                                                         mini_gnb_c_ue_context_t* ue_context,
+                                                         mini_gnb_c_simulator_ul_harq_state_t* ul_harq_states,
+                                                         const int trigger_abs_slot) {
+  if (simulator == NULL || ue_context == NULL || ul_harq_states == NULL ||
+      simulator->config.sim.scripted_schedule_dir[0] != '\0' ||
+      simulator->config.sim.scripted_pdcch_dir[0] != '\0' || ue_context->connected_ul_pending_bytes <= 0 ||
+      mini_gnb_c_has_waiting_connected_ul_grant(simulator, ul_harq_states, ue_context->c_rnti, false,
+                                                MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD)) {
+    return false;
+  }
+
+  mini_gnb_c_queue_connected_ul_grant(simulator,
+                                      ue_context,
+                                      ul_harq_states,
+                                      trigger_abs_slot,
+                                      MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD,
+                                      48U,
+                                      mini_gnb_c_select_large_ul_prb_len(ue_context->connected_ul_pending_bytes),
+                                      8U);
+  return true;
+}
+
+static void mini_gnb_c_queue_connected_dl_data(mini_gnb_c_simulator_t* simulator,
+                                               mini_gnb_c_ue_context_t* ue_context,
+                                               mini_gnb_c_simulator_dl_harq_state_t* dl_harq_states,
+                                               int trigger_abs_slot,
+                                               const mini_gnb_c_buffer_t* payload,
+                                               const mini_gnb_c_payload_kind_t payload_kind) {
+  mini_gnb_c_dl_data_schedule_request_t dl_request;
+  int harq_id = -1;
+
+  if (simulator == NULL || ue_context == NULL || dl_harq_states == NULL || payload == NULL) {
+    return;
+  }
+  harq_id = mini_gnb_c_find_free_dl_harq_process(dl_harq_states, simulator->config.sim.post_msg4_dl_harq_process_count);
+  if (harq_id < 0) {
+    mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                   "connected_scheduler",
+                                   "No free DL HARQ process for new DL data.",
+                                   trigger_abs_slot,
+                                   "c_rnti=%u",
+                                   ue_context->c_rnti);
     return;
   }
 
   memset(&dl_request, 0, sizeof(dl_request));
   dl_request.c_rnti = ue_context->c_rnti;
-  dl_request.abs_slot = msg4_abs_slot + simulator->config.sim.post_msg4_dl_data_delay_slots;
+  dl_request.pdcch_abs_slot = trigger_abs_slot + simulator->config.sim.post_msg4_dl_pdcch_delay_slots;
+  dl_request.time_indicator = simulator->config.sim.post_msg4_dl_time_indicator;
+  dl_request.abs_slot = dl_request.pdcch_abs_slot + dl_request.time_indicator;
   dl_request.prb_start = 52U;
   dl_request.prb_len = 24U;
   dl_request.mcs = 9U;
   dl_request.dci_format = MINI_GNB_C_DCI_FORMAT_1_1;
-  sr_abs_slot = dl_request.abs_slot + simulator->config.sim.post_msg4_ul_grant_delay_slots;
+  dl_request.dl_data_to_ul_ack = simulator->config.sim.post_msg4_dl_data_to_ul_ack_slots;
+  dl_request.harq_id = (uint8_t)harq_id;
+  dl_request.ndi = dl_harq_states[harq_id].ndi;
+  dl_request.is_new_data = true;
+  dl_request.payload_kind = payload_kind;
+  dl_request.payload = *payload;
+  mini_gnb_c_initial_access_scheduler_queue_dl_data(&simulator->scheduler, &dl_request, &simulator->metrics);
+  mini_gnb_c_mock_radio_frontend_arm_dl_ack(&simulator->radio,
+                                            ue_context->c_rnti,
+                                            dl_request.harq_id,
+                                            dl_request.abs_slot + dl_request.dl_data_to_ul_ack);
+
+  dl_harq_states[harq_id].waiting_ack = true;
+  dl_harq_states[harq_id].rnti = ue_context->c_rnti;
+  dl_harq_states[harq_id].pdcch_abs_slot = dl_request.pdcch_abs_slot;
+  dl_harq_states[harq_id].pdsch_abs_slot = dl_request.abs_slot;
+  dl_harq_states[harq_id].ack_abs_slot = dl_request.abs_slot + dl_request.dl_data_to_ul_ack;
+  dl_harq_states[harq_id].harq_id = dl_request.harq_id;
+  dl_harq_states[harq_id].payload_kind = dl_request.payload_kind;
+  dl_harq_states[harq_id].payload = dl_request.payload;
+
+  ue_context->dl_data_abs_slot = dl_request.abs_slot;
+}
+
+static void mini_gnb_c_requeue_dl_harq_retx(mini_gnb_c_simulator_t* simulator,
+                                            mini_gnb_c_simulator_dl_harq_state_t* dl_harq_state,
+                                            const int current_abs_slot) {
+  mini_gnb_c_dl_data_schedule_request_t dl_request;
+
+  if (simulator == NULL || dl_harq_state == NULL || !dl_harq_state->waiting_ack) {
+    return;
+  }
+
+  memset(&dl_request, 0, sizeof(dl_request));
+  dl_request.c_rnti = dl_harq_state->rnti;
+  dl_request.pdcch_abs_slot = current_abs_slot;
+  dl_request.time_indicator = simulator->config.sim.post_msg4_dl_time_indicator;
+  dl_request.abs_slot = dl_request.pdcch_abs_slot + dl_request.time_indicator;
+  dl_request.prb_start = 52U;
+  dl_request.prb_len = 24U;
+  dl_request.mcs = 9U;
+  dl_request.dci_format = MINI_GNB_C_DCI_FORMAT_1_1;
+  dl_request.dl_data_to_ul_ack = simulator->config.sim.post_msg4_dl_data_to_ul_ack_slots;
+  dl_request.harq_id = dl_harq_state->harq_id;
+  dl_request.ndi = dl_harq_state->ndi;
+  dl_request.is_new_data = false;
+  dl_request.payload_kind = dl_harq_state->payload_kind;
+  dl_request.payload = dl_harq_state->payload;
+  mini_gnb_c_initial_access_scheduler_queue_dl_data(&simulator->scheduler, &dl_request, &simulator->metrics);
+  mini_gnb_c_mock_radio_frontend_arm_dl_ack(&simulator->radio,
+                                            dl_request.c_rnti,
+                                            dl_request.harq_id,
+                                            dl_request.abs_slot + dl_request.dl_data_to_ul_ack);
+
+  dl_harq_state->pdcch_abs_slot = dl_request.pdcch_abs_slot;
+  dl_harq_state->pdsch_abs_slot = dl_request.abs_slot;
+  dl_harq_state->ack_abs_slot = dl_request.abs_slot + dl_request.dl_data_to_ul_ack;
+  mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                 "harq_dl",
+                                 "Queued DL HARQ retransmission.",
+                                 current_abs_slot,
+                                 "c_rnti=%u,harq_id=%u,ndi=%s,pdsch_abs_slot=%d",
+                                 dl_request.c_rnti,
+                                 dl_request.harq_id,
+                                 dl_request.ndi ? "true" : "false",
+                                 dl_request.abs_slot);
+}
+
+static void mini_gnb_c_requeue_ul_harq_retx(mini_gnb_c_simulator_t* simulator,
+                                            mini_gnb_c_simulator_ul_harq_state_t* ul_harq_state,
+                                            const int current_abs_slot) {
+  mini_gnb_c_ul_data_schedule_request_t request;
+  mini_gnb_c_ul_data_grant_t armed_ul_grant;
+
+  if (simulator == NULL || ul_harq_state == NULL || !ul_harq_state->waiting_pusch) {
+    return;
+  }
+
+  memset(&request, 0, sizeof(request));
+  request.c_rnti = ul_harq_state->rnti;
+  request.pdcch_abs_slot = current_abs_slot;
+  request.k2 = (uint8_t)simulator->config.sim.post_msg4_ul_time_indicator;
+  request.abs_slot = request.pdcch_abs_slot + request.k2;
+  request.prb_start = ul_harq_state->prb_start;
+  request.prb_len = ul_harq_state->prb_len;
+  request.mcs = ul_harq_state->mcs;
+  request.purpose = ul_harq_state->purpose;
+  request.harq_id = ul_harq_state->harq_id;
+  request.ndi = ul_harq_state->ndi;
+  request.is_new_data = false;
+  mini_gnb_c_initial_access_scheduler_queue_ul_data_grant(&simulator->scheduler, &request, &simulator->metrics);
+
+  memset(&armed_ul_grant, 0, sizeof(armed_ul_grant));
+  armed_ul_grant.c_rnti = request.c_rnti;
+  armed_ul_grant.abs_slot = request.abs_slot;
+  armed_ul_grant.prb_start = request.prb_start;
+  armed_ul_grant.prb_len = request.prb_len;
+  armed_ul_grant.mcs = request.mcs;
+  armed_ul_grant.purpose = request.purpose;
+  armed_ul_grant.harq_id = request.harq_id;
+  armed_ul_grant.ndi = request.ndi;
+  armed_ul_grant.is_new_data = request.is_new_data;
+  mini_gnb_c_mock_radio_frontend_arm_ul_data(&simulator->radio, &armed_ul_grant);
+
+  ul_harq_state->pdcch_abs_slot = request.pdcch_abs_slot;
+  ul_harq_state->pusch_abs_slot = request.abs_slot;
+  mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                 "harq_ul",
+                                 "Queued UL HARQ retransmission.",
+                                 current_abs_slot,
+                                 "c_rnti=%u,harq_id=%u,ndi=%s,purpose=%s,pusch_abs_slot=%d",
+                                 request.c_rnti,
+                                 request.harq_id,
+                                 request.ndi ? "true" : "false",
+                                 mini_gnb_c_ul_data_purpose_string(request.purpose),
+                                 request.abs_slot);
+}
+
+static int mini_gnb_c_next_periodic_slot_at_or_after(const int min_abs_slot,
+                                                     const int period_slots,
+                                                     const int offset_slot) {
+  int candidate = 0;
+
+  if (period_slots <= 0 || offset_slot < 0) {
+    return -1;
+  }
+  if (min_abs_slot <= offset_slot) {
+    return offset_slot;
+  }
+
+  candidate = min_abs_slot;
+  while (((candidate - offset_slot) % period_slots) != 0) {
+    ++candidate;
+  }
+  return candidate;
+}
+
+static void mini_gnb_c_arm_next_connected_sr_opportunity(mini_gnb_c_simulator_t* simulator,
+                                                         mini_gnb_c_ue_context_t* ue_context,
+                                                         const int current_abs_slot) {
+  int sr_abs_slot = 0;
+
+  if (simulator == NULL || ue_context == NULL || !mini_gnb_c_connected_ul_is_runtime_driven(simulator) ||
+      !ue_context->traffic_plan_scheduled || ue_context->c_rnti == 0u) {
+    return;
+  }
+
+  sr_abs_slot = mini_gnb_c_next_periodic_slot_at_or_after(current_abs_slot,
+                                                          simulator->config.sim.post_msg4_sr_period_slots,
+                                                          simulator->config.sim.post_msg4_sr_offset_slot);
+  if (sr_abs_slot < current_abs_slot) {
+    return;
+  }
+  if (!simulator->radio.pucch_sr_armed || simulator->radio.pucch_sr_abs_slot < current_abs_slot ||
+      simulator->radio.pucch_sr_abs_slot != sr_abs_slot || simulator->radio.pucch_sr_rnti != ue_context->c_rnti) {
+    mini_gnb_c_mock_radio_frontend_arm_pucch_sr(&simulator->radio, ue_context->c_rnti, sr_abs_slot);
+  }
+}
+
+static void mini_gnb_c_schedule_post_msg4_traffic(mini_gnb_c_simulator_t* simulator,
+                                                  mini_gnb_c_ue_context_t* ue_context,
+                                                  mini_gnb_c_simulator_dl_harq_state_t* dl_harq_states,
+                                                  int msg4_abs_slot) {
+  mini_gnb_c_buffer_t payload;
+  char payload_text[MINI_GNB_C_MAX_TEXT];
+  int sr_abs_slot = 0;
+
+  if (simulator == NULL || ue_context == NULL || dl_harq_states == NULL || ue_context->traffic_plan_scheduled ||
+      !simulator->config.sim.post_msg4_traffic_enabled || simulator->config.sim.scripted_schedule_dir[0] != '\0' ||
+      simulator->config.sim.scripted_pdcch_dir[0] != '\0') {
+    return;
+  }
+
+  sr_abs_slot = mini_gnb_c_next_periodic_slot_at_or_after(msg4_abs_slot + 1,
+                                                          simulator->config.sim.post_msg4_sr_period_slots,
+                                                          simulator->config.sim.post_msg4_sr_offset_slot);
+  if (sr_abs_slot < 0) {
+    return;
+  }
   if (snprintf(payload_text,
                sizeof(payload_text),
                "PUCCH_CFG|sr_abs_slot=%d",
                sr_abs_slot) < (int)sizeof(payload_text)) {
-    (void)mini_gnb_c_buffer_set_text(&dl_request.payload, payload_text);
+    (void)mini_gnb_c_buffer_set_text(&payload, payload_text);
   }
-  mini_gnb_c_initial_access_scheduler_queue_dl_data(&simulator->scheduler, &dl_request, &simulator->metrics);
+  mini_gnb_c_queue_connected_dl_data(simulator,
+                                     ue_context,
+                                     dl_harq_states,
+                                     msg4_abs_slot,
+                                     &payload,
+                                     MINI_GNB_C_PAYLOAD_KIND_GENERIC);
   mini_gnb_c_mock_radio_frontend_arm_pucch_sr(&simulator->radio, ue_context->c_rnti, sr_abs_slot);
 
   ue_context->traffic_plan_scheduled = true;
-  ue_context->dl_data_abs_slot = dl_request.abs_slot;
   mini_gnb_c_metrics_trace_event(&simulator->metrics,
                                  "connected_scheduler",
-                                 "Queued post-Msg4 PUCCH config and SR occasion.",
+                                 "Queued post-Msg4 DL HARQ PDSCH config and SR occasion.",
                                  msg4_abs_slot,
-                                 "c_rnti=%u,dl_cfg_abs_slot=%d,sr_abs_slot=%d",
+                                 "c_rnti=%u,dl_cfg_abs_slot=%d,sr_abs_slot=%d,dl_harq=%d",
                                  ue_context->c_rnti,
                                  ue_context->dl_data_abs_slot,
-                                 sr_abs_slot);
+                                 sr_abs_slot,
+                                 simulator->config.sim.post_msg4_dl_harq_process_count);
 }
 
 void mini_gnb_c_simulator_init(mini_gnb_c_simulator_t* simulator,
@@ -821,32 +1573,74 @@ void mini_gnb_c_simulator_init(mini_gnb_c_simulator_t* simulator,
 
   memset(simulator, 0, sizeof(*simulator));
   simulator->config = *config;
+  mini_gnb_c_configure_core_trace_paths(simulator, output_dir);
+  mini_gnb_c_resolve_optional_dir_in_place(simulator->config.sim.local_exchange_dir,
+                                           sizeof(simulator->config.sim.local_exchange_dir));
+  mini_gnb_c_resolve_optional_dir_in_place(simulator->config.sim.shared_slot_path,
+                                           sizeof(simulator->config.sim.shared_slot_path));
   mini_gnb_c_resolve_optional_dir_in_place(simulator->config.sim.scripted_schedule_dir,
                                            sizeof(simulator->config.sim.scripted_schedule_dir));
   mini_gnb_c_resolve_optional_dir_in_place(simulator->config.sim.scripted_pdcch_dir,
                                            sizeof(simulator->config.sim.scripted_pdcch_dir));
   mini_gnb_c_metrics_trace_init(&simulator->metrics, output_dir);
-  mini_gnb_c_slot_engine_init(&simulator->slot_engine, config);
-  mini_gnb_c_mock_radio_frontend_init(&simulator->radio, &config->rf, &config->sim);
+  mini_gnb_c_slot_engine_init(&simulator->slot_engine, &simulator->config);
+  mini_gnb_c_mock_radio_frontend_init(&simulator->radio, &simulator->config.rf, &simulator->config.sim);
   mini_gnb_c_broadcast_engine_init(&simulator->broadcast,
-                                   &config->cell,
-                                   &config->prach,
-                                   &config->broadcast);
-  mini_gnb_c_mock_prach_detector_init(&simulator->prach_detector, &config->sim);
-  mini_gnb_c_ra_manager_init(&simulator->ra_manager, &config->prach, &config->sim);
+                                   &simulator->config.cell,
+                                   &simulator->config.prach,
+                                   &simulator->config.broadcast,
+                                   &simulator->config.sim);
+  mini_gnb_c_mock_prach_detector_init(&simulator->prach_detector, &simulator->config.sim);
+  mini_gnb_c_ra_manager_init(&simulator->ra_manager, &simulator->config.prach, &simulator->config.sim);
   mini_gnb_c_initial_access_scheduler_init(&simulator->scheduler);
-  mini_gnb_c_mock_msg3_receiver_init(&simulator->msg3_receiver, &config->sim);
+  mini_gnb_c_mock_msg3_receiver_init(&simulator->msg3_receiver, &simulator->config.sim);
   mini_gnb_c_mock_dl_phy_mapper_init(&simulator->dl_mapper);
   mini_gnb_c_ue_context_store_init(&simulator->ue_store);
+  mini_gnb_c_gnb_core_bridge_init(&simulator->core_bridge,
+                                  &simulator->config.core,
+                                  simulator->config.sim.local_exchange_dir);
+  mini_gnb_c_gnb_core_bridge_set_radio_nas_transport(&simulator->core_bridge,
+                                                     simulator->config.core.enabled &&
+                                                         simulator->config.sim.shared_slot_path[0] != '\0');
+  if (simulator->config.core.ngap_trace_pcap[0] != '\0' &&
+      mini_gnb_c_gnb_core_bridge_set_ngap_trace_path(&simulator->core_bridge,
+                                                     simulator->config.core.ngap_trace_pcap) != 0) {
+    mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                   "pcap_trace",
+                                   "Failed to open simulator NGAP trace pcap.",
+                                   -1,
+                                   "path=%s",
+                                   simulator->config.core.ngap_trace_pcap);
+  }
+  mini_gnb_c_n3_user_plane_init(&simulator->n3_user_plane);
+  if (simulator->config.core.gtpu_trace_pcap[0] != '\0' &&
+      mini_gnb_c_n3_user_plane_set_gtpu_trace_path(&simulator->n3_user_plane,
+                                                   simulator->config.core.gtpu_trace_pcap) != 0) {
+    mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                   "pcap_trace",
+                                   "Failed to open simulator GTP-U trace pcap.",
+                                   -1,
+                                   "path=%s",
+                                   simulator->config.core.gtpu_trace_pcap);
+  }
 }
 
 int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                              mini_gnb_c_run_summary_t* out_summary) {
   int abs_slot = 0;
+  mini_gnb_c_simulator_dl_harq_state_t dl_harq_states[MINI_GNB_C_MAX_HARQ_PROCESSES];
+  mini_gnb_c_simulator_ul_harq_state_t ul_harq_states[MINI_GNB_C_MAX_HARQ_PROCESSES];
+  mini_gnb_c_simulator_dl_ipv4_state_t dl_ip_state;
+  mini_gnb_c_rlc_lite_receiver_t ul_ip_reassembly;
+  uint16_t next_dl_ip_sdu_id = 1u;
 
   if (simulator == NULL || out_summary == NULL) {
     return -1;
   }
+  memset(dl_harq_states, 0, sizeof(dl_harq_states));
+  memset(ul_harq_states, 0, sizeof(ul_harq_states));
+  memset(&dl_ip_state, 0, sizeof(dl_ip_state));
+  mini_gnb_c_rlc_lite_receiver_init(&ul_ip_reassembly);
 
   mini_gnb_c_metrics_trace_event(&simulator->metrics,
                                  "main",
@@ -861,11 +1655,13 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
     mini_gnb_c_radio_burst_t burst;
     mini_gnb_c_prach_indication_t prach;
     mini_gnb_c_ul_grant_for_msg3_t msg3_grants[MINI_GNB_C_MAX_MSG3_GRANTS];
+    mini_gnb_c_pdcch_dci_t dl_pdcch_grants[MINI_GNB_C_MAX_GRANTS];
     mini_gnb_c_ul_data_grant_t ul_data_pdcch_grants[MINI_GNB_C_MAX_UL_DATA_GRANTS];
     mini_gnb_c_ul_data_grant_t ul_data_rx_grants[MINI_GNB_C_MAX_UL_DATA_GRANTS];
     mini_gnb_c_dl_grant_t dl_grants[MINI_GNB_C_MAX_GRANTS + 2U];
     mini_gnb_c_tx_grid_patch_t patches[MINI_GNB_C_MAX_GRANTS + 2U];
     size_t msg3_grant_count = 0;
+    size_t dl_pdcch_count = 0;
     size_t ul_data_pdcch_count = 0;
     size_t ul_data_rx_count = 0;
     size_t dl_grant_count = 0;
@@ -873,6 +1669,11 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
     size_t i = 0;
 
     mini_gnb_c_slot_engine_make_slot(&simulator->slot_engine, abs_slot, &slot);
+    if (simulator->ue_store.count > 0u) {
+      mini_gnb_c_arm_next_connected_sr_opportunity(simulator, &simulator->ue_store.contexts[0], slot.abs_slot);
+    }
+    mini_gnb_c_stage_shared_slot_user_plane(simulator);
+    mini_gnb_c_stage_radio_nas_downlink(simulator, dl_harq_states, slot.abs_slot);
     mini_gnb_c_mock_radio_frontend_receive(&simulator->radio, &slot, &burst);
     if (burst.ul_type != MINI_GNB_C_UL_BURST_NONE) {
       mini_gnb_c_metrics_trace_event(&simulator->metrics,
@@ -885,6 +1686,28 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                      burst.rnti,
                                      burst.preamble_id,
                                      burst.tbsize);
+    }
+    if (burst.ul_type == MINI_GNB_C_UL_BURST_PUCCH_ACK && burst.harq_id < MINI_GNB_C_MAX_HARQ_PROCESSES &&
+        dl_harq_states[burst.harq_id].waiting_ack && dl_harq_states[burst.harq_id].rnti == burst.rnti &&
+        slot.abs_slot == dl_harq_states[burst.harq_id].ack_abs_slot) {
+      dl_harq_states[burst.harq_id].waiting_ack = false;
+      dl_harq_states[burst.harq_id].ndi = !dl_harq_states[burst.harq_id].ndi;
+      mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                     "harq_dl",
+                                     "Received DL HARQ ACK and released process.",
+                                     slot.abs_slot,
+                                     "c_rnti=%u,harq_id=%u,next_ndi=%s",
+                                     burst.rnti,
+                                     burst.harq_id,
+                                     dl_harq_states[burst.harq_id].ndi ? "true" : "false");
+    }
+    for (i = 0; i < MINI_GNB_C_MAX_HARQ_PROCESSES; ++i) {
+      if (dl_harq_states[i].waiting_ack && slot.abs_slot > dl_harq_states[i].ack_abs_slot) {
+        mini_gnb_c_requeue_dl_harq_retx(simulator, &dl_harq_states[i], slot.abs_slot);
+      }
+      if (ul_harq_states[i].waiting_pusch && slot.abs_slot > ul_harq_states[i].pusch_abs_slot) {
+        mini_gnb_c_requeue_ul_harq_retx(simulator, &ul_harq_states[i], slot.abs_slot);
+      }
     }
     mini_gnb_c_ra_manager_expire(&simulator->ra_manager, &slot, &simulator->metrics);
 
@@ -1010,7 +1833,7 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
             continue;
           }
 
-          mini_gnb_c_build_rrc_setup(&request_info, &rrc_setup);
+          mini_gnb_c_build_rrc_setup(&request_info, &simulator->config.sim, &rrc_setup);
           if (simulator->ra_manager.has_active_context) {
             mini_gnb_c_ue_context_t* ue_context =
                 mini_gnb_c_ue_context_store_promote(&simulator->ue_store,
@@ -1018,6 +1841,17 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                                     &request_info,
                                                     slot.abs_slot);
             if (ue_context != NULL) {
+              if (mini_gnb_c_gnb_core_bridge_on_ue_promoted(&simulator->core_bridge,
+                                                            ue_context,
+                                                            &simulator->metrics,
+                                                            slot.abs_slot) != 0) {
+                mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                               "gnb_core_bridge",
+                                               "Failed to prepare InitialUEMessage for promoted UE.",
+                                               slot.abs_slot,
+                                               "c_rnti=%u",
+                                               ue_context->c_rnti);
+              }
               mini_gnb_c_metrics_trace_event(&simulator->metrics,
                                              "ue_context_store",
                                              "Promoted RA context into minimal UE context.",
@@ -1064,24 +1898,22 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                        burst.rnti,
                                        ue_context != NULL ? ue_context->c_rnti : 0U,
                                        mini_gnb_c_bool_string(sr_ok));
-      } else if (!ue_context->pucch_sr_detected) {
+      } else {
+        const bool queued_bsr_grant =
+            mini_gnb_c_try_queue_connected_bsr_grant(simulator, ue_context, ul_harq_states, slot.abs_slot);
         mini_gnb_c_metrics_trace_increment_named(&simulator->metrics, "pucch_sr_detect_ok", 1U);
         ue_context->pucch_sr_detected = true;
         ue_context->pucch_sr_abs_slot = slot.abs_slot;
-        mini_gnb_c_queue_connected_ul_grant(simulator,
-                                            ue_context,
-                                            slot.abs_slot,
-                                            MINI_GNB_C_UL_DATA_PURPOSE_BSR,
-                                            60U,
-                                            8U,
-                                            4U);
         mini_gnb_c_metrics_trace_event(&simulator->metrics,
                                        "pucch_sr_detector",
-                                       "Detected PUCCH SR and queued compact UL BSR grant.",
+                                       queued_bsr_grant
+                                           ? "Detected PUCCH SR and queued compact UL BSR grant."
+                                           : "Detected PUCCH SR but kept the existing UL grant plan.",
                                        slot.abs_slot,
-                                       "c_rnti=%u,small_ul_grant_abs_slot=%d",
+                                       "c_rnti=%u,small_ul_grant_abs_slot=%d,connected_ul_pending_bytes=%d",
                                        ue_context->c_rnti,
-                                       ue_context->small_ul_grant_abs_slot);
+                                       ue_context->small_ul_grant_abs_slot,
+                                       ue_context->connected_ul_pending_bytes);
       }
     }
 
@@ -1141,28 +1973,46 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                        payload_hex);
 
         if (crc_ok && buffer_size_bytes >= 0) {
+          if (ul_data_rx_grants[i].harq_id < MINI_GNB_C_MAX_HARQ_PROCESSES) {
+            ul_harq_states[ul_data_rx_grants[i].harq_id].waiting_pusch = false;
+            ul_harq_states[ul_data_rx_grants[i].harq_id].ndi = !ul_harq_states[ul_data_rx_grants[i].harq_id].ndi;
+          }
           mini_gnb_c_ue_context_t* ue_context =
               mini_gnb_c_find_ue_context(&simulator->ue_store, ul_data_rx_grants[i].c_rnti);
           if (ue_context != NULL) {
+            bool queued_payload_grant = false;
+
             ue_context->ul_bsr_received = true;
             ue_context->ul_bsr_abs_slot = slot.abs_slot;
             ue_context->ul_bsr_buffer_size_bytes = buffer_size_bytes;
+            ue_context->connected_ul_pending_bytes = buffer_size_bytes;
+            ue_context->connected_ul_last_reported_bsr_bytes = buffer_size_bytes;
             if (simulator->config.sim.scripted_schedule_dir[0] == '\0' &&
-                simulator->config.sim.scripted_pdcch_dir[0] == '\0') {
-              mini_gnb_c_queue_connected_ul_grant(simulator,
-                                                  ue_context,
-                                                  slot.abs_slot,
-                                                  MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD,
-                                                  48U,
-                                                  mini_gnb_c_select_large_ul_prb_len(buffer_size_bytes),
-                                                  8U);
+                simulator->config.sim.scripted_pdcch_dir[0] == '\0' && buffer_size_bytes > 0) {
+              if (mini_gnb_c_connected_ul_is_runtime_driven(simulator)) {
+                queued_payload_grant =
+                    mini_gnb_c_try_queue_connected_payload_grant(simulator, ue_context, ul_harq_states, slot.abs_slot);
+              } else {
+                mini_gnb_c_queue_connected_ul_grant(simulator,
+                                                    ue_context,
+                                                    ul_harq_states,
+                                                    slot.abs_slot,
+                                                    MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD,
+                                                    48U,
+                                                    mini_gnb_c_select_large_ul_prb_len(buffer_size_bytes),
+                                                    8U);
+                queued_payload_grant = true;
+              }
               mini_gnb_c_metrics_trace_event(&simulator->metrics,
                                              "connected_scheduler",
-                                             "Queued large UL grant after BSR.",
+                                             queued_payload_grant
+                                                 ? "Queued large UL grant after BSR."
+                                                 : "Processed BSR but kept the existing UL grant plan.",
                                              slot.abs_slot,
-                                             "c_rnti=%u,buffer_size_bytes=%d,large_ul_grant_abs_slot=%d",
+                                             "c_rnti=%u,buffer_size_bytes=%d,connected_ul_pending_bytes=%d,large_ul_grant_abs_slot=%d",
                                              ue_context->c_rnti,
                                              buffer_size_bytes,
+                                             ue_context->connected_ul_pending_bytes,
                                              ue_context->large_ul_grant_abs_slot);
             }
           }
@@ -1189,15 +2039,154 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
         if (crc_ok) {
           mini_gnb_c_ue_context_t* ue_context =
               mini_gnb_c_find_ue_context(&simulator->ue_store, ul_data_rx_grants[i].c_rnti);
+          int consumed_bytes = (int)burst.mac_pdu.len;
+
+          if (ul_data_rx_grants[i].harq_id < MINI_GNB_C_MAX_HARQ_PROCESSES) {
+            ul_harq_states[ul_data_rx_grants[i].harq_id].waiting_pusch = false;
+            ul_harq_states[ul_data_rx_grants[i].harq_id].ndi = !ul_harq_states[ul_data_rx_grants[i].harq_id].ndi;
+          }
+          if (burst.payload_kind == MINI_GNB_C_PAYLOAD_KIND_NAS &&
+              mini_gnb_c_gnb_core_bridge_submit_uplink_nas(&simulator->core_bridge,
+                                                           ue_context,
+                                                           burst.mac_pdu.bytes,
+                                                           burst.mac_pdu.len,
+                                                           &simulator->metrics,
+                                                           slot.abs_slot) == 0) {
+            mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                           "gnb_core_bridge",
+                                           "Forwarded one uplink NAS PDU from PUSCH to the AMF.",
+                                           slot.abs_slot,
+                                           "c_rnti=%u,payload_length=%zu",
+                                           ul_data_rx_grants[i].c_rnti,
+                                           burst.mac_pdu.len);
+          } else if (burst.payload_kind == MINI_GNB_C_PAYLOAD_KIND_NAS) {
+            mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                           "gnb_core_bridge",
+                                           "Failed to forward one uplink NAS PDU from PUSCH to the AMF.",
+                                           slot.abs_slot,
+                                           "c_rnti=%u,payload_length=%zu",
+                                           ul_data_rx_grants[i].c_rnti,
+                                           burst.mac_pdu.len);
+          } else {
+            mini_gnb_c_buffer_t reassembled_payload;
+            const mini_gnb_c_buffer_t* ipv4_payload = NULL;
+
+            if (mini_gnb_c_rlc_lite_is_segment(burst.mac_pdu.bytes, burst.mac_pdu.len)) {
+              size_t consumed_segment_bytes = 0u;
+              const int reassembly_result =
+                  mini_gnb_c_rlc_lite_receiver_consume(&ul_ip_reassembly,
+                                                       burst.mac_pdu.bytes,
+                                                       burst.mac_pdu.len,
+                                                       &reassembled_payload,
+                                                       &consumed_segment_bytes);
+
+              if (consumed_segment_bytes > 0u) {
+                consumed_bytes = (int)consumed_segment_bytes;
+              }
+              if (reassembly_result < 0) {
+                mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                               "n3_user_plane",
+                                               "Dropped malformed UL IPv4 RLC-lite segment from PUSCH.",
+                                               slot.abs_slot,
+                                               "c_rnti=%u,payload_length=%zu",
+                                               ul_data_rx_grants[i].c_rnti,
+                                               burst.mac_pdu.len);
+                mini_gnb_c_rlc_lite_receiver_init(&ul_ip_reassembly);
+              } else if (reassembly_result == 0) {
+                mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                               "n3_user_plane",
+                                               "Buffered one partial UL IPv4 RLC-lite segment from PUSCH.",
+                                               slot.abs_slot,
+                                               "c_rnti=%u,consumed_bytes=%d",
+                                               ul_data_rx_grants[i].c_rnti,
+                                               consumed_bytes);
+              } else {
+                ipv4_payload = &reassembled_payload;
+                mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                               "n3_user_plane",
+                                               "Reassembled one UL IPv4 SDU from PUSCH RLC-lite segments.",
+                                               slot.abs_slot,
+                                               "c_rnti=%u,payload_length=%zu",
+                                               ul_data_rx_grants[i].c_rnti,
+                                               reassembled_payload.len);
+              }
+            } else if (mini_gnb_c_ue_ip_stack_min_is_ipv4_packet(burst.mac_pdu.bytes, burst.mac_pdu.len)) {
+              ipv4_payload = &burst.mac_pdu;
+            }
+
+            if (ipv4_payload != NULL && mini_gnb_c_n3_user_plane_is_ready(&simulator->n3_user_plane)) {
+              if (mini_gnb_c_n3_user_plane_send_uplink(&simulator->n3_user_plane,
+                                                       ipv4_payload->bytes,
+                                                       ipv4_payload->len) == 0) {
+                mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                               "n3_user_plane",
+                                               "Forwarded one uplink IPv4 payload onto the persistent N3 socket.",
+                                               slot.abs_slot,
+                                               "c_rnti=%u,payload_length=%zu,uplink_gpdu_count=%llu",
+                                               ul_data_rx_grants[i].c_rnti,
+                                               ipv4_payload->len,
+                                               (unsigned long long)simulator->n3_user_plane.uplink_gpdu_count);
+              } else {
+                mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                               "n3_user_plane",
+                                               "Failed to forward uplink IPv4 payload onto the persistent N3 socket.",
+                                               slot.abs_slot,
+                                               "c_rnti=%u,payload_length=%zu",
+                                               ul_data_rx_grants[i].c_rnti,
+                                               ipv4_payload->len);
+              }
+            } else if (ipv4_payload != NULL) {
+              mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                             "n3_user_plane",
+                                             "Skipped UL IPv4 forwarding because the persistent N3 socket is not ready.",
+                                             slot.abs_slot,
+                                             "c_rnti=%u,payload_length=%zu",
+                                             ul_data_rx_grants[i].c_rnti,
+                                             ipv4_payload->len);
+            }
+          }
           if (ue_context != NULL) {
+            if (consumed_bytes <= 0) {
+              consumed_bytes = (int)tbsize;
+            }
             ue_context->ul_data_received = true;
             ue_context->ul_data_abs_slot = slot.abs_slot;
+            if (mini_gnb_c_connected_ul_is_runtime_driven(simulator) && ue_context->connected_ul_pending_bytes > 0) {
+              ue_context->connected_ul_pending_bytes -= consumed_bytes;
+              if (ue_context->connected_ul_pending_bytes < 0) {
+                ue_context->connected_ul_pending_bytes = 0;
+              }
+              if (simulator->config.sim.scripted_schedule_dir[0] == '\0' &&
+                  simulator->config.sim.scripted_pdcch_dir[0] == '\0' &&
+                  mini_gnb_c_try_queue_connected_payload_grant(simulator, ue_context, ul_harq_states, slot.abs_slot)) {
+                mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                               "connected_scheduler",
+                                               "Queued follow-up UL grant while connected-mode pending bytes remain.",
+                                               slot.abs_slot,
+                                               "c_rnti=%u,consumed_bytes=%d,connected_ul_pending_bytes=%d,large_ul_grant_abs_slot=%d",
+                                               ue_context->c_rnti,
+                                               consumed_bytes,
+                                               ue_context->connected_ul_pending_bytes,
+                                               ue_context->large_ul_grant_abs_slot);
+              }
+            }
           }
         }
       }
     }
 
     mini_gnb_c_process_scripted_slot_controls(simulator, &slot);
+
+    dl_pdcch_count = mini_gnb_c_initial_access_scheduler_pop_due_dl_pdcch(&simulator->scheduler,
+                                                                           slot.abs_slot,
+                                                                           dl_pdcch_grants,
+                                                                           MINI_GNB_C_MAX_GRANTS);
+    for (i = 0; i < dl_pdcch_count; ++i) {
+      mini_gnb_c_mock_radio_frontend_submit_pdcch(&simulator->radio,
+                                                  &slot,
+                                                  &dl_pdcch_grants[i],
+                                                  &simulator->metrics);
+    }
 
     ul_data_pdcch_count = mini_gnb_c_initial_access_scheduler_pop_due_ul_data_pdcch(&simulator->scheduler,
                                                                                      slot.abs_slot,
@@ -1250,18 +2239,42 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                                           slot.abs_slot);
           mini_gnb_c_schedule_post_msg4_traffic(simulator,
                                                 mini_gnb_c_find_ue_context(&simulator->ue_store, dl_grants[i].rnti),
+                                                dl_harq_states,
                                                 slot.abs_slot);
         } else if (dl_grants[i].type == MINI_GNB_C_DL_OBJ_DATA) {
           mini_gnb_c_ue_context_t* ue_context =
               mini_gnb_c_find_ue_context(&simulator->ue_store, dl_grants[i].rnti);
           mini_gnb_c_metrics_trace_increment_named(&simulator->metrics, "dl_data_sent", 1U);
           if (ue_context != NULL) {
+            if (!ue_context->dl_data_sent) {
+              ue_context->dl_data_abs_slot = slot.abs_slot;
+            }
             ue_context->dl_data_sent = true;
-            ue_context->dl_data_abs_slot = slot.abs_slot;
           }
         }
       }
     }
+
+    if (simulator->ue_store.count > 0U &&
+        mini_gnb_c_gnb_core_bridge_poll_ue_nas(&simulator->core_bridge,
+                                               simulator->ue_store.contexts,
+                                               simulator->ue_store.count,
+                                               &simulator->metrics,
+                                               slot.abs_slot) != 0) {
+      mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                     "gnb_core_bridge",
+                                     "Failed to relay follow-up UE UL_NAS event.",
+                                     slot.abs_slot,
+                                     "ue_count=%u,next_ul_nas_sequence=%u",
+                                     (unsigned)simulator->ue_store.count,
+                                     simulator->core_bridge.next_ue_to_gnb_nas_sequence);
+    }
+    mini_gnb_c_sync_n3_user_plane(simulator,
+                                  dl_harq_states,
+                                  ul_harq_states,
+                                  &dl_ip_state,
+                                  &next_dl_ip_sdu_id,
+                                  slot.abs_slot);
 
     {
       mini_gnb_c_slot_perf_t perf;
@@ -1272,8 +2285,16 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
       perf.ul_decode_latency_us = 60 + (int)((msg3_grant_count + ul_data_rx_count) * 10U);
       mini_gnb_c_metrics_trace_add_slot_perf(&simulator->metrics, &perf);
     }
+
+    mini_gnb_c_mock_radio_frontend_finalize_slot(&simulator->radio, &slot, &simulator->metrics);
+    if (simulator->config.sim.slot_sleep_ms > 0u) {
+      (void)poll(NULL, 0, (int)simulator->config.sim.slot_sleep_ms);
+    }
   }
 
+  mini_gnb_c_mock_radio_frontend_shutdown(&simulator->radio);
+  mini_gnb_c_n3_user_plane_close(&simulator->n3_user_plane);
+  mini_gnb_c_gnb_core_bridge_close(&simulator->core_bridge);
   return mini_gnb_c_metrics_trace_flush(&simulator->metrics,
                                         simulator->ra_manager.has_active_context,
                                         simulator->ra_manager.has_active_context
@@ -1283,5 +2304,7 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                         simulator->ue_store.count,
                                         simulator->radio.tx_burst_count,
                                         simulator->radio.last_hw_time_ns,
+                                        mini_gnb_c_gnb_core_bridge_get_ngap_trace_path(&simulator->core_bridge),
+                                        mini_gnb_c_n3_user_plane_get_gtpu_trace_path(&simulator->n3_user_plane),
                                         out_summary);
 }

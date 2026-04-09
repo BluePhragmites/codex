@@ -1,0 +1,94 @@
+# UE-side shared-slot + TUN end-to-end demo config.
+
+cell:
+  dl_arfcn: 627334
+  band: 78
+  channel_bandwidth_MHz: 20
+  common_scs_khz: 30
+  pci: 1
+  plmn: "00101"
+  tac: 7
+  ss0_index: 0
+  coreset0_index: 6
+
+prach:
+  prach_config_index: 159
+  prach_root_seq_index: 1
+  zero_correlation_zone: 8
+  ra_resp_window: 4
+  msg3_delta_preamble: 0
+
+rf:
+  device_driver: "mock"
+  device_args: "loopback=true"
+  clock_src: "simulated"
+  srate: 30720000.0
+  tx_gain: 45.0
+  rx_gain: 35.0
+
+core:
+  enabled: true
+  amf_ip: "127.0.0.5"
+  amf_port: 38412
+  upf_port: 2152
+  timeout_ms: 5000
+  ran_ue_ngap_id_base: 1
+  default_pdu_session_id: 1
+
+broadcast:
+  ssb_period_slots: 2
+  sib1_period_slots: 8
+  sib1_offset_slot: 7
+  prach_period_slots: 3
+  prach_offset_slot: 1
+
+sim:
+  total_slots: 4000
+  slots_per_frame: 10
+  slot_sleep_ms: 0
+  msg3_delay_slots: 9
+  msg4_delay_slots: 3
+  prach_trigger_abs_slot: 17
+  prach_retry_delay_slots: 9
+  preamble_id: 27
+  ta_est: 11
+  peak_metric: 18.5
+  msg3_present: true
+  post_msg4_traffic_enabled: true
+  post_msg4_dl_pdcch_delay_slots: 1
+  post_msg4_dl_time_indicator: 1
+  post_msg4_dl_data_to_ul_ack_slots: 1
+  post_msg4_sr_period_slots: 10
+  post_msg4_sr_offset_slot: 2
+  post_msg4_ul_grant_delay_slots: 1
+  post_msg4_ul_time_indicator: 2
+  post_msg4_dl_harq_process_count: 2
+  post_msg4_ul_harq_process_count: 2
+  ul_data_present: true
+  ul_data_crc_ok: true
+  ul_data_snr_db: 16.0
+  ul_data_evm: 2.5
+  ul_bsr_buffer_size_bytes: 384
+  ul_prach_cf32_path: ""
+  ul_msg3_cf32_path: ""
+  ul_input_dir: ""
+  local_exchange_dir: "out/local_exchange"
+  shared_slot_path: "out/shared_slot_link.bin"
+  shared_slot_timeout_ms: 500
+  ue_tun_enabled: true
+  ue_tun_name: "miniue0"
+  ue_tun_mtu: 1400
+  ue_tun_prefix_len: 16
+  ue_tun_isolate_netns: true
+  ue_tun_add_default_route: true
+  ue_tun_netns_name: "miniue-demo"
+  ue_tun_dns_server_ipv4: "223.5.5.5"
+  ul_data_hex: "554C5F44415441"
+  msg3_crc_ok: true
+  msg3_snr_db: 18.2
+  msg3_evm: 2.1
+  contention_id_hex: "A1B2C3D4E5F6"
+  establishment_cause: 3
+  ue_identity_type: 1
+  ue_identity_hex: "1122334455667788"
+  include_crnti_ce: true

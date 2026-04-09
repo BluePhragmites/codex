@@ -45,6 +45,8 @@ const char* mini_gnb_c_ul_burst_type_to_string(const mini_gnb_c_ul_burst_type_t 
       return "UL_BURST_PUCCH_SR";
     case MINI_GNB_C_UL_BURST_DATA:
       return "UL_BURST_DATA";
+    case MINI_GNB_C_UL_BURST_PUCCH_ACK:
+      return "UL_BURST_PUCCH_ACK";
   }
   return "UL_BURST_UNKNOWN";
 }
@@ -83,6 +85,18 @@ const char* mini_gnb_c_ra_state_to_string(const mini_gnb_c_ra_state_t state) {
       return "DONE";
     case MINI_GNB_C_RA_FAIL:
       return "FAIL";
+  }
+  return "UNKNOWN";
+}
+
+const char* mini_gnb_c_payload_kind_to_string(const mini_gnb_c_payload_kind_t kind) {
+  switch (kind) {
+    case MINI_GNB_C_PAYLOAD_KIND_GENERIC:
+      return "GENERIC";
+    case MINI_GNB_C_PAYLOAD_KIND_IPV4:
+      return "IPV4";
+    case MINI_GNB_C_PAYLOAD_KIND_NAS:
+      return "NAS";
   }
   return "UNKNOWN";
 }

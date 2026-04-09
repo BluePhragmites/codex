@@ -17,5 +17,7 @@ void mini_gnb_c_build_rar_pdu(const mini_gnb_c_ra_schedule_request_t* request,
   out_rar->bytes[7] = request->ul_grant.k2;
   out_rar->bytes[8] = (uint8_t)(request->tc_rnti & 0xFFU);
   out_rar->bytes[9] = (uint8_t)((request->tc_rnti >> 8U) & 0xFFU);
-  out_rar->len = 10;
+  out_rar->bytes[10] = (uint8_t)(request->ul_grant.abs_slot & 0xFFU);
+  out_rar->bytes[11] = (uint8_t)((request->ul_grant.abs_slot >> 8U) & 0xFFU);
+  out_rar->len = 12;
 }

@@ -145,6 +145,7 @@ size_t mini_gnb_c_mock_dl_phy_mapper_map(const mini_gnb_c_mock_dl_phy_mapper_t* 
     patch->rnti = grants[i].rnti;
     patch->payload_len = grants[i].payload.len;
     patch->pdcch = grants[i].pdcch;
+    patch->payload_kind = grants[i].payload_kind;
     patch->payload = grants[i].payload;
     mini_gnb_c_generate_toy_waveform(&grants[i], patch);
   }

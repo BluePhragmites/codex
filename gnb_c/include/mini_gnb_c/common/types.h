@@ -5,7 +5,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define MINI_GNB_C_MAX_PAYLOAD 512
+#include "mini_gnb_c/core/core_session.h"
+
+#define MINI_GNB_C_MAX_PAYLOAD 2048
 #define MINI_GNB_C_MAX_TEXT 128
 #define MINI_GNB_C_MAX_PATH 260
 #define MINI_GNB_C_MAX_EVENTS 128
@@ -16,6 +18,7 @@
 #define MINI_GNB_C_MAX_UL_DATA_GRANTS 4
 #define MINI_GNB_C_MAX_UES 1
 #define MINI_GNB_C_MAX_IQ_SAMPLES 2048
+#define MINI_GNB_C_MAX_HARQ_PROCESSES 8
 
 typedef enum {
   MINI_GNB_C_DL_OBJ_SSB = 0,
@@ -31,7 +34,8 @@ typedef enum {
   MINI_GNB_C_UL_BURST_PRACH = 1,
   MINI_GNB_C_UL_BURST_MSG3 = 2,
   MINI_GNB_C_UL_BURST_PUCCH_SR = 3,
-  MINI_GNB_C_UL_BURST_DATA = 4
+  MINI_GNB_C_UL_BURST_DATA = 4,
+  MINI_GNB_C_UL_BURST_PUCCH_ACK = 5
 } mini_gnb_c_ul_burst_type_t;
 
 typedef enum {
@@ -57,6 +61,12 @@ typedef enum {
   MINI_GNB_C_UL_DATA_PURPOSE_BSR = 0,
   MINI_GNB_C_UL_DATA_PURPOSE_PAYLOAD = 1
 } mini_gnb_c_ul_data_purpose_t;
+
+typedef enum {
+  MINI_GNB_C_PAYLOAD_KIND_GENERIC = 0,
+  MINI_GNB_C_PAYLOAD_KIND_IPV4 = 1,
+  MINI_GNB_C_PAYLOAD_KIND_NAS = 2
+} mini_gnb_c_payload_kind_t;
 
 typedef struct {
   uint8_t bytes[MINI_GNB_C_MAX_PAYLOAD];
@@ -98,14 +108,29 @@ typedef struct {
 } mini_gnb_c_rf_config_t;
 
 typedef struct {
+  bool enabled;
+  char amf_ip[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
+  uint32_t amf_port;
+  uint16_t upf_port;
+  uint32_t timeout_ms;
+  uint16_t ran_ue_ngap_id_base;
+  uint8_t default_pdu_session_id;
+  char ngap_trace_pcap[MINI_GNB_C_MAX_PATH];
+  char gtpu_trace_pcap[MINI_GNB_C_MAX_PATH];
+} mini_gnb_c_core_config_t;
+
+typedef struct {
   int ssb_period_slots;
   int sib1_period_slots;
   int sib1_offset_slot;
+  int prach_period_slots;
+  int prach_offset_slot;
 } mini_gnb_c_broadcast_config_t;
 
 typedef struct {
   int total_slots;
   int slots_per_frame;
+  uint32_t slot_sleep_ms;
   int msg3_delay_slots;
   int msg4_delay_slots;
   int prach_trigger_abs_slot;
@@ -118,9 +143,15 @@ typedef struct {
   double msg3_snr_db;
   double msg3_evm;
   bool post_msg4_traffic_enabled;
-  int post_msg4_dl_data_delay_slots;
+  int post_msg4_dl_pdcch_delay_slots;
+  int post_msg4_dl_time_indicator;
+  int post_msg4_dl_data_to_ul_ack_slots;
+  int post_msg4_sr_period_slots;
+  int post_msg4_sr_offset_slot;
   int post_msg4_ul_grant_delay_slots;
-  int post_msg4_ul_data_k2;
+  int post_msg4_ul_time_indicator;
+  int post_msg4_dl_harq_process_count;
+  int post_msg4_ul_harq_process_count;
   bool ul_data_present;
   bool ul_data_crc_ok;
   double ul_data_snr_db;
@@ -129,6 +160,17 @@ typedef struct {
   char ul_prach_cf32_path[MINI_GNB_C_MAX_PATH];
   char ul_msg3_cf32_path[MINI_GNB_C_MAX_PATH];
   char ul_input_dir[MINI_GNB_C_MAX_PATH];
+  char local_exchange_dir[MINI_GNB_C_MAX_PATH];
+  char shared_slot_path[MINI_GNB_C_MAX_PATH];
+  uint32_t shared_slot_timeout_ms;
+  bool ue_tun_enabled;
+  char ue_tun_name[MINI_GNB_C_MAX_TEXT];
+  uint16_t ue_tun_mtu;
+  uint8_t ue_tun_prefix_len;
+  bool ue_tun_isolate_netns;
+  bool ue_tun_add_default_route;
+  char ue_tun_netns_name[MINI_GNB_C_MAX_TEXT];
+  char ue_tun_dns_server_ipv4[MINI_GNB_C_CORE_MAX_IPV4_TEXT];
   char scripted_schedule_dir[MINI_GNB_C_MAX_PATH];
   char scripted_pdcch_dir[MINI_GNB_C_MAX_PATH];
   char ul_data_hex[MINI_GNB_C_MAX_PAYLOAD * 2 + 1];
@@ -143,6 +185,7 @@ typedef struct {
   mini_gnb_c_cell_config_t cell;
   mini_gnb_c_prach_config_t prach;
   mini_gnb_c_rf_config_t rf;
+  mini_gnb_c_core_config_t core;
   mini_gnb_c_broadcast_config_t broadcast;
   mini_gnb_c_sim_config_t sim;
 } mini_gnb_c_config_t;
@@ -167,8 +210,12 @@ typedef struct {
   double snr_db;
   double evm;
   uint16_t tbsize;
+  uint8_t harq_id;
+  bool ndi;
+  bool is_new_data;
   bool crc_ok_override_valid;
   bool crc_ok_override;
+  mini_gnb_c_payload_kind_t payload_kind;
   mini_gnb_c_buffer_t mac_pdu;
   mini_gnb_c_complexf_t samples[MINI_GNB_C_MAX_IQ_SAMPLES];
   mini_gnb_c_radio_status_t status;
@@ -217,10 +264,15 @@ typedef struct {
   uint16_t scheduled_prb_len;
   uint8_t mcs;
   int k2;
+  int time_indicator;
+  int dl_data_to_ul_ack;
   int scheduled_abs_slot;
   mini_gnb_c_dl_object_type_t scheduled_dl_type;
   mini_gnb_c_ul_burst_type_t scheduled_ul_type;
   mini_gnb_c_ul_data_purpose_t scheduled_ul_purpose;
+  uint8_t harq_id;
+  bool ndi;
+  bool is_new_data;
 } mini_gnb_c_pdcch_dci_t;
 
 typedef struct {
@@ -233,6 +285,7 @@ typedef struct {
   uint8_t rv;
   uint8_t harq_id;
   mini_gnb_c_pdcch_dci_t pdcch;
+  mini_gnb_c_payload_kind_t payload_kind;
   mini_gnb_c_buffer_t payload;
 } mini_gnb_c_dl_grant_t;
 
@@ -248,6 +301,7 @@ typedef struct {
   uint16_t rnti;
   size_t payload_len;
   mini_gnb_c_pdcch_dci_t pdcch;
+  mini_gnb_c_payload_kind_t payload_kind;
   mini_gnb_c_buffer_t payload;
   uint16_t fft_size;
   uint16_t cp_length;
@@ -292,6 +346,7 @@ typedef struct {
   uint16_t tc_rnti;
   uint16_t c_rnti;
   uint8_t contention_id48[6];
+  mini_gnb_c_core_session_t core_session;
   int create_abs_slot;
   bool rrc_setup_sent;
   int sent_abs_slot;
@@ -303,6 +358,8 @@ typedef struct {
   bool ul_bsr_received;
   int ul_bsr_abs_slot;
   int ul_bsr_buffer_size_bytes;
+  int connected_ul_pending_bytes;
+  int connected_ul_last_reported_bsr_bytes;
   int small_ul_grant_abs_slot;
   int large_ul_grant_abs_slot;
   bool ul_data_received;
@@ -357,11 +414,18 @@ typedef struct {
 
 typedef struct {
   uint16_t c_rnti;
+  int pdcch_abs_slot;
   int abs_slot;
   uint16_t prb_start;
   uint16_t prb_len;
   uint8_t mcs;
   mini_gnb_c_dci_format_t dci_format;
+  int time_indicator;
+  int dl_data_to_ul_ack;
+  uint8_t harq_id;
+  bool ndi;
+  bool is_new_data;
+  mini_gnb_c_payload_kind_t payload_kind;
   mini_gnb_c_buffer_t payload;
 } mini_gnb_c_dl_data_schedule_request_t;
 
@@ -374,6 +438,9 @@ typedef struct {
   uint8_t mcs;
   uint8_t k2;
   mini_gnb_c_ul_data_purpose_t purpose;
+  uint8_t harq_id;
+  bool ndi;
+  bool is_new_data;
 } mini_gnb_c_ul_data_schedule_request_t;
 
 typedef struct {
@@ -385,6 +452,9 @@ typedef struct {
   uint8_t mcs;
   uint8_t k2;
   mini_gnb_c_ul_data_purpose_t purpose;
+  uint8_t harq_id;
+  bool ndi;
+  bool is_new_data;
   mini_gnb_c_pdcch_dci_t pdcch;
 } mini_gnb_c_ul_data_grant_t;
 
@@ -413,12 +483,15 @@ typedef struct {
   char trace_path[MINI_GNB_C_MAX_PATH];
   char metrics_path[MINI_GNB_C_MAX_PATH];
   char summary_path[MINI_GNB_C_MAX_PATH];
+  char ngap_trace_pcap_path[MINI_GNB_C_MAX_PATH];
+  char gtpu_trace_pcap_path[MINI_GNB_C_MAX_PATH];
 } mini_gnb_c_run_summary_t;
 
 const char* mini_gnb_c_dl_object_type_to_string(mini_gnb_c_dl_object_type_t type);
 const char* mini_gnb_c_ul_burst_type_to_string(mini_gnb_c_ul_burst_type_t type);
 const char* mini_gnb_c_dci_format_to_string(mini_gnb_c_dci_format_t format);
 const char* mini_gnb_c_ra_state_to_string(mini_gnb_c_ra_state_t state);
+const char* mini_gnb_c_payload_kind_to_string(mini_gnb_c_payload_kind_t kind);
 uint16_t mini_gnb_c_lookup_tbsize(uint16_t prb_len, uint8_t mcs);
 
 void mini_gnb_c_buffer_reset(mini_gnb_c_buffer_t* buffer);

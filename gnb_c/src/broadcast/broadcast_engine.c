@@ -18,9 +18,14 @@ static void mini_gnb_c_assign_dl_pdcch(mini_gnb_c_dl_grant_t* grant) {
   grant->pdcch.scheduled_prb_len = grant->prb_len;
   grant->pdcch.mcs = grant->mcs;
   grant->pdcch.k2 = -1;
+  grant->pdcch.time_indicator = 0;
+  grant->pdcch.dl_data_to_ul_ack = 0;
   grant->pdcch.scheduled_abs_slot = grant->abs_slot;
   grant->pdcch.scheduled_dl_type = grant->type;
   grant->pdcch.scheduled_ul_type = MINI_GNB_C_UL_BURST_NONE;
+  grant->pdcch.harq_id = 0u;
+  grant->pdcch.ndi = true;
+  grant->pdcch.is_new_data = true;
 }
 
 static void mini_gnb_c_build_mib(const mini_gnb_c_cell_config_t* cell,
@@ -39,29 +44,44 @@ static void mini_gnb_c_build_mib(const mini_gnb_c_cell_config_t* cell,
 
 static void mini_gnb_c_build_sib1(const mini_gnb_c_cell_config_t* cell,
                                   const mini_gnb_c_prach_config_t* prach,
+                                  const mini_gnb_c_broadcast_config_t* broadcast,
+                                  const mini_gnb_c_sim_config_t* sim,
                                   mini_gnb_c_buffer_t* out_payload) {
   char text[MINI_GNB_C_MAX_PAYLOAD];
   (void)snprintf(text,
                  sizeof(text),
-                 "SIB1|plmn=%s|tac=%u|pci=%u|band=%u|prach_cfg=%u",
+                 "SIB1|plmn=%s|tac=%u|pci=%u|band=%u|prach_cfg=%u|prach_period_slots=%d|prach_offset_slot=%d|ra_resp_window=%u|prach_retry_delay_slots=%d|dl_pdcch_delay_slots=%d|dl_time_indicator=%d|dl_data_to_ul_ack_slots=%d|ul_grant_delay_slots=%d|ul_time_indicator=%d|dl_harq_process_count=%d|ul_harq_process_count=%d",
                  cell->plmn,
                  cell->tac,
                  cell->pci,
                  cell->band,
-                 prach->prach_config_index);
+                 prach->prach_config_index,
+                 broadcast != NULL ? broadcast->prach_period_slots : -1,
+                 broadcast != NULL ? broadcast->prach_offset_slot : -1,
+                 prach->ra_resp_window,
+                 sim != NULL ? sim->prach_retry_delay_slots : -1,
+                 sim != NULL ? sim->post_msg4_dl_pdcch_delay_slots : -1,
+                 sim != NULL ? sim->post_msg4_dl_time_indicator : -1,
+                 sim != NULL ? sim->post_msg4_dl_data_to_ul_ack_slots : -1,
+                 sim != NULL ? sim->post_msg4_ul_grant_delay_slots : -1,
+                 sim != NULL ? sim->post_msg4_ul_time_indicator : -1,
+                 sim != NULL ? sim->post_msg4_dl_harq_process_count : -1,
+                 sim != NULL ? sim->post_msg4_ul_harq_process_count : -1);
   (void)mini_gnb_c_buffer_set_text(out_payload, text);
 }
 
 void mini_gnb_c_broadcast_engine_init(mini_gnb_c_broadcast_engine_t* engine,
                                       const mini_gnb_c_cell_config_t* cell,
                                       const mini_gnb_c_prach_config_t* prach,
-                                      const mini_gnb_c_broadcast_config_t* broadcast) {
-  if (engine == NULL || cell == NULL || prach == NULL || broadcast == NULL) {
+                                      const mini_gnb_c_broadcast_config_t* broadcast,
+                                      const mini_gnb_c_sim_config_t* sim) {
+  if (engine == NULL || cell == NULL || prach == NULL || broadcast == NULL || sim == NULL) {
     return;
   }
   memcpy(&engine->cell, cell, sizeof(*cell));
   memcpy(&engine->prach, prach, sizeof(*prach));
   memcpy(&engine->broadcast, broadcast, sizeof(*broadcast));
+  memcpy(&engine->sim, sim, sizeof(*sim));
 }
 
 size_t mini_gnb_c_broadcast_schedule(const mini_gnb_c_broadcast_engine_t* engine,
@@ -96,7 +116,7 @@ size_t mini_gnb_c_broadcast_schedule(const mini_gnb_c_broadcast_engine_t* engine
     grant->prb_len = 24;
     grant->mcs = 4;
     mini_gnb_c_assign_dl_pdcch(grant);
-    mini_gnb_c_build_sib1(&engine->cell, &engine->prach, &grant->payload);
+    mini_gnb_c_build_sib1(&engine->cell, &engine->prach, &engine->broadcast, &engine->sim, &grant->payload);
   }
 
   return count;

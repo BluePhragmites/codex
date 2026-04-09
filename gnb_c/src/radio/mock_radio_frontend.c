@@ -6,12 +6,23 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <dirent.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
 #include "mini_gnb_c/common/hex.h"
 #include "mini_gnb_c/common/json_utils.h"
+#include "mini_gnb_c/link/json_link.h"
 #include "mini_gnb_c/metrics/metrics_trace.h"
+
+static void mini_gnb_c_generate_slot_text_samples(mini_gnb_c_ul_burst_type_t type,
+                                                  mini_gnb_c_complexf_t* out_samples,
+                                                  size_t* out_count,
+                                                  size_t minimum_count);
+static void mini_gnb_c_fill_ul_burst(mini_gnb_c_radio_burst_t* out_burst,
+                                     mini_gnb_c_ul_burst_type_t type,
+                                     const mini_gnb_c_complexf_t* samples,
+                                     size_t sample_count);
 
 static int mini_gnb_c_ensure_directory_recursive(const char* path) {
   char temp[MINI_GNB_C_MAX_PATH];
@@ -98,6 +109,186 @@ static int mini_gnb_c_build_slot_object_path(const char* dir,
              : -1;
 }
 
+static int mini_gnb_c_build_local_exchange_channel_dir(const char* root_dir,
+                                                       const char* channel,
+                                                       char* out,
+                                                       size_t out_size) {
+  if (root_dir == NULL || channel == NULL || out == NULL || out_size == 0U) {
+    return -1;
+  }
+
+  return mini_gnb_c_join_path(root_dir, channel, out, out_size);
+}
+
+static int mini_gnb_c_find_local_exchange_event_path(const char* root_dir,
+                                                     const char* channel,
+                                                     const char* source,
+                                                     const uint32_t sequence,
+                                                     char* out,
+                                                     size_t out_size) {
+  return mini_gnb_c_json_link_find_event_path(root_dir, channel, source, sequence, out, out_size);
+}
+
+static void mini_gnb_c_prepare_shared_slot_summary(mini_gnb_c_mock_radio_frontend_t* radio,
+                                                   const mini_gnb_c_slot_indication_t* slot) {
+  if (radio == NULL || slot == NULL || !radio->shared_slot_mode_enabled) {
+    return;
+  }
+  if (radio->shared_slot_summary_abs_slot == slot->abs_slot) {
+    return;
+  }
+
+  memset(&radio->shared_slot_summary, 0, sizeof(radio->shared_slot_summary));
+  radio->shared_slot_summary.abs_slot = slot->abs_slot;
+  radio->shared_slot_summary.ue_ipv4_valid = radio->staged_ue_ipv4_valid;
+  if (radio->staged_ue_ipv4_valid) {
+    memcpy(radio->shared_slot_summary.ue_ipv4, radio->staged_ue_ipv4, sizeof(radio->shared_slot_summary.ue_ipv4));
+  }
+  radio->shared_slot_summary_abs_slot = slot->abs_slot;
+}
+
+static int mini_gnb_c_find_harq_ul_data_index(const mini_gnb_c_mock_radio_frontend_t* radio,
+                                              const int abs_slot,
+                                              const uint16_t rnti) {
+  size_t i = 0u;
+
+  if (radio == NULL) {
+    return -1;
+  }
+
+  for (i = 0u; i < MINI_GNB_C_MAX_HARQ_PROCESSES; ++i) {
+    if (radio->harq_ul_data_armed[i] && radio->harq_ul_data_abs_slot[i] == abs_slot &&
+        (rnti == 0u || radio->harq_ul_data_rnti[i] == rnti)) {
+      return (int)i;
+    }
+  }
+  return -1;
+}
+
+static void mini_gnb_c_clear_stale_harq_ul_data(mini_gnb_c_mock_radio_frontend_t* radio, const int abs_slot) {
+  size_t i = 0u;
+
+  if (radio == NULL) {
+    return;
+  }
+
+  for (i = 0u; i < MINI_GNB_C_MAX_HARQ_PROCESSES; ++i) {
+    if (radio->harq_ul_data_armed[i] && abs_slot > radio->harq_ul_data_abs_slot[i]) {
+      radio->harq_ul_data_armed[i] = false;
+    }
+  }
+}
+
+static void mini_gnb_c_clear_stale_harq_dl_ack(mini_gnb_c_mock_radio_frontend_t* radio, const int abs_slot) {
+  size_t i = 0u;
+
+  if (radio == NULL) {
+    return;
+  }
+
+  for (i = 0u; i < MINI_GNB_C_MAX_HARQ_PROCESSES; ++i) {
+    if (radio->harq_dl_ack_armed[i] && abs_slot > radio->harq_dl_ack_abs_slot[i]) {
+      radio->harq_dl_ack_armed[i] = false;
+    }
+  }
+}
+
+static bool mini_gnb_c_try_receive_shared_slot_ul(mini_gnb_c_mock_radio_frontend_t* radio,
+                                                  const mini_gnb_c_slot_indication_t* slot,
+                                                  mini_gnb_c_radio_burst_t* out_burst) {
+  mini_gnb_c_shared_slot_ul_event_t event;
+  mini_gnb_c_complexf_t samples[MINI_GNB_C_MAX_IQ_SAMPLES];
+  size_t sample_count = 0u;
+  int ul_data_index = -1;
+
+  if (radio == NULL || slot == NULL || out_burst == NULL || !radio->shared_slot_mode_enabled) {
+    return false;
+  }
+
+  memset(&event, 0, sizeof(event));
+  if (mini_gnb_c_shared_slot_link_consume_ul(&radio->shared_slot_link, slot->abs_slot, &event) != 1) {
+    return false;
+  }
+
+  switch (event.type) {
+    case MINI_GNB_C_UL_BURST_PRACH:
+      if (!slot->has_prach_occasion) {
+        return false;
+      }
+      mini_gnb_c_generate_slot_text_samples(MINI_GNB_C_UL_BURST_PRACH, samples, &sample_count, 0u);
+      mini_gnb_c_fill_ul_burst(out_burst, MINI_GNB_C_UL_BURST_PRACH, samples, sample_count);
+      out_burst->preamble_id = event.preamble_id;
+      out_burst->ta_est = event.ta_est;
+      out_burst->peak_metric = event.peak_metric;
+      out_burst->snr_db = 20.0;
+      return true;
+    case MINI_GNB_C_UL_BURST_MSG3:
+      if (!radio->msg3_armed || slot->abs_slot != radio->msg3_abs_slot || event.rnti != radio->msg3_rnti) {
+        return false;
+      }
+      mini_gnb_c_generate_slot_text_samples(MINI_GNB_C_UL_BURST_MSG3, samples, &sample_count, 0u);
+      mini_gnb_c_fill_ul_burst(out_burst, MINI_GNB_C_UL_BURST_MSG3, samples, sample_count);
+      out_burst->rnti = event.rnti;
+      out_burst->snr_db = radio->sim.msg3_snr_db;
+      out_burst->evm = radio->sim.msg3_evm;
+      out_burst->payload_kind = MINI_GNB_C_PAYLOAD_KIND_GENERIC;
+      out_burst->mac_pdu = event.payload;
+      return true;
+    case MINI_GNB_C_UL_BURST_PUCCH_SR:
+      if (!radio->pucch_sr_armed || slot->abs_slot != radio->pucch_sr_abs_slot) {
+        return false;
+      }
+      mini_gnb_c_generate_slot_text_samples(MINI_GNB_C_UL_BURST_PUCCH_SR, samples, &sample_count, 0u);
+      mini_gnb_c_fill_ul_burst(out_burst, MINI_GNB_C_UL_BURST_PUCCH_SR, samples, sample_count);
+      out_burst->rnti = event.rnti;
+      out_burst->snr_db = 14.0;
+      out_burst->evm = 1.2;
+      out_burst->crc_ok_override_valid = true;
+      out_burst->crc_ok_override = true;
+      return true;
+    case MINI_GNB_C_UL_BURST_PUCCH_ACK:
+      if (event.harq_id >= MINI_GNB_C_MAX_HARQ_PROCESSES || !radio->harq_dl_ack_armed[event.harq_id] ||
+          slot->abs_slot != radio->harq_dl_ack_abs_slot[event.harq_id] ||
+          event.rnti != radio->harq_dl_ack_rnti[event.harq_id]) {
+        return false;
+      }
+      mini_gnb_c_generate_slot_text_samples(MINI_GNB_C_UL_BURST_PUCCH_ACK, samples, &sample_count, 0u);
+      mini_gnb_c_fill_ul_burst(out_burst, MINI_GNB_C_UL_BURST_PUCCH_ACK, samples, sample_count);
+      out_burst->rnti = event.rnti;
+      out_burst->harq_id = event.harq_id;
+      out_burst->snr_db = 14.0;
+      out_burst->evm = 1.0;
+      out_burst->crc_ok_override_valid = true;
+      out_burst->crc_ok_override = true;
+      radio->harq_dl_ack_armed[event.harq_id] = false;
+      return true;
+    case MINI_GNB_C_UL_BURST_DATA:
+      ul_data_index = mini_gnb_c_find_harq_ul_data_index(radio, slot->abs_slot, event.rnti);
+      if (ul_data_index < 0) {
+        return false;
+      }
+      mini_gnb_c_generate_slot_text_samples(MINI_GNB_C_UL_BURST_DATA, samples, &sample_count, 0u);
+      mini_gnb_c_fill_ul_burst(out_burst, MINI_GNB_C_UL_BURST_DATA, samples, sample_count);
+      out_burst->rnti = event.rnti;
+      out_burst->harq_id = event.harq_id;
+      out_burst->ndi = event.ndi;
+      out_burst->is_new_data = event.is_new_data;
+      out_burst->snr_db = radio->sim.ul_data_snr_db;
+      out_burst->evm = radio->sim.ul_data_evm;
+      out_burst->tbsize = radio->harq_ul_data_tbsize[ul_data_index];
+      out_burst->crc_ok_override_valid = true;
+      out_burst->crc_ok_override = true;
+      out_burst->payload_kind = event.payload_kind;
+      out_burst->mac_pdu = event.payload;
+      radio->harq_ul_data_armed[ul_data_index] = false;
+      return true;
+    case MINI_GNB_C_UL_BURST_NONE:
+      break;
+  }
+
+  return false;
+}
+
 static const char* mini_gnb_c_dl_transport_name(mini_gnb_c_dl_object_type_t type) {
   switch (type) {
     case MINI_GNB_C_DL_OBJ_SSB:
@@ -150,6 +341,8 @@ static const char* mini_gnb_c_scheduled_object_name(const mini_gnb_c_pdcch_dci_t
         return "MSG3";
       case MINI_GNB_C_UL_BURST_PUCCH_SR:
         return "PUCCH_SR";
+      case MINI_GNB_C_UL_BURST_PUCCH_ACK:
+        return "PUCCH_ACK";
       case MINI_GNB_C_UL_BURST_DATA:
         return mini_gnb_c_ul_data_purpose_name(pdcch->scheduled_ul_purpose);
       case MINI_GNB_C_UL_BURST_NONE:
@@ -499,6 +692,7 @@ static int mini_gnb_c_write_transport_text(const char* path,
           "prb_len=%u\n"
           "tbsize=%u\n"
           "payload_len=%zu\n"
+          "payload_kind=%s\n"
           "payload_hex=%s\n"
           "payload_text=%s\n"
           "fft_size=%u\n"
@@ -520,6 +714,7 @@ static int mini_gnb_c_write_transport_text(const char* path,
           patch->prb_len,
           tbsize,
           patch->payload.len,
+          mini_gnb_c_payload_kind_to_string(patch->payload_kind),
           payload_hex,
           payload_text,
           patch->fft_size,
@@ -571,6 +766,11 @@ static int mini_gnb_c_write_pdcch_transport_text(const char* path,
           "mcs=%u\n"
           "tbsize=%u\n"
           "k2=%d\n"
+          "time_indicator=%d\n"
+          "dl_data_to_ul_ack=%d\n"
+          "harq_id=%u\n"
+          "ndi=%s\n"
+          "is_new_data=%s\n"
           "tx_index=%llu\n",
           slot->abs_slot,
           slot->sfn,
@@ -590,6 +790,11 @@ static int mini_gnb_c_write_pdcch_transport_text(const char* path,
           patch->pdcch.mcs,
           tbsize,
           patch->pdcch.k2,
+          patch->pdcch.time_indicator,
+          patch->pdcch.dl_data_to_ul_ack,
+          patch->pdcch.harq_id,
+          patch->pdcch.ndi ? "true" : "false",
+          patch->pdcch.is_new_data ? "true" : "false",
           (unsigned long long)tx_index);
 
   fclose(file);
@@ -757,7 +962,9 @@ static void mini_gnb_c_generate_slot_text_samples(mini_gnb_c_ul_burst_type_t typ
                        ? 256U
                        : (type == MINI_GNB_C_UL_BURST_MSG3
                               ? 320U
-                              : (type == MINI_GNB_C_UL_BURST_PUCCH_SR ? 96U : 288U));
+                              : (type == MINI_GNB_C_UL_BURST_PUCCH_SR
+                                     ? 96U
+                                     : (type == MINI_GNB_C_UL_BURST_PUCCH_ACK ? 64U : 288U)));
   }
 
   mini_gnb_c_generate_ul_waveform(out_samples,
@@ -767,12 +974,16 @@ static void mini_gnb_c_generate_slot_text_samples(mini_gnb_c_ul_burst_type_t typ
                                       ? 0.0975
                                       : (type == MINI_GNB_C_UL_BURST_MSG3
                                              ? 0.1425
-                                             : (type == MINI_GNB_C_UL_BURST_PUCCH_SR ? 0.215 : 0.1765)),
+                                             : (type == MINI_GNB_C_UL_BURST_PUCCH_SR
+                                                    ? 0.215
+                                                    : (type == MINI_GNB_C_UL_BURST_PUCCH_ACK ? 0.231 : 0.1765))),
                                   (type == MINI_GNB_C_UL_BURST_PRACH)
-                                      ? 0.35
+                                     ? 0.35
                                       : (type == MINI_GNB_C_UL_BURST_MSG3
                                              ? 0.25
-                                             : (type == MINI_GNB_C_UL_BURST_PUCCH_SR ? 0.18 : 0.22)));
+                                             : (type == MINI_GNB_C_UL_BURST_PUCCH_SR
+                                                    ? 0.18
+                                                    : (type == MINI_GNB_C_UL_BURST_PUCCH_ACK ? 0.16 : 0.22))));
 }
 
 static void mini_gnb_c_fill_ul_burst(mini_gnb_c_radio_burst_t* out_burst,
@@ -818,6 +1029,122 @@ static void mini_gnb_c_fill_burst_payload_from_transport(const char* text,
   if (default_mac_pdu != NULL) {
     *out_mac_pdu = *default_mac_pdu;
   }
+}
+
+static bool mini_gnb_c_try_receive_local_exchange_event(mini_gnb_c_mock_radio_frontend_t* radio,
+                                                        const mini_gnb_c_slot_indication_t* slot,
+                                                        mini_gnb_c_radio_burst_t* out_burst) {
+  char event_path[MINI_GNB_C_MAX_PATH];
+  char type_value[32];
+  char payload_hex[MINI_GNB_C_MAX_PAYLOAD * 2U + 1U];
+  char payload_text[MINI_GNB_C_MAX_PAYLOAD + 1U];
+  char* text = NULL;
+  mini_gnb_c_complexf_t samples[MINI_GNB_C_MAX_IQ_SAMPLES];
+  size_t sample_count = 0U;
+  int int_value = 0;
+  size_t payload_len = 0U;
+  double double_value = 0.0;
+
+  if (radio == NULL || slot == NULL || out_burst == NULL || !radio->local_exchange_mode_enabled) {
+    return false;
+  }
+
+  while (mini_gnb_c_find_local_exchange_event_path(radio->sim.local_exchange_dir,
+                                                   "ue_to_gnb",
+                                                   "ue",
+                                                   radio->local_exchange_next_sequence,
+                                                   event_path,
+                                                   sizeof(event_path)) == 0) {
+    text = mini_gnb_c_read_text_file(event_path);
+    if (text == NULL) {
+      return false;
+    }
+    if (mini_gnb_c_extract_json_int(text, "abs_slot", &int_value) != 0) {
+      free(text);
+      return false;
+    }
+    if (slot->abs_slot < int_value) {
+      free(text);
+      return false;
+    }
+    if (slot->abs_slot > int_value) {
+      ++radio->local_exchange_next_sequence;
+      free(text);
+      continue;
+    }
+    if (mini_gnb_c_extract_json_string(text, "type", type_value, sizeof(type_value)) != 0) {
+      free(text);
+      return false;
+    }
+
+    if (strcmp(type_value, "PRACH") == 0) {
+      mini_gnb_c_generate_slot_text_samples(MINI_GNB_C_UL_BURST_PRACH, samples, &sample_count, 0U);
+      mini_gnb_c_fill_ul_burst(out_burst, MINI_GNB_C_UL_BURST_PRACH, samples, sample_count);
+      out_burst->preamble_id = (mini_gnb_c_extract_json_int(text, "preamble_id", &int_value) == 0)
+                                   ? (uint8_t)int_value
+                                   : radio->sim.preamble_id;
+      out_burst->ta_est =
+          (mini_gnb_c_extract_json_int(text, "ta_est", &int_value) == 0) ? int_value : radio->sim.ta_est;
+      out_burst->peak_metric = (mini_gnb_c_extract_json_double(text, "peak_metric", &double_value) == 0)
+                                   ? double_value
+                                   : radio->sim.peak_metric;
+      out_burst->snr_db = 20.0;
+    } else if (strcmp(type_value, "MSG3") == 0) {
+      mini_gnb_c_generate_slot_text_samples(MINI_GNB_C_UL_BURST_MSG3, samples, &sample_count, 0U);
+      mini_gnb_c_fill_ul_burst(out_burst, MINI_GNB_C_UL_BURST_MSG3, samples, sample_count);
+      out_burst->rnti = (mini_gnb_c_extract_json_int(text, "rnti", &int_value) == 0)
+                            ? (uint16_t)int_value
+                            : (radio->msg3_armed ? radio->msg3_rnti : 0U);
+      out_burst->snr_db = radio->sim.msg3_snr_db;
+      out_burst->evm = radio->sim.msg3_evm;
+      if (mini_gnb_c_extract_json_string(text, "payload_hex", payload_hex, sizeof(payload_hex)) == 0 &&
+          mini_gnb_c_hex_to_bytes(payload_hex, out_burst->mac_pdu.bytes, sizeof(out_burst->mac_pdu.bytes), &payload_len) ==
+              0) {
+        out_burst->mac_pdu.len = payload_len;
+      } else {
+        out_burst->mac_pdu = radio->msg3_mac_pdu;
+      }
+    } else if (strcmp(type_value, "PUCCH_SR") == 0) {
+      mini_gnb_c_generate_slot_text_samples(MINI_GNB_C_UL_BURST_PUCCH_SR, samples, &sample_count, 0U);
+      mini_gnb_c_fill_ul_burst(out_burst, MINI_GNB_C_UL_BURST_PUCCH_SR, samples, sample_count);
+      out_burst->rnti = (mini_gnb_c_extract_json_int(text, "rnti", &int_value) == 0)
+                            ? (uint16_t)int_value
+                            : (radio->pucch_sr_armed ? radio->pucch_sr_rnti : 0U);
+      out_burst->snr_db = 14.0;
+      out_burst->evm = 1.2;
+      out_burst->crc_ok_override_valid = true;
+      out_burst->crc_ok_override = true;
+    } else if (strcmp(type_value, "BSR") == 0 || strcmp(type_value, "DATA") == 0) {
+      mini_gnb_c_generate_slot_text_samples(MINI_GNB_C_UL_BURST_DATA, samples, &sample_count, 0U);
+      mini_gnb_c_fill_ul_burst(out_burst, MINI_GNB_C_UL_BURST_DATA, samples, sample_count);
+      out_burst->rnti = (mini_gnb_c_extract_json_int(text, "rnti", &int_value) == 0)
+                            ? (uint16_t)int_value
+                            : (radio->ul_data_armed ? radio->ul_data_rnti : 0U);
+      out_burst->snr_db = radio->sim.ul_data_snr_db;
+      out_burst->evm = radio->sim.ul_data_evm;
+      out_burst->tbsize = radio->ul_data_tbsize;
+      out_burst->crc_ok_override_valid = true;
+      out_burst->crc_ok_override = true;
+      if (mini_gnb_c_extract_json_string(text, "payload_hex", payload_hex, sizeof(payload_hex)) == 0 &&
+          mini_gnb_c_hex_to_bytes(payload_hex, out_burst->mac_pdu.bytes, sizeof(out_burst->mac_pdu.bytes), &payload_len) ==
+              0) {
+        out_burst->mac_pdu.len = payload_len;
+      } else if (mini_gnb_c_extract_json_string(text, "payload_text", payload_text, sizeof(payload_text)) == 0) {
+        (void)mini_gnb_c_buffer_set_text(&out_burst->mac_pdu, payload_text);
+      } else {
+        out_burst->mac_pdu = radio->ul_data_mac_pdu;
+      }
+    } else {
+      free(text);
+      return false;
+    }
+
+    ++radio->local_exchange_next_sequence;
+    free(text);
+    return true;
+  }
+
+  return false;
 }
 
 static bool mini_gnb_c_try_receive_slot_text_object(mini_gnb_c_mock_radio_frontend_t* radio,
@@ -1092,6 +1419,9 @@ void mini_gnb_c_mock_radio_frontend_init(mini_gnb_c_mock_radio_frontend_t* radio
   memcpy(&radio->config, rf_config, sizeof(*rf_config));
   memcpy(&radio->sim, sim_config, sizeof(*sim_config));
   radio->retry_prach_abs_slot = -1;
+  radio->local_exchange_next_sequence = 1u;
+  radio->shared_slot_summary_abs_slot = -1;
+  radio->shared_slot_timeout_ms = sim_config->shared_slot_timeout_ms;
 
   if (sim_config->ul_input_dir[0] != '\0') {
     char resolved_input_dir[MINI_GNB_C_MAX_PATH];
@@ -1100,6 +1430,40 @@ void mini_gnb_c_mock_radio_frontend_init(mini_gnb_c_mock_radio_frontend_t* radio
                                      sizeof(resolved_input_dir)) == 0) {
       (void)snprintf(radio->sim.ul_input_dir, sizeof(radio->sim.ul_input_dir), "%s", resolved_input_dir);
       radio->slot_input_mode_enabled = mini_gnb_c_directory_exists(radio->sim.ul_input_dir);
+    }
+  }
+  if (sim_config->local_exchange_dir[0] != '\0') {
+    char resolved_exchange_dir[MINI_GNB_C_MAX_PATH];
+    char ue_to_gnb_dir[MINI_GNB_C_MAX_PATH];
+
+    if (mini_gnb_c_resolve_input_dir(sim_config->local_exchange_dir,
+                                     resolved_exchange_dir,
+                                     sizeof(resolved_exchange_dir)) == 0) {
+      (void)snprintf(radio->sim.local_exchange_dir,
+                     sizeof(radio->sim.local_exchange_dir),
+                     "%s",
+                     resolved_exchange_dir);
+      if (mini_gnb_c_build_local_exchange_channel_dir(radio->sim.local_exchange_dir,
+                                                      "ue_to_gnb",
+                                                      ue_to_gnb_dir,
+                                                      sizeof(ue_to_gnb_dir)) == 0) {
+        radio->local_exchange_mode_enabled = mini_gnb_c_directory_exists(ue_to_gnb_dir);
+      }
+    }
+  }
+  if (sim_config->shared_slot_path[0] != '\0') {
+    char resolved_shared_slot_path[MINI_GNB_C_MAX_PATH];
+
+    if (mini_gnb_c_resolve_input_dir(sim_config->shared_slot_path,
+                                     resolved_shared_slot_path,
+                                     sizeof(resolved_shared_slot_path)) == 0 &&
+        mini_gnb_c_shared_slot_link_open(&radio->shared_slot_link, resolved_shared_slot_path, true) == 0) {
+      (void)snprintf(radio->sim.shared_slot_path,
+                     sizeof(radio->sim.shared_slot_path),
+                     "%s",
+                     resolved_shared_slot_path);
+      radio->shared_slot_mode_enabled = true;
+      radio->local_exchange_mode_enabled = false;
     }
   }
 
@@ -1152,6 +1516,74 @@ void mini_gnb_c_mock_radio_frontend_receive(mini_gnb_c_mock_radio_frontend_t* ra
   out_burst->sfn = slot->sfn;
   out_burst->slot = slot->slot;
   out_burst->status.hw_time_ns = slot->slot_start_ns;
+
+  if (radio->shared_slot_mode_enabled) {
+    if (mini_gnb_c_try_receive_shared_slot_ul(radio, slot, out_burst)) {
+      if (out_burst->ul_type == MINI_GNB_C_UL_BURST_MSG3 && radio->msg3_armed &&
+          slot->abs_slot >= radio->msg3_abs_slot) {
+        radio->msg3_armed = false;
+      }
+      if (out_burst->ul_type == MINI_GNB_C_UL_BURST_PUCCH_SR && radio->pucch_sr_armed &&
+          slot->abs_slot >= radio->pucch_sr_abs_slot) {
+        radio->pucch_sr_armed = false;
+      }
+      if (out_burst->ul_type == MINI_GNB_C_UL_BURST_DATA && radio->ul_data_armed &&
+          slot->abs_slot >= radio->ul_data_abs_slot) {
+        radio->ul_data_armed = false;
+      }
+      return;
+    }
+
+    if (radio->msg3_armed && slot->abs_slot > radio->msg3_abs_slot) {
+      radio->msg3_armed = false;
+    }
+    if (radio->pucch_sr_armed && slot->abs_slot > radio->pucch_sr_abs_slot) {
+      radio->pucch_sr_armed = false;
+    }
+    if (radio->ul_data_armed && slot->abs_slot > radio->ul_data_abs_slot) {
+      radio->ul_data_armed = false;
+    }
+    mini_gnb_c_clear_stale_harq_ul_data(radio, slot->abs_slot);
+    mini_gnb_c_clear_stale_harq_dl_ack(radio, slot->abs_slot);
+    if (radio->retry_prach_armed && slot->abs_slot > radio->retry_prach_abs_slot) {
+      radio->retry_prach_armed = false;
+      radio->retry_prach_abs_slot = -1;
+    }
+    return;
+  }
+
+  if (radio->local_exchange_mode_enabled) {
+    if (mini_gnb_c_try_receive_local_exchange_event(radio, slot, out_burst)) {
+      if (out_burst->ul_type == MINI_GNB_C_UL_BURST_MSG3 && radio->msg3_armed &&
+          slot->abs_slot >= radio->msg3_abs_slot) {
+        radio->msg3_armed = false;
+      }
+      if (out_burst->ul_type == MINI_GNB_C_UL_BURST_PUCCH_SR && radio->pucch_sr_armed &&
+          slot->abs_slot >= radio->pucch_sr_abs_slot) {
+        radio->pucch_sr_armed = false;
+      }
+      if (out_burst->ul_type == MINI_GNB_C_UL_BURST_DATA && radio->ul_data_armed &&
+          slot->abs_slot >= radio->ul_data_abs_slot) {
+        radio->ul_data_armed = false;
+      }
+      return;
+    }
+
+    if (radio->msg3_armed && slot->abs_slot > radio->msg3_abs_slot) {
+      radio->msg3_armed = false;
+    }
+    if (radio->pucch_sr_armed && slot->abs_slot > radio->pucch_sr_abs_slot) {
+      radio->pucch_sr_armed = false;
+    }
+    if (radio->ul_data_armed && slot->abs_slot > radio->ul_data_abs_slot) {
+      radio->ul_data_armed = false;
+    }
+    if (radio->retry_prach_armed && slot->abs_slot > radio->retry_prach_abs_slot) {
+      radio->retry_prach_armed = false;
+      radio->retry_prach_abs_slot = -1;
+    }
+    return;
+  }
 
   if (radio->slot_input_mode_enabled) {
     if (mini_gnb_c_try_receive_slot_input(radio, slot, out_burst)) {
@@ -1299,6 +1731,19 @@ void mini_gnb_c_mock_radio_frontend_arm_pucch_sr(mini_gnb_c_mock_radio_frontend_
   radio->pucch_sr_rnti = rnti;
 }
 
+void mini_gnb_c_mock_radio_frontend_arm_dl_ack(mini_gnb_c_mock_radio_frontend_t* radio,
+                                               const uint16_t rnti,
+                                               const uint8_t harq_id,
+                                               const int abs_slot) {
+  if (radio == NULL || harq_id >= MINI_GNB_C_MAX_HARQ_PROCESSES) {
+    return;
+  }
+
+  radio->harq_dl_ack_armed[harq_id] = true;
+  radio->harq_dl_ack_abs_slot[harq_id] = abs_slot;
+  radio->harq_dl_ack_rnti[harq_id] = rnti;
+}
+
 void mini_gnb_c_mock_radio_frontend_arm_ul_data(mini_gnb_c_mock_radio_frontend_t* radio,
                                                 const mini_gnb_c_ul_data_grant_t* ul_grant) {
   if (radio == NULL || ul_grant == NULL) {
@@ -1310,7 +1755,39 @@ void mini_gnb_c_mock_radio_frontend_arm_ul_data(mini_gnb_c_mock_radio_frontend_t
   radio->ul_data_rnti = ul_grant->c_rnti;
   radio->ul_data_tbsize = mini_gnb_c_lookup_tbsize(ul_grant->prb_len, ul_grant->mcs);
   radio->ul_data_purpose = ul_grant->purpose;
+  if (ul_grant->harq_id < MINI_GNB_C_MAX_HARQ_PROCESSES) {
+    radio->harq_ul_data_armed[ul_grant->harq_id] = true;
+    radio->harq_ul_data_abs_slot[ul_grant->harq_id] = ul_grant->abs_slot;
+    radio->harq_ul_data_rnti[ul_grant->harq_id] = ul_grant->c_rnti;
+    radio->harq_ul_data_tbsize[ul_grant->harq_id] = radio->ul_data_tbsize;
+    radio->harq_ul_data_purpose[ul_grant->harq_id] = ul_grant->purpose;
+    radio->harq_ul_data_ndi[ul_grant->harq_id] = ul_grant->ndi;
+    radio->harq_ul_data_is_new_data[ul_grant->harq_id] = ul_grant->is_new_data;
+  }
   mini_gnb_c_build_ul_data_mac_pdu(&radio->sim, radio->ul_data_purpose, &radio->ul_data_mac_pdu);
+}
+
+void mini_gnb_c_mock_radio_frontend_stage_ue_ipv4(mini_gnb_c_mock_radio_frontend_t* radio,
+                                                  const uint8_t ue_ipv4[4],
+                                                  const bool ue_ipv4_valid) {
+  if (radio == NULL) {
+    return;
+  }
+
+  radio->staged_ue_ipv4_valid = ue_ipv4_valid && ue_ipv4 != NULL;
+  memset(radio->staged_ue_ipv4, 0, sizeof(radio->staged_ue_ipv4));
+  if (radio->staged_ue_ipv4_valid) {
+    memcpy(radio->staged_ue_ipv4, ue_ipv4, sizeof(radio->staged_ue_ipv4));
+  }
+  if (radio->shared_slot_summary_abs_slot >= 0) {
+    radio->shared_slot_summary.ue_ipv4_valid = radio->staged_ue_ipv4_valid;
+    memset(radio->shared_slot_summary.ue_ipv4, 0, sizeof(radio->shared_slot_summary.ue_ipv4));
+    if (radio->staged_ue_ipv4_valid) {
+      memcpy(radio->shared_slot_summary.ue_ipv4,
+             radio->staged_ue_ipv4,
+             sizeof(radio->shared_slot_summary.ue_ipv4));
+    }
+  }
 }
 
 void mini_gnb_c_mock_radio_frontend_submit_tx(mini_gnb_c_mock_radio_frontend_t* radio,
@@ -1349,6 +1826,38 @@ void mini_gnb_c_mock_radio_frontend_submit_tx(mini_gnb_c_mock_radio_frontend_t* 
     int pdcch_export_ok = 0;
     int written = 0;
     uint16_t tbsize = patch->pdcch.valid ? mini_gnb_c_lookup_tbsize(patch->prb_len, patch->pdcch.mcs) : 0U;
+
+    mini_gnb_c_prepare_shared_slot_summary(radio, slot);
+    if (radio->shared_slot_mode_enabled) {
+      switch (patch->type) {
+        case MINI_GNB_C_DL_OBJ_SSB:
+          radio->shared_slot_summary.flags |= MINI_GNB_C_SHARED_SLOT_FLAG_SSB;
+          break;
+        case MINI_GNB_C_DL_OBJ_SIB1:
+          radio->shared_slot_summary.flags |= MINI_GNB_C_SHARED_SLOT_FLAG_SIB1;
+          radio->shared_slot_summary.sib1_payload = patch->payload;
+          break;
+        case MINI_GNB_C_DL_OBJ_RAR:
+          radio->shared_slot_summary.flags |= MINI_GNB_C_SHARED_SLOT_FLAG_RAR;
+          radio->shared_slot_summary.dl_rnti = patch->rnti;
+          radio->shared_slot_summary.rar_payload = patch->payload;
+          break;
+        case MINI_GNB_C_DL_OBJ_MSG4:
+          radio->shared_slot_summary.flags |= MINI_GNB_C_SHARED_SLOT_FLAG_MSG4;
+          radio->shared_slot_summary.dl_rnti = patch->rnti;
+          radio->shared_slot_summary.msg4_payload = patch->payload;
+          break;
+        case MINI_GNB_C_DL_OBJ_DATA:
+          radio->shared_slot_summary.flags |= MINI_GNB_C_SHARED_SLOT_FLAG_DATA;
+          radio->shared_slot_summary.dl_rnti = patch->rnti;
+          radio->shared_slot_summary.dl_data_kind = patch->payload_kind;
+          radio->shared_slot_summary.dl_data_payload = patch->payload;
+          break;
+        case MINI_GNB_C_DL_OBJ_PDCCH:
+          radio->shared_slot_summary.flags |= MINI_GNB_C_SHARED_SLOT_FLAG_PDCCH;
+          break;
+      }
+    }
 
     ++radio->tx_burst_count;
 
@@ -1476,6 +1985,13 @@ void mini_gnb_c_mock_radio_frontend_submit_pdcch(mini_gnb_c_mock_radio_frontend_
   patch.rnti = pdcch->rnti;
   patch.pdcch = *pdcch;
 
+  mini_gnb_c_prepare_shared_slot_summary(radio, slot);
+  if (radio->shared_slot_mode_enabled) {
+    radio->shared_slot_summary.flags |= MINI_GNB_C_SHARED_SLOT_FLAG_PDCCH;
+    radio->shared_slot_summary.has_pdcch = true;
+    radio->shared_slot_summary.pdcch = *pdcch;
+  }
+
   ++radio->tx_burst_count;
 
   if (mini_gnb_c_join_path(metrics->output_dir, "tx", tx_dir, sizeof(tx_dir)) != 0) {
@@ -1496,4 +2012,50 @@ void mini_gnb_c_mock_radio_frontend_submit_pdcch(mini_gnb_c_mock_radio_frontend_
                                    mini_gnb_c_lookup_tbsize(pdcch->scheduled_prb_len, pdcch->mcs),
                                    pdcch_path);
   }
+}
+
+void mini_gnb_c_mock_radio_frontend_finalize_slot(mini_gnb_c_mock_radio_frontend_t* radio,
+                                                  const mini_gnb_c_slot_indication_t* slot,
+                                                  mini_gnb_c_metrics_trace_t* metrics) {
+  int wait_result = 0;
+
+  if (radio == NULL || slot == NULL || !radio->shared_slot_mode_enabled) {
+    return;
+  }
+
+  mini_gnb_c_prepare_shared_slot_summary(radio, slot);
+  if (mini_gnb_c_shared_slot_link_publish_gnb_slot(&radio->shared_slot_link, &radio->shared_slot_summary) != 0) {
+    if (metrics != NULL) {
+      mini_gnb_c_metrics_trace_event(metrics,
+                                     "shared_slot_link",
+                                     "Failed to publish gNB slot summary.",
+                                     slot->abs_slot,
+                                     "shared_slot_path=%s",
+                                     radio->sim.shared_slot_path);
+    }
+    return;
+  }
+
+  wait_result = mini_gnb_c_shared_slot_link_wait_for_ue_progress(&radio->shared_slot_link,
+                                                                 slot->abs_slot,
+                                                                 radio->shared_slot_timeout_ms);
+  if (wait_result != 0 && metrics != NULL) {
+    mini_gnb_c_metrics_trace_event(metrics,
+                                   "shared_slot_link",
+                                   "UE did not acknowledge published slot before timeout.",
+                                   slot->abs_slot,
+                                   "shared_slot_path=%s,timeout_ms=%u",
+                                   radio->sim.shared_slot_path,
+                                   radio->shared_slot_timeout_ms);
+  }
+}
+
+void mini_gnb_c_mock_radio_frontend_shutdown(mini_gnb_c_mock_radio_frontend_t* radio) {
+  if (radio == NULL || !radio->shared_slot_mode_enabled) {
+    return;
+  }
+
+  (void)mini_gnb_c_shared_slot_link_mark_gnb_done(&radio->shared_slot_link);
+  mini_gnb_c_shared_slot_link_close(&radio->shared_slot_link);
+  radio->shared_slot_mode_enabled = false;
 }

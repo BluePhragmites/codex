@@ -25,16 +25,19 @@ void mini_gnb_c_parse_rrc_setup_request(const mini_gnb_c_buffer_t* ccch_sdu,
 }
 
 void mini_gnb_c_build_rrc_setup(const mini_gnb_c_rrc_setup_request_info_t* request,
+                                const mini_gnb_c_sim_config_t* sim,
                                 mini_gnb_c_rrc_setup_blob_t* out_setup) {
   char text[MINI_GNB_C_MAX_PAYLOAD];
-  if (request == NULL || out_setup == NULL) {
+  if (request == NULL || sim == NULL || out_setup == NULL) {
     return;
   }
 
   (void)snprintf(text,
                  sizeof(text),
-                 "RRCSetup|cause=%u|ue_type=%u",
+                 "RRCSetup|cause=%u|ue_type=%u|sr_period_slots=%d|sr_offset_slot=%d",
                  request->establishment_cause,
-                 request->ue_identity_type);
+                 request->ue_identity_type,
+                 sim->post_msg4_sr_period_slots,
+                 sim->post_msg4_sr_offset_slot);
   (void)mini_gnb_c_buffer_set_text(&out_setup->asn1_buf, text);
 }

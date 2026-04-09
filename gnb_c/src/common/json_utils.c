@@ -129,3 +129,86 @@ int mini_gnb_c_join_path(const char* left, const char* right, char* out, const s
   }
   return 0;
 }
+
+static const char* mini_gnb_c_find_json_value_start(const char* text, const char* key) {
+  char pattern[64];
+  const char* key_position = NULL;
+  const char* colon = NULL;
+
+  if (text == NULL || key == NULL) {
+    return NULL;
+  }
+  if (snprintf(pattern, sizeof(pattern), "\"%s\"", key) >= (int)sizeof(pattern)) {
+    return NULL;
+  }
+
+  key_position = strstr(text, pattern);
+  if (key_position == NULL) {
+    return NULL;
+  }
+  colon = strchr(key_position + strlen(pattern), ':');
+  if (colon == NULL) {
+    return NULL;
+  }
+  ++colon;
+  while (*colon == ' ' || *colon == '\t' || *colon == '\r' || *colon == '\n') {
+    ++colon;
+  }
+  return colon;
+}
+
+int mini_gnb_c_extract_json_int(const char* text, const char* key, int* out) {
+  const char* value_start = NULL;
+  char* end_ptr = NULL;
+
+  if (out == NULL) {
+    return -1;
+  }
+  value_start = mini_gnb_c_find_json_value_start(text, key);
+  if (value_start == NULL) {
+    return -1;
+  }
+
+  *out = (int)strtol(value_start, &end_ptr, 10);
+  return end_ptr != value_start ? 0 : -1;
+}
+
+int mini_gnb_c_extract_json_double(const char* text, const char* key, double* out) {
+  const char* value_start = NULL;
+  char* end_ptr = NULL;
+
+  if (out == NULL) {
+    return -1;
+  }
+  value_start = mini_gnb_c_find_json_value_start(text, key);
+  if (value_start == NULL) {
+    return -1;
+  }
+
+  *out = strtod(value_start, &end_ptr);
+  return end_ptr != value_start ? 0 : -1;
+}
+
+int mini_gnb_c_extract_json_string(const char* text, const char* key, char* out, size_t out_size) {
+  const char* value_start = NULL;
+  size_t index = 0u;
+
+  if (out == NULL || out_size == 0u) {
+    return -1;
+  }
+  value_start = mini_gnb_c_find_json_value_start(text, key);
+  if (value_start == NULL || *value_start != '"') {
+    return -1;
+  }
+  ++value_start;
+
+  while (value_start[index] != '\0' && value_start[index] != '"' && index + 1u < out_size) {
+    out[index] = value_start[index];
+    ++index;
+  }
+  if (value_start[index] != '"' || index + 1u >= out_size) {
+    return -1;
+  }
+  out[index] = '\0';
+  return 0;
+}

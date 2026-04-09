@@ -38,6 +38,8 @@ int mini_gnb_c_metrics_trace_flush(const mini_gnb_c_metrics_trace_t* metrics,
                                    size_t ue_count,
                                    uint64_t tx_burst_count,
                                    int64_t last_hw_time_ns,
+                                   const char* ngap_trace_pcap_path,
+                                   const char* gtpu_trace_pcap_path,
                                    mini_gnb_c_run_summary_t* out_summary);
 
 #endif

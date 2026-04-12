@@ -4,6 +4,7 @@
 #include "mini_gnb_c/common/json_utils.h"
 #include "mini_gnb_c/config/config_loader.h"
 #include "mini_gnb_c/link/json_link.h"
+#include "mini_gnb_c/radio/b210_app_runtime.h"
 #include "mini_gnb_c/ue/mini_ue_fsm.h"
 #include "mini_gnb_c/ue/mini_ue_runtime.h"
 
@@ -43,6 +44,13 @@ int main(int argc, char** argv) {
   if (mini_gnb_c_load_config(config_path, &config, error_message, sizeof(error_message)) != 0) {
     fprintf(stderr, "failed to load config %s: %s\n", config_path, error_message);
     return 1;
+  }
+  if (mini_gnb_c_rf_app_runtime_requested(&config)) {
+    if (mini_gnb_c_b210_app_runtime_run("mini_ue_c", &config, error_message, sizeof(error_message)) != 0) {
+      fprintf(stderr, "B210 app runtime failed for %s: %s\n", config_path, error_message);
+      return 1;
+    }
+    return 0;
   }
   if (config.sim.shared_slot_path[0] != '\0') {
     char shared_slot_path[MINI_GNB_C_MAX_PATH];

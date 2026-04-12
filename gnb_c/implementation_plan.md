@@ -130,6 +130,84 @@ Implemented:
 - runtime NGAP pcap export
 - runtime GTP-U pcap export
 
+### 2.9 Stage 1 Foundation for the First Real RF Target
+
+Implemented:
+
+- a `radio_frontend` boundary now sits between the simulator and the backend-specific mock radio code
+- `mini_gnb_c_sim` can now also run a hybrid B210-backed `radio_frontend` when `rf.device_driver` targets `uhd-b210` and `rf.runtime_mode=simulator`
+- the first real-air-interface target profile is explicitly locked in config as `real_cell.target_backend: "uhd-b210"`
+- a repo-local `mini_b210_probe_c` smoke tool can open the B210 through the UHD C API, validate lock sensors, and capture one RX burst
+- the same smoke tool can also replay one `fc32` IQ file as a finite TX burst and report `burst_ack` plus async TX warnings
+- the B210 smoke tool now also supports a fixed-size single-file `sc16` ring map for RX and TX replay:
+  - one file per direction such as `/dev/shm/rx_ring.map` or `/dev/shm/tx_ring.map`
+  - superblock plus descriptor ring plus payload ring
+  - wrap-around tracking through `oldest_valid_seq`, `next_write_seq`, and `last_committed_seq`
+- the ring-map payload now supports one or two channels, stored channel-major inside each block:
+  - channel 0 region first
+  - channel 1 region second
+- a repo-local `mini_ring_inspect` tool can inspect ring geometry and the latest ready descriptors without guessing the wrap point
+- a repo-local `mini_ring_export` tool can export an inclusive `seq` range from a ring map into one raw `sc16` file per channel plus a metadata text file
+- B210 RX ring captures now record a per-block time anchor from UHD RX metadata when available
+  - `hw_time_ns` is the first-sample timestamp of the block
+  - `flags` distinguish UHD hardware time from host fallback time
+- the B210 smoke probe now supports separate `--rx-gain` and `--tx-gain` controls in `trx` mode while keeping `--gain` as a shared shortcut
+- the B210 probe now supports:
+  - one-channel or two-channel RX ring capture
+  - one-channel or two-channel TX ring replay
+  - a ring-based `trx` mode with simultaneous RX and TX workers pinned to separate CPU cores
+- standalone `tx` mode now uses a larger user-space prefetch window for ring-map replay
+  - it copies channel-major `sc16` blocks from the ring map into a staging window ahead of time
+  - it refills that window when the buffered sample count falls below a low-watermark threshold
+  - the prefetch window is externally overridable through `--tx-prefetch-samples`
+- the `trx` mode TX worker now uses the same prefetch-window and low-watermark refill policy
+  - `--tx-prefetch-samples` applies to both standalone `tx` and `trx` TX replay
+  - `trx` duration now remains meaningful even when the TX ring is shorter than the requested run
+  - the TX side loops the source ring until `rate * duration` samples have been replayed
+  - `tx_ring_wrap_count` reports how many times that wrap-around happened
+- RX stress handling is now explicit instead of implicitly fatal
+  - UHD `OVERFLOW` and `TIMEOUT` are counted and the run continues
+  - broken chains, bad packets, alignment failures, and API failures are still fatal
+  - RX summaries now also estimate lost samples from hardware-time gaps
+  - `wallclock` duration mode is available when the goal is timed stress testing instead of successful-sample collection
+- the B210 `trx` path now also supports separate RX and TX center frequencies
+  - CLI: `--rx-freq` and `--tx-freq`
+  - shared YAML: `rf.rx_freq_hz` and `rf.tx_freq_hz`
+- the same tuning knob is now also present in shared RF config as `rf.tx_prefetch_samples`
+- `mini_b210_probe_c` can now preload its RF defaults from `--config <yaml>` using the shared `rf` section
+  - `freq_hz`, `rx_freq_hz`, `tx_freq_hz`, and `tx_prefetch_samples` are now part of that shared RF config
+  - command-line probe arguments still override YAML-loaded defaults
+- the same shared `rf` section can now also drive the main application entrypoints:
+  - `mini_gnb_c_sim`
+  - `mini_ue_c`
+  - `rf.runtime_mode=rx|tx|trx` switches those apps into a B210/UHD harness path
+  - the harness uses the same shared YAML RF fields for rate, frequency, gains, bandwidth, duration, ring geometry, CPU affinity, and TX prefetch
+  - this removes the need to repeat long probe CLI argument lists when the goal is hardware smoke, capture, replay, or TRX stress
+- the simulator-facing `radio_frontend` now also has a first hybrid B210 backend:
+  - it keeps the existing mock slot semantics for `PRACH`, `MSG3`, `SR`, and `UL DATA`
+  - it starts long-lived B210 RX and TX workers under `mini_gnb_c_sim`
+  - it writes real B210 RX IQ into the configured RX ring map
+  - it turns slot-mapped DL patches into a toy TX waveform and streams that through the configured TX ring map
+  - this moves the real-radio runtime under the simulator backend boundary without claiming that real NR PHY decoding is finished
+- radio-facing code now defaults to a release-style compile profile even when the main build is `Debug`
+  - `MINI_GNB_C_RADIO_FORCE_RELEASE=ON` is the default
+  - `MINI_GNB_C_RADIO_FORCE_DEBUG=ON` is the explicit opt-in override
+- the B210 smoke path now applies the B210-relevant subset of `srsran_performance` before radio startup:
+  - set the CPU governor to `performance`
+  - disable DRM KMS polling
+  - skip Ethernet socket-buffer tuning because the B210 is USB-based
+- the RF config now carries explicit Stage 1 CPU-affinity placeholders:
+  - `rf.rx_cpu_core`
+  - `rf.tx_cpu_core`
+- the `real_cell` profile carries the initial B210 bring-up identity:
+  - one backend target
+  - one band
+  - one numerology
+  - one bandwidth
+  - one PLMN/TAC profile
+
+This is intentionally still a foundation step. The simulator now has a real B210-backed hybrid backend, but it is still not a full real-air-interface PHY.
+
 ## 3. Known Boundaries
 
 The following items are current prototype boundaries, not accidental omissions:
@@ -141,6 +219,13 @@ The following items are current prototype boundaries, not accidental omissions:
 - real internet reachability still depends on the host-side Open5GS, NAT, and DNS environment
 - there is no real RF, SDR, or commercial-UE attach path yet
 - there is no real RRC/MAC/PHY stack for an off-the-shelf handset
+- the current simulator-facing B210 backend is hybrid
+  - real B210 RX and TX workers run under `radio_frontend`
+  - UL control/data events still come from the existing mock slot logic
+  - DL emission still uses the current toy DL waveform, not a real NR PHY waveform
+- `mini_gnb_c_sim` and `mini_ue_c` still keep their separate B210 app-harness entry modes for pure hardware smoke, capture, replay, and TRX stress
+- the current ring-map path now participates in the simulator-facing B210 backend, but it is still not the final long-term queue design for a real handset-capable PHY
+- built-in host tuning plus the TX prefetch window materially improve replay robustness on this host, but they do not replace the remaining PHY and decoding work
 
 ## 4. Roadmap Toward Commercial Handset Attach
 
@@ -180,7 +265,7 @@ Why this stage matters:
 
 Status:
 
-- pending
+- in progress
 
 Goal:
 
@@ -188,15 +273,34 @@ Goal:
 
 Main work items:
 
-- introduce an SDR-backed radio adapter boundary without breaking the existing mock-radio path
+- introduce a B210/UHD-backed radio adapter boundary without breaking the existing mock-radio path
 - implement real-time sample scheduling and timestamp handling
 - generate real SSB/PBCH and a valid MIB
 - transmit a valid SIB1 on a real carrier configuration
 - define a minimal supported deployment profile:
+  - one backend target: `uhd-b210`
   - one band
   - one numerology
   - one bandwidth
   - one PLMN/TAC profile
+
+Current Stage 1 progress:
+
+- completed:
+  - simulator-facing `radio_frontend` boundary
+  - first hybrid B210-backed `radio_frontend` backend under `mini_gnb_c_sim`
+  - explicit `real_cell` config section
+  - locked first target profile around `uhd-b210`
+  - repo-local B210/UHD RX smoke probe through the UHD C API
+  - repo-local B210/UHD TX-from-file smoke probe through the UHD C API
+  - long-lived B210 RX and TX workers behind the simulator radio boundary
+  - basic real-time sample and timestamp handling for the current hybrid backend
+  - built-in B210 host tuning before RF startup
+  - explicit `rf.subdev`, `rf.rx_cpu_core`, and `rf.tx_cpu_core` configuration knobs
+- remaining:
+  - real SSB/PBCH/MIB/SIB1 transmission
+  - replace the current toy DL waveform with a real or at least standards-shaped broadcast waveform
+  - make a handset able to detect and camp on the configured cell profile instead of only proving host-side RF runtime
 
 Exit criteria:
 
@@ -208,8 +312,13 @@ Notes:
 
 - this stage is still before successful attach
 - it is mainly about making the cell visible and believable to real UEs
+- the practical execution order for RF work is:
+  - first prove B210 RX capture and host timing with `mini_b210_probe_c`
+  - then add a TX smoke path and separate RX/TX worker cores
+  - then integrate those workers into the real `uhd-b210` simulator backend
+  - only after that start real SSB/PBCH/MIB/SIB1 transmission
 
-### Stage 2: Real Random Access and Minimal RRC Setup
+### Stage 2: Custom Over-the-Air Replay of the Current Mock Flow
 
 Status:
 
@@ -217,7 +326,153 @@ Status:
 
 Goal:
 
-- make a commercial handset complete the first real access steps on the air interface
+- make the gNB and UE complete the current mock/shared-slot interaction flow over B210 using a deliberately simple custom slot PHY
+
+This stage is not yet “commercial handset attach”. It is the second major internal milestone:
+
+- keep the existing mock control logic and payload objects
+- move their transport from files/shared-slot events into real IQ over B210
+- use a simple self-defined air format with payload plus CRC plus reference signals
+
+Main work items:
+
+- define a minimal air-frame/PDU format shared by gNB and UE:
+  - `DL-SSB`
+  - `DL-CTRL`
+  - `DL-DATA`
+  - `UL-PRACH`
+  - `UL-DATA`
+  - `UL-ACK`
+  - `UL-SR`
+- define a fixed container format for those PDUs:
+  - header
+  - type
+  - slot or frame index
+  - RNTI or preamble context
+  - payload length
+  - payload
+  - CRC
+- add a bridge layer between existing mock scheduler/runtime objects and those air PDUs
+- keep the current ring-map and B210 runtime as observability and transport infrastructure
+
+### Stage 2A: Framing, Synchronization, and Air-PDU Contract
+
+Status:
+
+- pending
+
+Goal:
+
+- define and prove the minimum common slot timing and framing needed for a custom B210-only air interface
+
+Main work items:
+
+- define the exact binary layout for `DL-SSB`, `DL-CTRL`, `DL-DATA`, `UL-PRACH`, `UL-DATA`, `UL-ACK`, and `UL-SR`
+- add CRC validation at the air-PDU level
+- define one strong downlink synchronization signal:
+  - Zadoff-Chu or equivalent strong sequence inside `DL-SSB`
+- define one strong uplink access signal:
+  - Zadoff-Chu or equivalent inside `UL-PRACH`
+- encode enough timing metadata in `DL-SSB` or `DL-CTRL` for the UE to derive absolute slot timing
+- implement the first bridge layer:
+  - mock DL grant or PDCCH object -> air PDU
+  - decoded air PDU -> existing UE runtime input event
+
+Current Stage 2A progress:
+
+- completed:
+  - a minimal shared air-PDU binary contract
+  - CRC-backed encode and parse helpers for:
+    - `DL-SSB`
+    - `DL-CTRL`
+    - `DL-DATA`
+    - `UL-PRACH`
+    - `UL-DATA`
+    - `UL-ACK`
+    - `UL-SR`
+  - unit-test coverage for round-trip encode/decode and CRC rejection
+- remaining:
+  - slot and frame semantics on top of that binary format
+  - the first actual `DL-SSB` and `UL-PRACH` waveform mapping
+  - bridge code from scheduler/runtime objects into those PDUs
+
+Exit criteria:
+
+- the gNB continuously emits a decodable `DL-SSB`
+- the UE can establish coarse downlink timing from `DL-SSB`
+- the UE can emit a timed `UL-PRACH`
+- the gNB can detect `UL-PRACH` and recover preamble plus timing offset
+
+### Stage 2B: Downlink Payload Transport Over IQ
+
+Status:
+
+- pending
+
+Goal:
+
+- move the current mock downlink file and object transport onto real B210 IQ while keeping payload semantics unchanged
+
+Main work items:
+
+- map existing simulator objects into air PDUs:
+  - `PDCCH`-like scheduling info into `DL-CTRL`
+  - `RAR`, `MSG4`, `NAS`, and `DL DATA` payloads into `DL-DATA`
+- define a simple modulate and demodulate path with:
+  - reference signal or pilot support
+  - payload decoding
+  - CRC check
+- replace the current toy “write patch to TX ring” behavior with “encode air PDU to TX waveform”
+- connect decoded UE downlink PDUs back into the existing UE runtime and NAS path
+
+Exit criteria:
+
+- the UE can decode `DL-CTRL`
+- the UE can decode `RAR`, `MSG4`, and generic downlink payloads from `DL-DATA`
+- the UE runtime can consume those decoded payloads instead of file/shared-slot inputs
+
+### Stage 2C: Uplink Payload Transport and Full Mock-Flow Replay
+
+Status:
+
+- pending
+
+Goal:
+
+- move the current mock uplink file and object transport onto real B210 IQ and complete the old mock flow end to end
+
+Main work items:
+
+- encode UE-side `MSG3`, `SR`, `ACK`, `BSR`, `NAS`, and IPv4 payloads into `UL-DATA` or `UL-ACK`
+- implement gNB-side uplink demodulation, CRC validation, and object recovery
+- map decoded uplink PDUs back into:
+  - `mini_gnb_c_radio_burst_t`
+  - existing MAC/RRC/NAS handling
+- replace mock UL injection in the main closed-loop flow when the custom air path is enabled
+- validate timing advance and simple slot-level scheduling around repeated UL events
+
+Exit criteria:
+
+- gNB and UE can complete `PRACH -> RAR -> MSG3 -> MSG4` through B210 IQ
+- `SR -> grant -> UL DATA` also works over B210 IQ
+- follow-up NAS can cross the custom air link in both directions
+- the previous mock-file interaction logic can be replayed over the air without depending on shared-slot transport
+
+Notes:
+
+- this stage intentionally does not require standards-compliant NR PHY
+- it is a custom minimal air interface used to retire file-based mock exchange first
+- passing this stage means the control logic has left the file bus and moved onto radio IQ
+
+### Stage 3: Real Random Access and Minimal RRC Setup for Commercial Handsets
+
+Status:
+
+- pending
+
+Goal:
+
+- replace the custom over-the-air replay path with the first real handset-facing access procedures
 
 Main work items:
 
@@ -241,7 +496,7 @@ Notes:
 - this is the first stage where the mock UE is no longer enough as the primary validation target
 - handset traces and SDR captures become required evidence
 
-### Stage 3: NAS Transport and Access-Stratum Security for Real UE Attach
+### Stage 4: NAS Transport and Access-Stratum Security for Real UE Attach
 
 Status:
 
@@ -271,7 +526,7 @@ Notes:
 - this stage is the true threshold between a lab simulator and a minimal real gNB prototype
 - until this stage is complete, the project is still primarily a simulator
 
-### Stage 4: Real User Plane for One Commercial Handset
+### Stage 5: Real User Plane for One Commercial Handset
 
 Status:
 
@@ -300,7 +555,7 @@ Notes:
 - this stage does not require full standards-grade MAC/RLC completeness
 - it does require a bearer path that is stable enough for real handset traffic rather than just the local mock UE
 
-### Stage 5: Stability, Interoperability, and Small-Lab Usability
+### Stage 6: Stability, Interoperability, and Small-Lab Usability
 
 Status:
 
@@ -325,7 +580,7 @@ Exit criteria:
 - repeated attach and data tests work without per-run code changes
 - troubleshooting is guided by stable traces and documented failure categories
 
-### Stage 6: Expansion Beyond the First Real gNB
+### Stage 7: Expansion Beyond the First Real gNB
 
 Status:
 
@@ -344,28 +599,36 @@ Possible directions:
 - broader core-network interoperability
 - more realistic performance and RF behavior
 
-This stage should only start after Stage 4 and Stage 5 are stable enough to serve as a real baseline.
+This stage should only start after Stage 5 and Stage 6 are stable enough to serve as a real baseline.
 
 ## 5. Immediate Execution Order
 
-If the project starts moving toward commercial handset attach now, the recommended next order is:
+If the project starts moving toward the current next milestone now, the recommended order is:
 
 1. freeze the current simulator and Open5GS path as the regression baseline
 2. define one narrow RF target profile
-   - one SDR family
-   - one band
-   - one bandwidth
-   - one handset model
-3. build Stage 1 around real SSB, PBCH, and SIB1 first
-4. then implement Stage 2 random access and minimal RRC setup
-5. only after that, spend effort on AS security and real-user-plane completion
+   - one SDR family: USRP B210
+   - one carrier profile
+   - one sample rate
+   - one gNB machine and one UE machine
+3. finish the remaining Stage 1 broadcast and timing work that is needed for stable B210 runtime usage
+4. execute Stage 2A
+   - define the custom air PDU contract
+   - define `DL-SSB` and `UL-PRACH` synchronization behavior
+5. execute Stage 2B
+   - move current downlink mock payload transport onto IQ
+6. execute Stage 2C
+   - move current uplink mock payload transport onto IQ and replay the old mock interaction flow over the air
+7. only after that, move on to handset-facing Stage 3 and later stages
 
 The key planning rule is to avoid trying to build “full gNB” behavior in one jump. The shortest credible path is:
 
-- visible cell
-- successful random access and RRC setup
-- successful registration
-- successful default PDU session
+- stable B210 runtime under `radio_frontend`
+- custom over-the-air replay of the existing mock flow
+- handset-visible cell
+- handset random access and `RRCSetup`
+- registration
+- default PDU session
 - stable user-plane traffic
 
 ## 6. Maintenance Rule

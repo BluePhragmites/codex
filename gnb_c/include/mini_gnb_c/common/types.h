@@ -68,6 +68,24 @@ typedef enum {
   MINI_GNB_C_PAYLOAD_KIND_NAS = 2
 } mini_gnb_c_payload_kind_t;
 
+typedef enum {
+  MINI_GNB_C_RADIO_BACKEND_MOCK = 0,
+  MINI_GNB_C_RADIO_BACKEND_B210 = 1,
+  MINI_GNB_C_RADIO_BACKEND_UNKNOWN = 2
+} mini_gnb_c_radio_backend_kind_t;
+
+typedef enum {
+  MINI_GNB_C_RF_RUNTIME_MODE_SIMULATOR = 0,
+  MINI_GNB_C_RF_RUNTIME_MODE_RX = 1,
+  MINI_GNB_C_RF_RUNTIME_MODE_TX = 2,
+  MINI_GNB_C_RF_RUNTIME_MODE_TRX = 3
+} mini_gnb_c_rf_runtime_mode_t;
+
+typedef enum {
+  MINI_GNB_C_RF_DURATION_MODE_SAMPLES = 0,
+  MINI_GNB_C_RF_DURATION_MODE_WALLCLOCK = 1
+} mini_gnb_c_rf_duration_mode_t;
+
 typedef struct {
   uint8_t bytes[MINI_GNB_C_MAX_PAYLOAD];
   size_t len;
@@ -101,11 +119,45 @@ typedef struct {
 typedef struct {
   char device_driver[16];
   char device_args[64];
+  char subdev[32];
   char clock_src[16];
+  mini_gnb_c_rf_runtime_mode_t runtime_mode;
   double srate;
+  double freq_hz;
+  double rx_freq_hz;
+  double tx_freq_hz;
   double tx_gain;
   double rx_gain;
+  double bandwidth_hz;
+  double duration_sec;
+  mini_gnb_c_rf_duration_mode_t duration_mode;
+  uint32_t channel;
+  uint32_t channel_count;
+  int rx_cpu_core;
+  int tx_cpu_core;
+  bool apply_host_tuning;
+  bool require_ref_lock;
+  bool require_lo_lock;
+  char rx_output_file[MINI_GNB_C_MAX_PATH];
+  char tx_input_file[MINI_GNB_C_MAX_PATH];
+  char rx_ring_map[MINI_GNB_C_MAX_PATH];
+  char tx_ring_map[MINI_GNB_C_MAX_PATH];
+  uint32_t ring_block_samples;
+  uint32_t ring_block_count;
+  uint32_t tx_prefetch_samples;
 } mini_gnb_c_rf_config_t;
+
+typedef struct {
+  bool enabled;
+  char profile_name[MINI_GNB_C_MAX_TEXT];
+  char target_backend[16];
+  uint32_t dl_arfcn;
+  uint16_t band;
+  uint16_t channel_bandwidth_mhz;
+  uint16_t common_scs_khz;
+  char plmn[8];
+  uint16_t tac;
+} mini_gnb_c_real_cell_config_t;
 
 typedef struct {
   bool enabled;
@@ -185,6 +237,7 @@ typedef struct {
   mini_gnb_c_cell_config_t cell;
   mini_gnb_c_prach_config_t prach;
   mini_gnb_c_rf_config_t rf;
+  mini_gnb_c_real_cell_config_t real_cell;
   mini_gnb_c_core_config_t core;
   mini_gnb_c_broadcast_config_t broadcast;
   mini_gnb_c_sim_config_t sim;
@@ -492,6 +545,8 @@ const char* mini_gnb_c_ul_burst_type_to_string(mini_gnb_c_ul_burst_type_t type);
 const char* mini_gnb_c_dci_format_to_string(mini_gnb_c_dci_format_t format);
 const char* mini_gnb_c_ra_state_to_string(mini_gnb_c_ra_state_t state);
 const char* mini_gnb_c_payload_kind_to_string(mini_gnb_c_payload_kind_t kind);
+const char* mini_gnb_c_rf_runtime_mode_to_string(mini_gnb_c_rf_runtime_mode_t mode);
+const char* mini_gnb_c_rf_duration_mode_to_string(mini_gnb_c_rf_duration_mode_t mode);
 uint16_t mini_gnb_c_lookup_tbsize(uint16_t prb_len, uint8_t mcs);
 
 void mini_gnb_c_buffer_reset(mini_gnb_c_buffer_t* buffer);

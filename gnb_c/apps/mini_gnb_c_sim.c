@@ -1,12 +1,13 @@
 #include <stdio.h>
 
 #include "mini_gnb_c/common/simulator.h"
+#include "mini_gnb_c/radio/b210_app_runtime.h"
 
 int main(int argc, char** argv) {
   char config_path[MINI_GNB_C_MAX_PATH];
   char output_dir[MINI_GNB_C_MAX_PATH];
   char error_message[256];
-  char config_summary[2048];
+  char config_summary[4096];
   mini_gnb_c_config_t config;
   mini_gnb_c_simulator_t simulator;
   mini_gnb_c_run_summary_t summary;
@@ -37,6 +38,13 @@ int main(int argc, char** argv) {
   }
 
   printf("%s\n", config_summary);
+  if (mini_gnb_c_rf_app_runtime_requested(&config)) {
+    if (mini_gnb_c_b210_app_runtime_run("mini_gnb_c_sim", &config, error_message, sizeof(error_message)) != 0) {
+      fprintf(stderr, "B210 app runtime failed: %s\n", error_message);
+      return 1;
+    }
+    return 0;
+  }
   if (snprintf(output_dir, sizeof(output_dir), "%s/out", MINI_GNB_C_SOURCE_DIR) >= (int)sizeof(output_dir)) {
     fprintf(stderr, "failed to construct output directory\n");
     return 1;

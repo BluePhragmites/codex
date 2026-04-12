@@ -12,7 +12,7 @@
 #include "mini_gnb_c/phy_ul/mock_msg3_receiver.h"
 #include "mini_gnb_c/phy_ul/mock_prach_detector.h"
 #include "mini_gnb_c/ra/ra_manager.h"
-#include "mini_gnb_c/radio/mock_radio_frontend.h"
+#include "mini_gnb_c/radio/radio_frontend.h"
 #include "mini_gnb_c/rrc/rrc_ccch_stub.h"
 #include "mini_gnb_c/scheduler/initial_access_scheduler.h"
 #include "mini_gnb_c/timing/slot_engine.h"
@@ -22,7 +22,7 @@ typedef struct {
   mini_gnb_c_config_t config;
   mini_gnb_c_metrics_trace_t metrics;
   mini_gnb_c_slot_engine_t slot_engine;
-  mini_gnb_c_mock_radio_frontend_t radio;
+  mini_gnb_c_radio_frontend_t radio;
   mini_gnb_c_broadcast_engine_t broadcast;
   mini_gnb_c_mock_prach_detector_t prach_detector;
   mini_gnb_c_ra_manager_t ra_manager;

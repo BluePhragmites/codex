@@ -101,6 +101,30 @@ const char* mini_gnb_c_payload_kind_to_string(const mini_gnb_c_payload_kind_t ki
   return "UNKNOWN";
 }
 
+const char* mini_gnb_c_rf_runtime_mode_to_string(const mini_gnb_c_rf_runtime_mode_t mode) {
+  switch (mode) {
+    case MINI_GNB_C_RF_RUNTIME_MODE_SIMULATOR:
+      return "simulator";
+    case MINI_GNB_C_RF_RUNTIME_MODE_RX:
+      return "rx";
+    case MINI_GNB_C_RF_RUNTIME_MODE_TX:
+      return "tx";
+    case MINI_GNB_C_RF_RUNTIME_MODE_TRX:
+      return "trx";
+  }
+  return "unknown";
+}
+
+const char* mini_gnb_c_rf_duration_mode_to_string(const mini_gnb_c_rf_duration_mode_t mode) {
+  switch (mode) {
+    case MINI_GNB_C_RF_DURATION_MODE_SAMPLES:
+      return "samples";
+    case MINI_GNB_C_RF_DURATION_MODE_WALLCLOCK:
+      return "wallclock";
+  }
+  return "unknown";
+}
+
 uint16_t mini_gnb_c_lookup_tbsize(const uint16_t prb_len, const uint8_t mcs) {
   size_t i = 0;
 

@@ -31,10 +31,45 @@ rf:
   # Mock RF frontend configuration.
   device_driver: "mock"
   device_args: "loopback=true"
+  subdev: ""
   clock_src: "simulated"
+  runtime_mode: "simulator"
   srate: 30720000.0
+  freq_hz: 2462000000.0
+  rx_freq_hz: 2462000000.0
+  tx_freq_hz: 2462000000.0
   tx_gain: 45.0
   rx_gain: 35.0
+  bandwidth_hz: 20000000.0
+  duration_sec: 1.0
+  duration_mode: "samples"
+  channel: 0
+  channel_count: 1
+  rx_cpu_core: -1
+  tx_cpu_core: -1
+  apply_host_tuning: true
+  require_ref_lock: true
+  require_lo_lock: true
+  rx_output_file: ""
+  tx_input_file: ""
+  rx_ring_map: ""
+  tx_ring_map: ""
+  ring_block_samples: 4096
+  ring_block_count: 1024
+  tx_prefetch_samples: 0
+
+real_cell:
+  # Stage 1 target profile for the first real-air-interface bring-up.
+  # This does not change the current mock-radio baseline; it records the locked target profile.
+  enabled: false
+  profile_name: "b210_n78_demo"
+  target_backend: "uhd-b210"
+  dl_arfcn: 627334
+  band: 78
+  channel_bandwidth_MHz: 20
+  common_scs_khz: 30
+  plmn: "00101"
+  tac: 7
 
 core:
   # Future AMF/core bridge configuration.

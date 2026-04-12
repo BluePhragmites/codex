@@ -73,6 +73,44 @@ static int mini_gnb_c_case_equal(const char* left, const char* right) {
   return left[i] == '\0' && right[i] == '\0';
 }
 
+static int mini_gnb_c_parse_rf_runtime_mode_text(const char* text, mini_gnb_c_rf_runtime_mode_t* out_mode) {
+  if (text == NULL || out_mode == NULL) {
+    return -1;
+  }
+  if (mini_gnb_c_case_equal(text, "simulator") || mini_gnb_c_case_equal(text, "sim")) {
+    *out_mode = MINI_GNB_C_RF_RUNTIME_MODE_SIMULATOR;
+    return 0;
+  }
+  if (mini_gnb_c_case_equal(text, "rx")) {
+    *out_mode = MINI_GNB_C_RF_RUNTIME_MODE_RX;
+    return 0;
+  }
+  if (mini_gnb_c_case_equal(text, "tx")) {
+    *out_mode = MINI_GNB_C_RF_RUNTIME_MODE_TX;
+    return 0;
+  }
+  if (mini_gnb_c_case_equal(text, "trx")) {
+    *out_mode = MINI_GNB_C_RF_RUNTIME_MODE_TRX;
+    return 0;
+  }
+  return -1;
+}
+
+static int mini_gnb_c_parse_rf_duration_mode_text(const char* text, mini_gnb_c_rf_duration_mode_t* out_mode) {
+  if (text == NULL || out_mode == NULL) {
+    return -1;
+  }
+  if (mini_gnb_c_case_equal(text, "samples") || mini_gnb_c_case_equal(text, "sample_target")) {
+    *out_mode = MINI_GNB_C_RF_DURATION_MODE_SAMPLES;
+    return 0;
+  }
+  if (mini_gnb_c_case_equal(text, "wallclock")) {
+    *out_mode = MINI_GNB_C_RF_DURATION_MODE_WALLCLOCK;
+    return 0;
+  }
+  return -1;
+}
+
 static void mini_gnb_c_unquote(char* text) {
   size_t len = 0;
 
@@ -281,6 +319,7 @@ int mini_gnb_c_load_config(const char* path,
   int value = 0;
   double double_value = 0.0;
   bool bool_value = false;
+  char scalar_text[64];
 
   if (out_config == NULL) {
     return mini_gnb_c_fail(error_message, error_message_size, "invalid output config", "out_config");
@@ -297,6 +336,31 @@ int mini_gnb_c_load_config(const char* path,
   out_config->core.default_pdu_session_id = 1u;
   out_config->core.ngap_trace_pcap[0] = '\0';
   out_config->core.gtpu_trace_pcap[0] = '\0';
+  out_config->rf.subdev[0] = '\0';
+  out_config->rf.runtime_mode = MINI_GNB_C_RF_RUNTIME_MODE_SIMULATOR;
+  out_config->rf.freq_hz = 2462e6;
+  out_config->rf.rx_freq_hz = out_config->rf.freq_hz;
+  out_config->rf.tx_freq_hz = out_config->rf.freq_hz;
+  out_config->rf.bandwidth_hz = 20e6;
+  out_config->rf.duration_sec = 1.0;
+  out_config->rf.duration_mode = MINI_GNB_C_RF_DURATION_MODE_SAMPLES;
+  out_config->rf.channel = 0u;
+  out_config->rf.channel_count = 1u;
+  out_config->rf.rx_cpu_core = -1;
+  out_config->rf.tx_cpu_core = -1;
+  out_config->rf.apply_host_tuning = true;
+  out_config->rf.require_ref_lock = true;
+  out_config->rf.require_lo_lock = true;
+  out_config->rf.rx_output_file[0] = '\0';
+  out_config->rf.tx_input_file[0] = '\0';
+  out_config->rf.rx_ring_map[0] = '\0';
+  out_config->rf.tx_ring_map[0] = '\0';
+  out_config->rf.ring_block_samples = 4096u;
+  out_config->rf.ring_block_count = 1024u;
+  out_config->rf.tx_prefetch_samples = 0u;
+  out_config->real_cell.enabled = false;
+  out_config->real_cell.profile_name[0] = '\0';
+  out_config->real_cell.target_backend[0] = '\0';
   out_config->sim.post_msg4_dl_pdcch_delay_slots = 1;
   out_config->sim.post_msg4_dl_time_indicator = 1;
   out_config->sim.post_msg4_dl_data_to_ul_ack_slots = 1;
@@ -353,9 +417,158 @@ int mini_gnb_c_load_config(const char* path,
   MINI_GNB_C_LOAD_STRING("rf", "device_driver", out_config->rf.device_driver);
   MINI_GNB_C_LOAD_STRING("rf", "device_args", out_config->rf.device_args);
   MINI_GNB_C_LOAD_STRING("rf", "clock_src", out_config->rf.clock_src);
+  if (mini_gnb_c_extract_string(text, "rf", "runtime_mode", scalar_text, sizeof(scalar_text)) == 0 &&
+      mini_gnb_c_parse_rf_runtime_mode_text(scalar_text, &out_config->rf.runtime_mode) != 0) {
+    free(text);
+    return mini_gnb_c_fail(error_message, error_message_size, "invalid rf.runtime_mode", path);
+  }
   MINI_GNB_C_LOAD_DOUBLE("rf", "srate", out_config->rf.srate);
+  if (mini_gnb_c_extract_double(text, "rf", "freq_hz", &double_value) == 0) {
+    out_config->rf.freq_hz = double_value;
+    out_config->rf.rx_freq_hz = double_value;
+    out_config->rf.tx_freq_hz = double_value;
+  }
+  if (mini_gnb_c_extract_double(text, "rf", "rx_freq_hz", &double_value) == 0) {
+    out_config->rf.rx_freq_hz = double_value;
+  }
+  if (mini_gnb_c_extract_double(text, "rf", "tx_freq_hz", &double_value) == 0) {
+    out_config->rf.tx_freq_hz = double_value;
+  }
   MINI_GNB_C_LOAD_DOUBLE("rf", "tx_gain", out_config->rf.tx_gain);
   MINI_GNB_C_LOAD_DOUBLE("rf", "rx_gain", out_config->rf.rx_gain);
+  if (mini_gnb_c_extract_double(text, "rf", "bandwidth_hz", &double_value) == 0) {
+    out_config->rf.bandwidth_hz = double_value;
+  }
+  if (mini_gnb_c_extract_double(text, "rf", "duration_sec", &double_value) == 0) {
+    out_config->rf.duration_sec = double_value;
+  }
+  if (mini_gnb_c_extract_string(text, "rf", "duration_mode", scalar_text, sizeof(scalar_text)) == 0 &&
+      mini_gnb_c_parse_rf_duration_mode_text(scalar_text, &out_config->rf.duration_mode) != 0) {
+    free(text);
+    return mini_gnb_c_fail(error_message, error_message_size, "invalid rf.duration_mode", path);
+  }
+  if (mini_gnb_c_extract_string(text, "rf", "subdev", out_config->rf.subdev, sizeof(out_config->rf.subdev)) != 0) {
+    out_config->rf.subdev[0] = '\0';
+  }
+  if (mini_gnb_c_extract_int(text, "rf", "channel", &value) == 0 && value >= 0) {
+    out_config->rf.channel = (uint32_t)value;
+  }
+  if (mini_gnb_c_extract_int(text, "rf", "channel_count", &value) == 0 && value > 0) {
+    out_config->rf.channel_count = (uint32_t)value;
+  }
+  if (mini_gnb_c_extract_int(text, "rf", "rx_cpu_core", &value) == 0) {
+    out_config->rf.rx_cpu_core = value;
+  }
+  if (mini_gnb_c_extract_int(text, "rf", "tx_cpu_core", &value) == 0) {
+    out_config->rf.tx_cpu_core = value;
+  }
+  if (mini_gnb_c_extract_int(text, "rf", "tx_prefetch_samples", &value) == 0 && value > 0) {
+    out_config->rf.tx_prefetch_samples = (uint32_t)value;
+  }
+  if (mini_gnb_c_extract_int(text, "rf", "ring_block_samples", &value) == 0 && value > 0) {
+    out_config->rf.ring_block_samples = (uint32_t)value;
+  }
+  if (mini_gnb_c_extract_int(text, "rf", "ring_block_count", &value) == 0 && value > 0) {
+    out_config->rf.ring_block_count = (uint32_t)value;
+  }
+  if (mini_gnb_c_extract_bool(text, "rf", "apply_host_tuning", &bool_value) == 0) {
+    out_config->rf.apply_host_tuning = bool_value;
+  }
+  if (mini_gnb_c_extract_bool(text, "rf", "require_ref_lock", &bool_value) == 0) {
+    out_config->rf.require_ref_lock = bool_value;
+  }
+  if (mini_gnb_c_extract_bool(text, "rf", "require_lo_lock", &bool_value) == 0) {
+    out_config->rf.require_lo_lock = bool_value;
+  }
+  if (mini_gnb_c_extract_string(text,
+                                "rf",
+                                "rx_output_file",
+                                out_config->rf.rx_output_file,
+                                sizeof(out_config->rf.rx_output_file)) != 0) {
+    out_config->rf.rx_output_file[0] = '\0';
+  }
+  if (mini_gnb_c_extract_string(text,
+                                "rf",
+                                "tx_input_file",
+                                out_config->rf.tx_input_file,
+                                sizeof(out_config->rf.tx_input_file)) != 0) {
+    out_config->rf.tx_input_file[0] = '\0';
+  }
+  if (mini_gnb_c_extract_string(text,
+                                "rf",
+                                "rx_ring_map",
+                                out_config->rf.rx_ring_map,
+                                sizeof(out_config->rf.rx_ring_map)) != 0) {
+    out_config->rf.rx_ring_map[0] = '\0';
+  }
+  if (mini_gnb_c_extract_string(text,
+                                "rf",
+                                "tx_ring_map",
+                                out_config->rf.tx_ring_map,
+                                sizeof(out_config->rf.tx_ring_map)) != 0) {
+    out_config->rf.tx_ring_map[0] = '\0';
+  }
+
+  (void)snprintf(out_config->real_cell.profile_name,
+                 sizeof(out_config->real_cell.profile_name),
+                 "%s",
+                 "b210_n78_demo");
+  (void)snprintf(out_config->real_cell.target_backend,
+                 sizeof(out_config->real_cell.target_backend),
+                 "%s",
+                 "uhd-b210");
+  out_config->real_cell.dl_arfcn = out_config->cell.dl_arfcn;
+  out_config->real_cell.band = out_config->cell.band;
+  out_config->real_cell.channel_bandwidth_mhz = out_config->cell.channel_bandwidth_mhz;
+  out_config->real_cell.common_scs_khz = out_config->cell.common_scs_khz;
+  (void)snprintf(out_config->real_cell.plmn, sizeof(out_config->real_cell.plmn), "%s", out_config->cell.plmn);
+  out_config->real_cell.tac = out_config->cell.tac;
+
+  if (mini_gnb_c_extract_bool(text, "real_cell", "enabled", &bool_value) == 0) {
+    out_config->real_cell.enabled = bool_value;
+  }
+  if (mini_gnb_c_extract_string(text,
+                                "real_cell",
+                                "profile_name",
+                                out_config->real_cell.profile_name,
+                                sizeof(out_config->real_cell.profile_name)) != 0) {
+    (void)snprintf(out_config->real_cell.profile_name,
+                   sizeof(out_config->real_cell.profile_name),
+                   "%s",
+                   "b210_n78_demo");
+  }
+  if (mini_gnb_c_extract_string(text,
+                                "real_cell",
+                                "target_backend",
+                                out_config->real_cell.target_backend,
+                                sizeof(out_config->real_cell.target_backend)) != 0) {
+    (void)snprintf(out_config->real_cell.target_backend,
+                   sizeof(out_config->real_cell.target_backend),
+                   "%s",
+                   "uhd-b210");
+  }
+  if (mini_gnb_c_extract_int(text, "real_cell", "dl_arfcn", &value) == 0) {
+    out_config->real_cell.dl_arfcn = (uint32_t)value;
+  }
+  if (mini_gnb_c_extract_int(text, "real_cell", "band", &value) == 0) {
+    out_config->real_cell.band = (uint16_t)value;
+  }
+  if (mini_gnb_c_extract_int(text, "real_cell", "channel_bandwidth_MHz", &value) == 0) {
+    out_config->real_cell.channel_bandwidth_mhz = (uint16_t)value;
+  }
+  if (mini_gnb_c_extract_int(text, "real_cell", "common_scs_khz", &value) == 0) {
+    out_config->real_cell.common_scs_khz = (uint16_t)value;
+  }
+  if (mini_gnb_c_extract_string(text,
+                                "real_cell",
+                                "plmn",
+                                out_config->real_cell.plmn,
+                                sizeof(out_config->real_cell.plmn)) != 0) {
+    (void)snprintf(out_config->real_cell.plmn, sizeof(out_config->real_cell.plmn), "%s", out_config->cell.plmn);
+  }
+  if (mini_gnb_c_extract_int(text, "real_cell", "tac", &value) == 0) {
+    out_config->real_cell.tac = (uint16_t)value;
+  }
 
   if (mini_gnb_c_extract_bool(text, "core", "enabled", &bool_value) == 0) {
     out_config->core.enabled = bool_value;
@@ -582,10 +795,12 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                 "  ue_tun_enabled=%s ue_tun_name=%s ue_tun_mtu=%u ue_tun_prefix_len=%u ue_tun_isolate_netns=%s ue_tun_add_default_route=%s ue_tun_netns_name=%s ue_tun_dns_server_ipv4=%s\n"
                 "Connected traffic summary:\n"
                 "  post_msg4=%s dl_pdcch_delay=%d dl_time_indicator=%d dl_ack=%d sr_period=%d sr_offset=%d ul_grant_delay=%d ul_time_indicator=%d dl_harq=%d ul_harq=%d ul_present=%s\n"
-                "Core bridge summary:\n"
+               "Core bridge summary:\n"
                 "  enabled=%s amf=%s:%u upf_port=%u timeout_ms=%u ran_ue_ngap_id_base=%u default_pdu_session_id=%u ngap_trace_pcap=%s gtpu_trace_pcap=%s\n"
                 "RF config summary:\n"
-                "  driver=%s clock=%s srate=%g tx_gain=%g rx_gain=%g",
+                "  driver=%s runtime_mode=%s subdev=%s clock=%s srate=%g freq_hz=%g rx_freq_hz=%g tx_freq_hz=%g tx_gain=%g rx_gain=%g bandwidth_hz=%g duration_sec=%g duration_mode=%s channel=%u channel_count=%u rx_cpu_core=%d tx_cpu_core=%d apply_host_tuning=%s require_ref_lock=%s require_lo_lock=%s tx_prefetch_samples=%u ring_block_samples=%u ring_block_count=%u rx_output_file=%s tx_input_file=%s rx_ring_map=%s tx_ring_map=%s\n"
+                "Stage 1 real-cell summary:\n"
+                "  enabled=%s profile=%s target_backend=%s band=n%u arfcn=%u scs=%ukHz bw=%uMHz plmn=%s tac=%u",
                config->cell.pci,
                config->cell.band,
                config->cell.dl_arfcn,
@@ -645,10 +860,41 @@ int mini_gnb_c_format_config_summary(const mini_gnb_c_config_t* config, char* ou
                 config->core.ngap_trace_pcap[0] != '\0' ? config->core.ngap_trace_pcap : "(auto)",
                 config->core.gtpu_trace_pcap[0] != '\0' ? config->core.gtpu_trace_pcap : "(auto)",
                 config->rf.device_driver,
+                mini_gnb_c_rf_runtime_mode_to_string(config->rf.runtime_mode),
+                config->rf.subdev[0] != '\0' ? config->rf.subdev : "(default)",
                 config->rf.clock_src,
                 config->rf.srate,
-               config->rf.tx_gain,
-               config->rf.rx_gain) >= (int)out_size) {
+                config->rf.freq_hz,
+                config->rf.rx_freq_hz,
+                config->rf.tx_freq_hz,
+                config->rf.tx_gain,
+                config->rf.rx_gain,
+                config->rf.bandwidth_hz,
+                config->rf.duration_sec,
+                mini_gnb_c_rf_duration_mode_to_string(config->rf.duration_mode),
+                config->rf.channel,
+                config->rf.channel_count,
+                config->rf.rx_cpu_core,
+                config->rf.tx_cpu_core,
+                config->rf.apply_host_tuning ? "true" : "false",
+                config->rf.require_ref_lock ? "true" : "false",
+                config->rf.require_lo_lock ? "true" : "false",
+                config->rf.tx_prefetch_samples,
+                config->rf.ring_block_samples,
+                config->rf.ring_block_count,
+                config->rf.rx_output_file[0] != '\0' ? config->rf.rx_output_file : "(auto)",
+                config->rf.tx_input_file[0] != '\0' ? config->rf.tx_input_file : "(disabled)",
+                config->rf.rx_ring_map[0] != '\0' ? config->rf.rx_ring_map : "(disabled)",
+                config->rf.tx_ring_map[0] != '\0' ? config->rf.tx_ring_map : "(disabled)",
+                config->real_cell.enabled ? "true" : "false",
+                config->real_cell.profile_name,
+                config->real_cell.target_backend,
+                config->real_cell.band,
+                config->real_cell.dl_arfcn,
+                config->real_cell.common_scs_khz,
+                config->real_cell.channel_bandwidth_mhz,
+                config->real_cell.plmn,
+                config->real_cell.tac) >= (int)out_size) {
     return -1;
   }
 

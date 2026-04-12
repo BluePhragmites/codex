@@ -7,6 +7,7 @@ void test_sib1_schedule_uses_period_and_offset(void);
 void test_prach_schedule_uses_period_and_offset(void);
 void test_tbsize_lookup_table(void);
 void test_open5gs_end_to_end_ue_config_loads_tun_internet_settings(void);
+void test_config_loads_b210_runtime_overrides(void);
 void test_core_session_tracks_user_plane_state(void);
 void test_core_session_rejects_invalid_values(void);
 void test_ue_context_store_promote_initializes_core_session(void);
@@ -18,11 +19,26 @@ void test_gnb_core_bridge_relays_post_session_downlink_nas(void);
 void test_gnb_core_bridge_ignores_disabled_config(void);
 void test_ngap_runtime_builders_encode_expected_headers(void);
 void test_ngap_runtime_extracts_open5gs_user_plane_state(void);
+void test_air_pdu_build_and_parse_round_trip(void);
+void test_air_pdu_rejects_crc_mismatch(void);
+void test_air_pdu_rejects_invalid_header_fields(void);
 void test_pcap_trace_writes_payload_and_udp_ipv4(void);
 void test_nas_5gs_min_builds_followup_uplinks(void);
 void test_nas_5gs_min_polls_downlink_exchange(void);
 void test_rlc_lite_builds_and_reassembles_segmented_sdu(void);
 void test_rlc_lite_rejects_out_of_order_segment(void);
+void test_radio_frontend_initializes_mock_backend(void);
+void test_radio_frontend_rejects_unsupported_backend_name(void);
+void test_b210_probe_config_defaults(void);
+void test_b210_tx_config_defaults(void);
+void test_b210_trx_config_defaults(void);
+void test_b210_gain_helpers_apply_shared_and_directional_overrides(void);
+void test_b210_time_helpers_convert_hardware_time_and_sample_offsets(void);
+void test_host_performance_plan_for_b210_skips_network_buffers(void);
+void test_host_performance_plan_for_mock_is_not_applicable(void);
+void test_sc16_ring_map_create_append_and_wrap(void);
+void test_sc16_ring_map_dual_channel_payload_is_channel_major(void);
+void test_sc16_ring_export_range_writes_per_channel_files(void);
 void test_gtpu_builders_encode_expected_headers(void);
 void test_gtpu_builders_reject_missing_state(void);
 void test_n3_user_plane_activates_and_sends_uplink_gpdu(void);
@@ -78,6 +94,7 @@ int main(void) {
       {"test_tbsize_lookup_table", test_tbsize_lookup_table},
       {"test_open5gs_end_to_end_ue_config_loads_tun_internet_settings",
        test_open5gs_end_to_end_ue_config_loads_tun_internet_settings},
+      {"test_config_loads_b210_runtime_overrides", test_config_loads_b210_runtime_overrides},
       {"test_core_session_tracks_user_plane_state", test_core_session_tracks_user_plane_state},
       {"test_core_session_rejects_invalid_values", test_core_session_rejects_invalid_values},
       {"test_ue_context_store_promote_initializes_core_session",
@@ -94,11 +111,33 @@ int main(void) {
        test_ngap_runtime_builders_encode_expected_headers},
       {"test_ngap_runtime_extracts_open5gs_user_plane_state",
        test_ngap_runtime_extracts_open5gs_user_plane_state},
+      {"test_air_pdu_build_and_parse_round_trip", test_air_pdu_build_and_parse_round_trip},
+      {"test_air_pdu_rejects_crc_mismatch", test_air_pdu_rejects_crc_mismatch},
+      {"test_air_pdu_rejects_invalid_header_fields", test_air_pdu_rejects_invalid_header_fields},
       {"test_pcap_trace_writes_payload_and_udp_ipv4", test_pcap_trace_writes_payload_and_udp_ipv4},
       {"test_nas_5gs_min_builds_followup_uplinks", test_nas_5gs_min_builds_followup_uplinks},
       {"test_nas_5gs_min_polls_downlink_exchange", test_nas_5gs_min_polls_downlink_exchange},
       {"test_rlc_lite_builds_and_reassembles_segmented_sdu", test_rlc_lite_builds_and_reassembles_segmented_sdu},
       {"test_rlc_lite_rejects_out_of_order_segment", test_rlc_lite_rejects_out_of_order_segment},
+      {"test_radio_frontend_initializes_mock_backend", test_radio_frontend_initializes_mock_backend},
+      {"test_radio_frontend_rejects_unsupported_backend_name",
+       test_radio_frontend_rejects_unsupported_backend_name},
+      {"test_b210_probe_config_defaults", test_b210_probe_config_defaults},
+      {"test_b210_tx_config_defaults", test_b210_tx_config_defaults},
+      {"test_b210_trx_config_defaults", test_b210_trx_config_defaults},
+      {"test_b210_gain_helpers_apply_shared_and_directional_overrides",
+       test_b210_gain_helpers_apply_shared_and_directional_overrides},
+      {"test_b210_time_helpers_convert_hardware_time_and_sample_offsets",
+       test_b210_time_helpers_convert_hardware_time_and_sample_offsets},
+      {"test_host_performance_plan_for_b210_skips_network_buffers",
+       test_host_performance_plan_for_b210_skips_network_buffers},
+      {"test_host_performance_plan_for_mock_is_not_applicable",
+       test_host_performance_plan_for_mock_is_not_applicable},
+      {"test_sc16_ring_map_create_append_and_wrap", test_sc16_ring_map_create_append_and_wrap},
+      {"test_sc16_ring_map_dual_channel_payload_is_channel_major",
+       test_sc16_ring_map_dual_channel_payload_is_channel_major},
+      {"test_sc16_ring_export_range_writes_per_channel_files",
+       test_sc16_ring_export_range_writes_per_channel_files},
       {"test_gtpu_builders_encode_expected_headers", test_gtpu_builders_encode_expected_headers},
       {"test_gtpu_builders_reject_missing_state", test_gtpu_builders_reject_missing_state},
       {"test_n3_user_plane_activates_and_sends_uplink_gpdu",

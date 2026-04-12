@@ -188,7 +188,7 @@ static void mini_gnb_c_stage_shared_slot_user_plane(mini_gnb_c_simulator_t* simu
     ue_ipv4_valid = ue_context->core_session.ue_ipv4_valid;
     ue_ipv4 = ue_ipv4_valid ? ue_context->core_session.ue_ipv4 : NULL;
   }
-  mini_gnb_c_mock_radio_frontend_stage_ue_ipv4(&simulator->radio, ue_ipv4, ue_ipv4_valid);
+  mini_gnb_c_radio_frontend_stage_ue_ipv4(&simulator->radio, ue_ipv4, ue_ipv4_valid);
 }
 
 static void mini_gnb_c_stage_radio_nas_downlink(mini_gnb_c_simulator_t* simulator,
@@ -843,7 +843,7 @@ static void mini_gnb_c_arm_scripted_ul_data(mini_gnb_c_simulator_t* simulator,
   armed_ul_grant.harq_id = request->harq_id;
   armed_ul_grant.ndi = request->ndi;
   armed_ul_grant.is_new_data = request->is_new_data;
-  mini_gnb_c_mock_radio_frontend_arm_ul_data(&simulator->radio, &armed_ul_grant);
+  mini_gnb_c_radio_frontend_arm_ul_data(&simulator->radio, &armed_ul_grant);
 }
 
 static void mini_gnb_c_process_scripted_dl_schedule(mini_gnb_c_simulator_t* simulator,
@@ -1263,7 +1263,7 @@ static void mini_gnb_c_queue_connected_ul_grant(mini_gnb_c_simulator_t* simulato
   armed_ul_grant.harq_id = request.harq_id;
   armed_ul_grant.ndi = request.ndi;
   armed_ul_grant.is_new_data = request.is_new_data;
-  mini_gnb_c_mock_radio_frontend_arm_ul_data(&simulator->radio, &armed_ul_grant);
+  mini_gnb_c_radio_frontend_arm_ul_data(&simulator->radio, &armed_ul_grant);
   ul_harq_states[harq_id].waiting_pusch = true;
   ul_harq_states[harq_id].rnti = request.c_rnti;
   ul_harq_states[harq_id].pdcch_abs_slot = request.pdcch_abs_slot;
@@ -1366,10 +1366,10 @@ static void mini_gnb_c_queue_connected_dl_data(mini_gnb_c_simulator_t* simulator
   dl_request.payload_kind = payload_kind;
   dl_request.payload = *payload;
   mini_gnb_c_initial_access_scheduler_queue_dl_data(&simulator->scheduler, &dl_request, &simulator->metrics);
-  mini_gnb_c_mock_radio_frontend_arm_dl_ack(&simulator->radio,
-                                            ue_context->c_rnti,
-                                            dl_request.harq_id,
-                                            dl_request.abs_slot + dl_request.dl_data_to_ul_ack);
+  mini_gnb_c_radio_frontend_arm_dl_ack(&simulator->radio,
+                                       ue_context->c_rnti,
+                                       dl_request.harq_id,
+                                       dl_request.abs_slot + dl_request.dl_data_to_ul_ack);
 
   dl_harq_states[harq_id].waiting_ack = true;
   dl_harq_states[harq_id].rnti = ue_context->c_rnti;
@@ -1408,10 +1408,10 @@ static void mini_gnb_c_requeue_dl_harq_retx(mini_gnb_c_simulator_t* simulator,
   dl_request.payload_kind = dl_harq_state->payload_kind;
   dl_request.payload = dl_harq_state->payload;
   mini_gnb_c_initial_access_scheduler_queue_dl_data(&simulator->scheduler, &dl_request, &simulator->metrics);
-  mini_gnb_c_mock_radio_frontend_arm_dl_ack(&simulator->radio,
-                                            dl_request.c_rnti,
-                                            dl_request.harq_id,
-                                            dl_request.abs_slot + dl_request.dl_data_to_ul_ack);
+  mini_gnb_c_radio_frontend_arm_dl_ack(&simulator->radio,
+                                       dl_request.c_rnti,
+                                       dl_request.harq_id,
+                                       dl_request.abs_slot + dl_request.dl_data_to_ul_ack);
 
   dl_harq_state->pdcch_abs_slot = dl_request.pdcch_abs_slot;
   dl_harq_state->pdsch_abs_slot = dl_request.abs_slot;
@@ -1461,7 +1461,7 @@ static void mini_gnb_c_requeue_ul_harq_retx(mini_gnb_c_simulator_t* simulator,
   armed_ul_grant.harq_id = request.harq_id;
   armed_ul_grant.ndi = request.ndi;
   armed_ul_grant.is_new_data = request.is_new_data;
-  mini_gnb_c_mock_radio_frontend_arm_ul_data(&simulator->radio, &armed_ul_grant);
+  mini_gnb_c_radio_frontend_arm_ul_data(&simulator->radio, &armed_ul_grant);
 
   ul_harq_state->pdcch_abs_slot = request.pdcch_abs_slot;
   ul_harq_state->pusch_abs_slot = request.abs_slot;
@@ -1512,9 +1512,11 @@ static void mini_gnb_c_arm_next_connected_sr_opportunity(mini_gnb_c_simulator_t*
   if (sr_abs_slot < current_abs_slot) {
     return;
   }
-  if (!simulator->radio.pucch_sr_armed || simulator->radio.pucch_sr_abs_slot < current_abs_slot ||
-      simulator->radio.pucch_sr_abs_slot != sr_abs_slot || simulator->radio.pucch_sr_rnti != ue_context->c_rnti) {
-    mini_gnb_c_mock_radio_frontend_arm_pucch_sr(&simulator->radio, ue_context->c_rnti, sr_abs_slot);
+  if (!mini_gnb_c_radio_frontend_has_pucch_sr_armed_for(&simulator->radio,
+                                                        ue_context->c_rnti,
+                                                        sr_abs_slot,
+                                                        current_abs_slot)) {
+    mini_gnb_c_radio_frontend_arm_pucch_sr(&simulator->radio, ue_context->c_rnti, sr_abs_slot);
   }
 }
 
@@ -1550,7 +1552,7 @@ static void mini_gnb_c_schedule_post_msg4_traffic(mini_gnb_c_simulator_t* simula
                                      msg4_abs_slot,
                                      &payload,
                                      MINI_GNB_C_PAYLOAD_KIND_GENERIC);
-  mini_gnb_c_mock_radio_frontend_arm_pucch_sr(&simulator->radio, ue_context->c_rnti, sr_abs_slot);
+  mini_gnb_c_radio_frontend_arm_pucch_sr(&simulator->radio, ue_context->c_rnti, sr_abs_slot);
 
   ue_context->traffic_plan_scheduled = true;
   mini_gnb_c_metrics_trace_event(&simulator->metrics,
@@ -1584,7 +1586,7 @@ void mini_gnb_c_simulator_init(mini_gnb_c_simulator_t* simulator,
                                            sizeof(simulator->config.sim.scripted_pdcch_dir));
   mini_gnb_c_metrics_trace_init(&simulator->metrics, output_dir);
   mini_gnb_c_slot_engine_init(&simulator->slot_engine, &simulator->config);
-  mini_gnb_c_mock_radio_frontend_init(&simulator->radio, &simulator->config.rf, &simulator->config.sim);
+  (void)mini_gnb_c_radio_frontend_init(&simulator->radio, &simulator->config.rf, &simulator->config.sim);
   mini_gnb_c_broadcast_engine_init(&simulator->broadcast,
                                    &simulator->config.cell,
                                    &simulator->config.prach,
@@ -1637,6 +1639,19 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
   if (simulator == NULL || out_summary == NULL) {
     return -1;
   }
+  if (!mini_gnb_c_radio_frontend_is_ready(&simulator->radio)) {
+    mini_gnb_c_metrics_trace_event(&simulator->metrics,
+                                   "radio_frontend",
+                                   "Radio frontend is not ready.",
+                                   -1,
+                                   "driver=%s,error=%s",
+                                   mini_gnb_c_radio_frontend_driver_name(&simulator->radio),
+                                   mini_gnb_c_radio_frontend_error(&simulator->radio));
+    mini_gnb_c_radio_frontend_shutdown(&simulator->radio);
+    mini_gnb_c_n3_user_plane_close(&simulator->n3_user_plane);
+    mini_gnb_c_gnb_core_bridge_close(&simulator->core_bridge);
+    return -1;
+  }
   memset(dl_harq_states, 0, sizeof(dl_harq_states));
   memset(ul_harq_states, 0, sizeof(ul_harq_states));
   memset(&dl_ip_state, 0, sizeof(dl_ip_state));
@@ -1674,7 +1689,7 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
     }
     mini_gnb_c_stage_shared_slot_user_plane(simulator);
     mini_gnb_c_stage_radio_nas_downlink(simulator, dl_harq_states, slot.abs_slot);
-    mini_gnb_c_mock_radio_frontend_receive(&simulator->radio, &slot, &burst);
+    mini_gnb_c_radio_frontend_receive(&simulator->radio, &slot, &burst);
     if (burst.ul_type != MINI_GNB_C_UL_BURST_NONE) {
       mini_gnb_c_metrics_trace_event(&simulator->metrics,
                                      "radio_rx",
@@ -1731,7 +1746,7 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
         mini_gnb_c_initial_access_scheduler_queue_rar(&simulator->scheduler,
                                                       &request,
                                                       &simulator->metrics);
-        mini_gnb_c_mock_radio_frontend_arm_msg3(&simulator->radio, &request.ul_grant);
+        mini_gnb_c_radio_frontend_arm_msg3(&simulator->radio, &request.ul_grant);
       }
     }
 
@@ -2182,10 +2197,10 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                                                            dl_pdcch_grants,
                                                                            MINI_GNB_C_MAX_GRANTS);
     for (i = 0; i < dl_pdcch_count; ++i) {
-      mini_gnb_c_mock_radio_frontend_submit_pdcch(&simulator->radio,
-                                                  &slot,
-                                                  &dl_pdcch_grants[i],
-                                                  &simulator->metrics);
+      mini_gnb_c_radio_frontend_submit_pdcch(&simulator->radio,
+                                             &slot,
+                                             &dl_pdcch_grants[i],
+                                             &simulator->metrics);
     }
 
     ul_data_pdcch_count = mini_gnb_c_initial_access_scheduler_pop_due_ul_data_pdcch(&simulator->scheduler,
@@ -2193,10 +2208,10 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                                                                      ul_data_pdcch_grants,
                                                                                      MINI_GNB_C_MAX_UL_DATA_GRANTS);
     for (i = 0; i < ul_data_pdcch_count; ++i) {
-      mini_gnb_c_mock_radio_frontend_submit_pdcch(&simulator->radio,
-                                                  &slot,
-                                                  &ul_data_pdcch_grants[i].pdcch,
-                                                  &simulator->metrics);
+      mini_gnb_c_radio_frontend_submit_pdcch(&simulator->radio,
+                                             &slot,
+                                             &ul_data_pdcch_grants[i].pdcch,
+                                             &simulator->metrics);
     }
 
     dl_grant_count = mini_gnb_c_initial_access_scheduler_pop_due_downlink(&simulator->scheduler,
@@ -2215,11 +2230,7 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                                       dl_grant_count,
                                                       patches,
                                                       MINI_GNB_C_MAX_GRANTS + 2U);
-      mini_gnb_c_mock_radio_frontend_submit_tx(&simulator->radio,
-                                               &slot,
-                                               patches,
-                                               patch_count,
-                                               &simulator->metrics);
+      mini_gnb_c_radio_frontend_submit_tx(&simulator->radio, &slot, patches, patch_count, &simulator->metrics);
 
       for (i = 0; i < dl_grant_count; ++i) {
         if (dl_grants[i].type == MINI_GNB_C_DL_OBJ_RAR) {
@@ -2286,13 +2297,13 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
       mini_gnb_c_metrics_trace_add_slot_perf(&simulator->metrics, &perf);
     }
 
-    mini_gnb_c_mock_radio_frontend_finalize_slot(&simulator->radio, &slot, &simulator->metrics);
+    mini_gnb_c_radio_frontend_finalize_slot(&simulator->radio, &slot, &simulator->metrics);
     if (simulator->config.sim.slot_sleep_ms > 0u) {
       (void)poll(NULL, 0, (int)simulator->config.sim.slot_sleep_ms);
     }
   }
 
-  mini_gnb_c_mock_radio_frontend_shutdown(&simulator->radio);
+  mini_gnb_c_radio_frontend_shutdown(&simulator->radio);
   mini_gnb_c_n3_user_plane_close(&simulator->n3_user_plane);
   mini_gnb_c_gnb_core_bridge_close(&simulator->core_bridge);
   return mini_gnb_c_metrics_trace_flush(&simulator->metrics,
@@ -2302,8 +2313,8 @@ int mini_gnb_c_simulator_run(mini_gnb_c_simulator_t* simulator,
                                             : NULL,
                                         simulator->ue_store.contexts,
                                         simulator->ue_store.count,
-                                        simulator->radio.tx_burst_count,
-                                        simulator->radio.last_hw_time_ns,
+                                        mini_gnb_c_radio_frontend_tx_burst_count(&simulator->radio),
+                                        mini_gnb_c_radio_frontend_last_hw_time_ns(&simulator->radio),
                                         mini_gnb_c_gnb_core_bridge_get_ngap_trace_path(&simulator->core_bridge),
                                         mini_gnb_c_n3_user_plane_get_gtpu_trace_path(&simulator->n3_user_plane),
                                         out_summary);

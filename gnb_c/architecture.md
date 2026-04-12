@@ -41,14 +41,177 @@ In practice, this means the system is not built around multiple threads, message
 - `tests/`
   - unit and integration tests
 
-### 2.2 The Three Main Entry Programs
+### 2.2 The Main Entry Programs
 
 - `apps/mini_gnb_c_sim.c`
   - main gNB entrypoint
+  - now has two runtime branches:
+    - the existing slot-driven simulator path, which can now use either the mock radio backend or the hybrid B210 backend under `radio_frontend`
+    - a B210/UHD app harness selected by YAML `rf.runtime_mode`
 - `apps/mini_ue_c.c`
   - local UE runtime entrypoint
+  - now has two runtime branches:
+    - the existing JSON/shared-slot UE path
+    - the same B210/UHD app harness selected by YAML `rf.runtime_mode`
 - `apps/ngap_probe.c`
   - standalone Open5GS and AMF/UPF probe
+- `apps/mini_b210_probe_c.c`
+  - standalone Stage 1 B210/UHD RX/TX smoke probe
+- `apps/mini_ring_inspect.c`
+  - inspects single-file `sc16` recent-history rings
+- `apps/mini_ring_export.c`
+  - exports a selected inclusive `seq` range into per-channel `sc16` files
+
+### 2.3 Radio Backend Boundary
+
+The simulator no longer reaches directly into `mock_radio_frontend` as its public radio abstraction. The active boundary is now:
+
+- `src/radio/radio_frontend.c`
+- `include/mini_gnb_c/radio/radio_frontend.h`
+
+Today this boundary routes to:
+
+- the existing mock backend
+- a new hybrid B210 backend
+
+The first full real-air-interface target still remains:
+
+- `uhd-b210`
+
+That split is deliberate. It allows Stage 1 work to proceed toward a B210/UHD backend without treating the current simulator path as if it were already a real RF implementation.
+
+The first hardware-facing C module for that roadmap is now:
+
+- `src/radio/air_pdu.c`
+- `include/mini_gnb_c/radio/air_pdu.h`
+- `src/radio/b210_app_runtime.c`
+- `include/mini_gnb_c/radio/b210_app_runtime.h`
+- `src/radio/b210_uhd_probe.c`
+- `include/mini_gnb_c/radio/b210_uhd_probe.h`
+- `src/radio/host_performance.c`
+- `include/mini_gnb_c/radio/host_performance.h`
+- `src/radio/sc16_ring_export.c`
+- `include/mini_gnb_c/radio/sc16_ring_export.h`
+- `src/radio/sc16_ring_map.c`
+- `include/mini_gnb_c/radio/sc16_ring_map.h`
+
+The standalone smoke path is intentionally still kept available beside the simulator backend. It proves host-side UHD access, stress behavior, and ring-map tooling independently of the simulator.
+
+`air_pdu.c` is the first Stage 2A protocol module. It is intentionally narrower than a waveform mapper:
+
+- it defines the shared binary contract for future gNB/UE over-the-air payloads
+- it covers PDU typing, slot tagging, optional preamble context, payload length, and CRC
+- it does not yet map those PDUs onto actual IQ waveforms
+
+The `b210_app_runtime` bridge is the layer that connects that smoke/runtime path to the main app entrypoints:
+
+- `mini_gnb_c_sim`
+- `mini_ue_c`
+
+It does not turn the simulator into a real-air-interface backend. It only lets the main apps reuse the already-working B210 runtime through the shared YAML `rf:` section.
+
+The new simulator-facing layer for that next step is:
+
+- `src/radio/b210_slot_backend.c`
+- `include/mini_gnb_c/radio/b210_slot_backend.h`
+
+This backend is intentionally hybrid:
+
+- it embeds the existing mock slot semantics used by the simulator
+- it starts long-lived B210 RX and TX workers inside `radio_frontend`
+- it captures real B210 RX IQ into the configured RX ring map
+- it turns slot-mapped DL patches into a toy TX waveform and streams that through the configured TX ring map
+
+What it does not do yet:
+
+- decode `PRACH`, `MSG3`, `PUCCH`, or `UL DATA` from B210 IQ
+- generate a real NR-compliant DL waveform
+
+Today that smoke path covers:
+
+- one RX burst captured to file
+- one TX burst replayed from file
+- optional RX capture into a fixed-size single-file `sc16` ring map
+- optional TX replay from that same ring-map format
+- optional simultaneous TRX with one RX worker and one TX worker
+- optional one-channel or two-channel operation
+- one shared gain shortcut plus direction-specific TRX gain overrides:
+  - `--gain`
+  - `--rx-gain`
+  - `--tx-gain`
+- one built-in host tuning pass before radio startup
+- explicit CPU pinning for the active worker thread
+- per-block RX time anchors taken from UHD RX metadata when available
+- standalone TX replay already uses a larger user-space prefetch window and a low-watermark refill policy for ring-map replay
+- that prefetch window can be overridden from the CLI with `--tx-prefetch-samples`
+- the `trx` TX worker reuses the same policy instead of replaying directly from mapped ring payload pointers
+- the `trx` path now also separates RX and TX center-frequency control
+  - `--freq` remains the shared shortcut
+  - `--rx-freq` and `--tx-freq` override each side independently
+- the `trx` TX side now loops its source ring when `rate * duration` is longer than one ring pass
+- the RX side now has an explicit error policy for stress runs
+  - `OVERFLOW` and `TIMEOUT` are counted and the worker keeps running
+  - structure-breaking metadata errors and API failures still stop the worker
+- RX observability now includes gap-derived loss estimation
+  - successful RX chunks are compared in hardware time
+  - discontinuities increase `rx_gap_events` and `rx_lost_samples_estimate`
+- the RX-side duration semantics are selectable
+  - `samples` mode targets successful-sample count
+  - `wallclock` mode targets elapsed time
+- the shared RF config also carries the same future runtime knob as `rf.tx_prefetch_samples`
+- the standalone B210 probe can now preload its defaults from the same shared `rf` section through `--config <yaml>`
+- the preload order is fixed:
+  - shared YAML `rf` defaults first
+  - probe CLI overrides second
+- the shared RF config now also carries `freq_hz`, `rx_freq_hz`, and `tx_freq_hz` so the probe and future backend do not need probe-only frequency sources
+
+The host tuning step is intentionally narrower than the full `srsran_performance` script:
+
+- it reuses the B210-relevant parts
+  - CPU governor to `performance`
+  - DRM KMS polling disabled
+- it intentionally skips Ethernet socket-buffer tuning
+  - because the current target radio is the USB-based B210
+
+The build also treats radio-facing code as a separate performance domain:
+
+- the top-level build may stay in `Debug`
+- radio-facing sources default to a release-style compile profile
+- that default can be turned off explicitly when radio debugging is the goal
+
+It still does not provide the final handset-capable PHY architecture. The intended next step is to replace the remaining mock UL semantics and toy DL waveform generation with real PHY mapping, synchronization, and decoding.
+
+The ring-map format is a probe-time observability and buffering aid, not the final steady-state runtime queue. Its internal layout is:
+
+- superblock
+- descriptor ring
+- payload ring
+
+That keeps wrap metadata and pure IQ payload in one file while avoiding per-block headers inside the actual sample stream.
+
+For two-channel operation, each block stores payload in channel-major order:
+
+- channel 0 region first
+- channel 1 region second
+
+That matches the current analysis goal of reading one antenna’s block payload before the second antenna’s block payload.
+
+Each ready descriptor also carries one shared block timestamp:
+
+- `hw_time_ns`
+  - the first-sample time anchor for that block
+  - sourced from UHD RX metadata when available
+- `flags`
+  - indicate whether that time came from UHD hardware time or a host fallback
+
+Two runtime knobs should not be confused:
+
+- `duration`
+  - controls how much data the current probe run attempts to receive
+- ring geometry
+  - `ring_block_samples`
+  - `ring_block_count`
+  - controls how much recent history remains in the fixed-size map
 
 ## 3. Main Control Flow
 
@@ -85,7 +248,39 @@ Its responsibilities are:
 
 This path is the core of the local UE/gNB closed loop.
 
-### 3.3 Radio Access and Scheduling Modules
+### 3.3 Real-Cell Target Profile
+
+The config layer now carries an explicit `real_cell` section. Its role is not to change the current simulator behavior. Its role is to lock the first real-air-interface target profile in one place:
+
+- backend target
+- band
+- ARFCN
+- numerology
+- bandwidth
+- PLMN/TAC
+
+For the current roadmap, that first target is the B210/UHD path.
+
+The RF config also now carries the first host-runtime controls needed for real radio work:
+
+- `rf.subdev`
+- `rf.rx_cpu_core`
+- `rf.tx_cpu_core`
+
+The intended steady-state design is:
+
+- one dedicated RX worker pinned to `rf.rx_cpu_core`
+- one dedicated TX worker pinned to `rf.tx_cpu_core`
+- the main control thread remaining separate from both real-time workers
+
+The current app-harness path is therefore still an intermediate step:
+
+- shared RF config already lives in the main YAML files
+- main app entrypoints can already consume that config for B210 RX/TX/TRX runs
+- the simulator now has that first true slot-aware `radio_frontend` B210 integration layer
+- the remaining step is to replace the hybrid mock semantics inside that backend with real RF/PHY behavior
+
+### 3.4 Radio Access and Scheduling Modules
 
 The radio side is easiest to understand as a small set of layers:
 
@@ -240,6 +435,7 @@ Start with:
 - `apps/mini_gnb_c_sim.c`
 - `apps/mini_ue_c.c`
 - `apps/ngap_probe.c`
+- `apps/mini_b210_probe_c.c`
 
 Goal:
 
@@ -260,13 +456,16 @@ Goal:
 
 Then read:
 
+- `src/radio/radio_frontend.c`
 - `src/link/shared_slot_link.c`
 - `src/radio/mock_radio_frontend.c`
+- `src/radio/b210_uhd_probe.c`
 - `src/ue/mini_ue_runtime.c`
 
 Goal:
 
 - understand how the local gNB and UE stay aligned in time
+- understand where the future B210/UHD backend will plug in
 
 ### Step 4: Read Random Access and Scheduling
 
